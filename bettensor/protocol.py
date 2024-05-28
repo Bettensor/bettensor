@@ -21,6 +21,7 @@ import json
 import typing
 import bittensor as bt
 from uuid import UUID
+import time
 
 # TODO(developer): Rewrite with your protocol definition.
 
@@ -42,11 +43,22 @@ from uuid import UUID
 #   assert dummy_output == 2
 
 
+
+class Metadata():
+    '''Synapse Metadata class, add more fields if needed'''
+    synapse_id : UUID
+    neuron_id : UUID
+    timestamp : time.time
+
+    
+
+
+
 class Prediction(bt.Synapse):
     '''
     This class defines the synapse object for a miner prediction, consisting of a dictionary of TeamGamePrediction objects with a UUID as key.
     '''
-
+    metadata : Metadata
     prediction_dict : typing.Dict["key": UUID, "value": json.JSONDecoder]
 
     def deserialize(self) -> typing.Dict[UUID, json.JSONDecoder]:
@@ -58,6 +70,7 @@ class GameData(bt.Synapse):
     '''
     This class defines the synapse object for a game data, consisting of a dictionary of TeamGameobjects with a UUID as key.
     '''
+    metadata : Metadata
     gamedata_dict : typing.Dict["key": UUID, "value": json.JSONDecoder]
 
     def deserialize(self) -> typing.Dict[UUID, json.JSONDecoder]:
