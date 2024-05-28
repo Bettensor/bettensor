@@ -48,8 +48,37 @@ class Metadata():
     '''Synapse Metadata class, add more fields if needed'''
     synapse_id : UUID
     neuron_id : UUID
-    timestamp : time.time
+    timestamp : str # TODO: Match timestamp format
 
+    
+class TeamGamePrediction():
+    '''
+    Data class from json. May need to be modified in the future for more complex prediction types
+    '''
+    id : UUID # id of the prediction
+    teamGameId : UUID # id of the team game
+    minerId : UUID # id of the miner (coldkey/hotkey) that made the prediction
+    predictionDate : str # TODO: Match timestamp format
+    predictedOutcome : str
+    
+    
+
+class TeamGame():
+    '''
+    Data class from json. May need to be modified in the future for more complex prediction types
+    '''
+    id : UUID # id of the team game
+    teamA : str
+    teamB : str
+    sport : str
+    league : str
+    eventDescription : str
+    externalId : str # external id of the team game
+    createDate : str # TODO: Match timestamp format
+    lastUpdateDate : str # TODO: Match timestamp format 
+    active : bool
+    outcome : str
+    
     
 
 
@@ -59,11 +88,11 @@ class Prediction(bt.Synapse):
     This class defines the synapse object for a miner prediction, consisting of a dictionary of TeamGamePrediction objects with a UUID as key.
     '''
     metadata : Metadata
-    prediction_dict : typing.Dict["key": UUID, "value": json.JSONDecoder]
+    prediction_dict : typing.Dict["key": UUID, "value": TeamGamePrediction]
 
-    def deserialize(self) -> typing.Dict[UUID, json.JSONDecoder]:
+    def deserialize(self) -> typing.Dict[UUID, TeamGamePrediction]:
        
-        return self.prediction_dict
+        return self.prediction_dict, self.metadata
 
 
 class GameData(bt.Synapse):
@@ -71,7 +100,7 @@ class GameData(bt.Synapse):
     This class defines the synapse object for a game data, consisting of a dictionary of TeamGameobjects with a UUID as key.
     '''
     metadata : Metadata
-    gamedata_dict : typing.Dict["key": UUID, "value": json.JSONDecoder]
+    gamedata_dict : typing.Dict["key": UUID, "value": TeamGame]
 
-    def deserialize(self) -> typing.Dict[UUID, json.JSONDecoder]:
-        return self.gamedata_dict
+    def deserialize(self) -> typing.Dict[UUID, TeamGame]:
+        return self.gamedata_dict, self.metadata

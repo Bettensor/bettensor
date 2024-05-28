@@ -17,8 +17,10 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+import json
 import time
 import typing
+from uuid import UUID
 import bittensor as bt
 
 # Bittensor Miner Template:
@@ -165,6 +167,27 @@ class Miner(BaseMinerNeuron):
             f"Prioritizing {synapse.dendrite.hotkey} with value: ", prirority
         )
         return prirority
+
+
+async def manual_prediction(gamedata_dict: typing.Dict[UUID, json.JSONDecoder]) -> bettensor.protocol.Prediction:
+    # TODO : CLI method to step through available games and submit predictions
+
+    
+    
+
+
+
+    
+    # TODO : submit predictions to chain and wait for confirmation
+
+    # TODO : return prediction to validator
+
+    pass
+
+    
+
+
+
 
 
 # This is the main function, which runs the miner.
