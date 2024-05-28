@@ -17,8 +17,10 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+import json
 import typing
 import bittensor as bt
+from uuid import UUID
 
 # TODO(developer): Rewrite with your protocol definition.
 
@@ -40,37 +42,23 @@ import bittensor as bt
 #   assert dummy_output == 2
 
 
-class Dummy(bt.Synapse):
-    """
-    A simple dummy protocol representation which uses bt.Synapse as its base.
-    This protocol helps in handling dummy request and response communication between
-    the miner and the validator.
+class Prediction(bt.Synapse):
+    '''
+    This class defines the synapse object for a miner prediction, consisting of a dictionary of TeamGamePrediction objects with a UUID as key.
+    '''
 
-    Attributes:
-    - dummy_input: An integer value representing the input request sent by the validator.
-    - dummy_output: An optional integer value which, when filled, represents the response from the miner.
-    """
+    prediction_dict : typing.Dict["key": UUID, "value": json.JSONDecoder]
 
-    # Required request input, filled by sending dendrite caller.
-    dummy_input: int
+    def deserialize(self) -> typing.Dict[UUID, json.JSONDecoder]:
+       
+        return self.prediction_dict
 
-    # Optional request output, filled by recieving axon.
-    dummy_output: typing.Optional[int] = None
 
-    def deserialize(self) -> int:
-        """
-        Deserialize the dummy output. This method retrieves the response from
-        the miner in the form of dummy_output, deserializes it and returns it
-        as the output of the dendrite.query() call.
+class GameData(bt.Synapse):
+    '''
+    This class defines the synapse object for a game data, consisting of a dictionary of TeamGameobjects with a UUID as key.
+    '''
+    gamedata_dict : typing.Dict["key": UUID, "value": json.JSONDecoder]
 
-        Returns:
-        - int: The deserialized response, which in this case is the value of dummy_output.
-
-        Example:
-        Assuming a Dummy instance has a dummy_output value of 5:
-        >>> dummy_instance = Dummy(dummy_input=4)
-        >>> dummy_instance.dummy_output = 5
-        >>> dummy_instance.deserialize()
-        5
-        """
-        return self.dummy_output
+    def deserialize(self) -> typing.Dict[UUID, json.JSONDecoder]:
+        return self.gamedata_dict
