@@ -22,10 +22,10 @@ import typing
 import bittensor as bt
 
 # Bittensor Miner Template:
-import template
+import bettensor
 
 # import base miner class which takes care of most of the boilerplate
-from template.base.miner import BaseMinerNeuron
+from bettensor.base.miner import BaseMinerNeuron
 
 
 class Miner(BaseMinerNeuron):
@@ -43,27 +43,42 @@ class Miner(BaseMinerNeuron):
         # TODO(developer): Anything specific to your use case you can do here
 
     async def forward(
-        self, synapse: template.protocol.Dummy
-    ) -> template.protocol.Dummy:
+        self, synapse: bettensor.protocol.Dummy
+    ) -> bettensor.protocol.Dummy:
         """
-        Processes the incoming 'Dummy' synapse by performing a predefined operation on the input data.
-        This method should be replaced with actual logic relevant to the miner's purpose.
+        Takes an incoming synapse of game data, and runs CLI for user to submit predictions. Submits UUID's of predicted games to chain, waits until acceptance, then returns synapse with prediction data to validator. If games have already been predicted and committed to chain, 
+        return synapse to any "new" validator( one that has not yet communicated with this miner about recent games). If all validators have already been notified, wait until a new game is available. (this logic will happen above the forward function, we don't want to call it 
+        repeatedly if we've already submitted predictions for the current period).
 
         Args:
-            synapse (template.protocol.Dummy): The synapse object containing the 'dummy_input' data.
+            synapse : The synapse object containing the game data.
 
         Returns:
-            template.protocol.Dummy: The synapse object with the 'dummy_output' field set to twice the 'dummy_input' value.
-
-        The 'forward' function is a placeholder and should be overridden with logic that is appropriate for
-        the miner's intended operation. This method demonstrates a basic transformation of input data.
+            synapse : Synapse object with prediction data. Must be compared to on chain data before acceptance (Validator side)
         """
-        # TODO(developer): Replace with actual implementation logic.
-        synapse.dummy_output = synapse.dummy_input * 2
-        return synapse
+
+        # Manual Prediction Implementation
+
+
+        # TODO : Check chain for available games that have no prediction submitted, yet. If miner has predicted all available games, then it should wait until a new game is available.
+
+        # TODO : Notification System? Send an email/text/discord when new games are available.
+
+        # TODO : Deserialize Synapse and create dictionary of games.
+
+        # TODO : CLI method to step through available games and submit predictions
+
+        # TODO : Submit Games for Validation. Commit UUID's of Games to Chain so that miner can only make one prediction per game.
+
+       
+        # Auto Prediction Implementation 
+        # Perhaps here we train a small neural network model to take in additional data (team/player stats, historical results, etc.) and return a prediction. At the very least, we should eventually provide some infrastructure for miners
+        # to use a model if they'd like to.
+
+        pass
 
     async def blacklist(
-        self, synapse: template.protocol.Dummy
+        self, synapse: bettensor.protocol.Dummy
     ) -> typing.Tuple[bool, str]:
         """
         Determines whether an incoming request should be blacklisted and thus ignored. Your implementation should
@@ -119,7 +134,7 @@ class Miner(BaseMinerNeuron):
         )
         return False, "Hotkey recognized!"
 
-    async def priority(self, synapse: template.protocol.Dummy) -> float:
+    async def priority(self, synapse: bettensor.protocol.Dummy) -> float:
         """
         The priority function determines the order in which requests are handled. More valuable or higher-priority
         requests are processed before others. You should design your own priority mechanism with care.
