@@ -19,16 +19,39 @@
 
 
 import time
+import sys
+import os
+
+# Get the current file's directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Get the parent directory
+parent_dir = os.path.dirname(current_dir)
+
+# Get the grandparent directory
+grandparent_dir = os.path.dirname(parent_dir)
+
+# Get the great grandparent directory
+great_grandparent_dir = os.path.dirname(grandparent_dir)
+
+# Add parent, grandparent, and great grandparent directories to sys.path
+sys.path.append(parent_dir)
+sys.path.append(grandparent_dir)
+sys.path.append(great_grandparent_dir)
+
+# Optional: Print sys.path to verify the directories have been added
+print(sys.path)
 
 # Bittensor
 import bittensor as bt
 
 # Bittensor Validator Template:
-import template
-from template.validator import forward
+import bettensor
+from bettensor.validator import forward
+from uuid import UUID
 
 # import base validator class which takes care of most of the boilerplate
-from template.base.validator import BaseValidatorNeuron
+from bettensor.base.validator import BaseValidatorNeuron
 
 
 class Validator(BaseValidatorNeuron):

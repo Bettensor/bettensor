@@ -19,9 +19,11 @@
 
 import bittensor as bt
 
-from bettensor.protocol import Dummy
+from bettensor.protocol import Metadata, TeamGamePrediction, TeamGame, Prediction, GameData
 from bettensor.validator.reward import get_rewards
 from bettensor.utils.uids import get_random_uids
+import uuid
+from uuid import UUID
 
 
 async def forward(self):
@@ -43,7 +45,7 @@ async def forward(self):
         # Send the query to selected miner axons in the network.
         axons=[self.metagraph.axons[uid] for uid in miner_uids],
         # Construct a dummy query. This simply contains a single integer.
-        synapse=Dummy(dummy_input=self.step),
+        synapse=Prediction(dummy_data=4),
         # All responses have the deserialize function called on them before returning.
         # You are encouraged to define your own deserialization function.
         deserialize=True,
