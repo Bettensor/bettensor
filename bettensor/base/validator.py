@@ -24,6 +24,7 @@ import asyncio
 import argparse
 import threading
 import bittensor as bt
+from uuid import UUID
 
 from typing import List
 from traceback import print_exception

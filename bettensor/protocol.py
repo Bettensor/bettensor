@@ -22,6 +22,7 @@ import typing
 import bittensor as bt
 from uuid import UUID
 import time
+from pydantic import BaseModel
 
 # TODO(developer): Rewrite with your protocol definition.
 
@@ -44,14 +45,14 @@ import time
 
 
 
-class Metadata():
+class Metadata(BaseModel):
     '''Synapse Metadata class, add more fields if needed'''
     synapse_id : UUID
     neuron_id : UUID
     timestamp : str # TODO: Match timestamp format
 
     
-class TeamGamePrediction():
+class TeamGamePrediction(BaseModel):
     '''
     Data class from json. May need to be modified in the future for more complex prediction types
     '''
@@ -63,7 +64,7 @@ class TeamGamePrediction():
     
     
 
-class TeamGame():
+class TeamGame(BaseModel):
     '''
     Data class from json. May need to be modified in the future for more complex prediction types
     '''
@@ -83,24 +84,25 @@ class TeamGame():
 
 
 
-class Prediction(bt.Synapse):
+class Prediction(bt.Synapse, BaseModel):
     '''
     This class defines the synapse object for a miner prediction, consisting of a dictionary of TeamGamePrediction objects with a UUID as key.
     '''
+    #dummy_data: int
     metadata : Metadata
-    prediction_dict : typing.Dict["key": UUID, "value": TeamGamePrediction]
-
+    prediction_dict: typing.Dict[UUID, TeamGamePrediction]
     def deserialize(self) -> typing.Dict[UUID, TeamGamePrediction]:
-       
+    #def deserialize(self) -> int:
+        
+        #return self.dummy_data
         return self.prediction_dict, self.metadata
 
 
-class GameData(bt.Synapse):
+class GameData(bt.Synapse, BaseModel):
     '''
     This class defines the synapse object for a game data, consisting of a dictionary of TeamGameobjects with a UUID as key.
     '''
     metadata : Metadata
-    gamedata_dict : typing.Dict["key": UUID, "value": TeamGame]
-
+    gamedata_dict: typing.Dict[UUID, TeamGame]
     def deserialize(self) -> typing.Dict[UUID, TeamGame]:
         return self.gamedata_dict, self.metadata

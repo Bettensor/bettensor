@@ -19,11 +19,12 @@
 
 import bittensor as bt
 
-from bettensor.protocol import Dummy
+from bettensor.protocol import Metadata, TeamGamePrediction, TeamGame, Prediction, GameData
 from bettensor.validator.reward import get_rewards
 from bettensor.utils.uids import get_random_uids
-
-
+import uuid
+from uuid import UUID
+from uuid import UUID, uuid4
 async def forward(self):
     """
     The forward function is called by the validator every time step.
@@ -38,12 +39,28 @@ async def forward(self):
     # get_random_uids is an example method, but you can replace it with your own.
     miner_uids = get_random_uids(self, k=self.config.neuron.sample_size)
 
+    # Create metadata and prediction_dict for the synapse.
+    metadata = Metadata(
+        synapse_id=uuid4(),  # Generate a random UUID
+        neuron_id=uuid4(),   # Generate a random UUID
+        timestamp="test"     # Use "test" for timestamp
+    )
+    prediction_dict = {
+        uuid4(): TeamGamePrediction(
+            id=uuid4(),
+            teamGameId=uuid4(),
+            minerId=uuid4(),
+            predictionDate="test",  # Use "test" for prediction date
+            predictedOutcome='Win'
+        )
+    }
+
     # The dendrite client queries the network.
     responses = await self.dendrite(
         # Send the query to selected miner axons in the network.
         axons=[self.metagraph.axons[uid] for uid in miner_uids],
-        # Construct a dummy query. This simply contains a single integer.
-        synapse=Dummy(dummy_input=self.step),
+        # Construct a query with metadata and prediction_dict.
+        synapse=Prediction(metadata=metadata, prediction_dict=prediction_dict),
         # All responses have the deserialize function called on them before returning.
         # You are encouraged to define your own deserialization function.
         deserialize=True,
