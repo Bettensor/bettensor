@@ -77,6 +77,7 @@ class TeamGame(BaseModel):
     externalId : str # external id of the team game
     createDate : str # TODO: Match timestamp format
     lastUpdateDate : str # TODO: Match timestamp format 
+    eventStartDate: str
     active : bool
     outcome : str
     
