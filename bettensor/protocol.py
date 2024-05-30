@@ -88,14 +88,14 @@ class Prediction(bt.Synapse, BaseModel):
     '''
     This class defines the synapse object for a miner prediction, consisting of a dictionary of TeamGamePrediction objects with a UUID as key.
     '''
-    dummy_data: int
-    #metadata : Metadata
-    #prediction_dict: typing.Dict[UUID, TeamGamePrediction]
-    #def deserialize(self) -> typing.Dict[UUID, TeamGamePrediction]:
-    def deserialize(self) -> int:
+    #dummy_data: int
+    metadata : Metadata
+    prediction_dict: typing.Dict[UUID, TeamGamePrediction]
+    def deserialize(self) -> typing.Dict[UUID, TeamGamePrediction]:
+    #def deserialize(self) -> int:
         
-        return self.dummy_data
-        #return self.prediction_dict, self.metadata
+        #return self.dummy_data
+        return self.prediction_dict, self.metadata
 
 
 class GameData(bt.Synapse, BaseModel):
