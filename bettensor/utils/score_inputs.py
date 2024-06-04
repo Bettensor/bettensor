@@ -13,18 +13,15 @@ def difficulty_ranking(all_odds: List[float]) -> float:
     """
     Returns a difficulty factor for predictions made by a Miner
 
-    Parameters
-    ----------
+    Parameters:
     all_odds : list of floats
         A list of float values representing odds that a miner has bet on.
 
     Returns
-    -------
     float
         The difficulty factor of the miners bets.
 
     Raises
-    ------
     TypeError
         If `all_odds` is not a list.
     ValueError
@@ -138,8 +135,7 @@ def evaluate_predictions(predictions_json, correct_outcome, game_id):
     """
     Evaluates predictions and prints "correct" or "incorrect" based on the predicted outcome.
     
-    Parameters
-    ----------
+    Parameters:
     predictions_json : str
         JSON string containing a list of predictions.
     correct_outcome : str

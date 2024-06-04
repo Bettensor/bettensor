@@ -58,6 +58,7 @@ class TeamGamePrediction(BaseModel):
     '''
     id : UUID # id of the prediction
     teamGameId : UUID # id of the team game
+    league: int
     minerId : UUID # id of the miner (coldkey/hotkey) that made the prediction
     predictionDate : str # TODO: Match timestamp format
     predictedOutcome : str
