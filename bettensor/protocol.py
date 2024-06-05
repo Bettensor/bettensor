@@ -56,12 +56,13 @@ class TeamGamePrediction(BaseModel):
     '''
     Data class from json. May need to be modified in the future for more complex prediction types
     '''
-    id : UUID # id of the prediction
+    pred_id : UUID # id of the prediction
     teamGameId : UUID # id of the team game
     league: int
     minerId : UUID # id of the miner (coldkey/hotkey) that made the prediction
     predictionDate : str # TODO: Match timestamp format
     predictedOutcome : str
+    wager: int
     
     
 
