@@ -57,10 +57,10 @@ class TeamGamePrediction(BaseModel):
     Data class from json. May need to be modified in the future for more complex prediction types
     '''
     id : UUID # id of the prediction
-    teamGameId : UUID # id of the team game
-    minerId : UUID # id of the miner (coldkey/hotkey) that made the prediction
+    externalGameId : UUID # id of the team game
+    minerId : str # id of the miner (hotkey) that made the prediction
     predictionDate : str # TODO: Match timestamp format
-    predictedOutcome : str
+    predictedOutcome : int # 0 - teamA, 1 - teamB
     
     
 
