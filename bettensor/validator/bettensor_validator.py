@@ -40,16 +40,6 @@ class BettensorValidator(BaseNeuron):
 
         return True
 
-    def validator_validation(self, metagraph, wallet, subtensor) -> bool:
-        """This method validates the validator has registered correctly"""
-        if wallet.hotkey.ss58_address not in metagraph.hotkeys:
-            bt.logging.error(
-                f"Your validator: {wallet} is not registered to chain connection: {subtensor}. Run btcli register and try again"
-            )
-            return False
-
-        return True
-
     def check_vali_reg(self, metagraph, wallet, subtensor) -> bool:
         """This method validates the validator has registered correctly"""
         if wallet.hotkey.ss58_address not in metagraph.hotkeys:
@@ -156,47 +146,99 @@ class BettensorValidator(BaseNeuron):
     def _parse_args(self, parser):
         return parser.parse_args()
 
+    def calculate_total_wager(c, minerId, event_start_date, exclude_id=None):
+    query = '''
+        SELECT wager FROM predictions WHERE minerId = ? AND DATE(eventStartDate) = DATE(?)
+    '''
+    params = (minerId, event_start_date)
+    
+    if exclude_id:
+        query += ' AND teamGameId != ?'
+        params += (exclude_id,)
 
-    def insert_or_update_predictions(predictions):
-        """
-        Updates database with new predictions
-        Accepts:
-            TeamGamePrediction object
-        """
-        conn = connect_db()
-        c = conn.cursor()
+    c.execute(query, params)
+    wagers = c.fetchall()
+    total_wager = sum([w[0] for w in wagers])
+    
+    return total_wager
+
+    def insert_or_update_predictions(self, processed_uids, predictions):
+    """
+    Updates database with new predictions
+    Accepts:
+        TeamGamePrediction object
+    """
+    conn = connect_db()
+    c = conn.cursor()
+    current_time = datetime.now().isoformat()
+
+    for i, res in enumerate(predictions):
+        hotkey = self.metagraph.hotkeys[processed_uids[i]]
+
+        pred_id = res["pred_id"]
+        teamGameId = res["teamGameId"]
+        sport = res["sport"]
+        minerId = hotkey
+        league = res["league"]
+        predictionDate = res["predictionDate"]
+        predictedOutcome = res["predictedOutcome"]
+        wager = res["wager"]
+
+        # Check if the game has already started; exclude prediction if it has
+        c.execute('''
+            SELECT eventStartDate FROM teamGame WHERE id = ? AND sport = ? AND league = ?
+        ''', (teamGameId, sport, league))
         
-        for res in predictions:
-            pred_id = res["pred_id"]
-            teamGameId = res["teamGameId"]
-            sport = res["sport"]
-            minerId = res["minerId"]
-            league = res["league"]
-            predictionDate = res["predictionDate"]
-            predictedOutcome = res["predictedOutcome"]
+        row = c.fetchone()
+        if row:
+            event_start_date = row[0]
+            if current_time >= event_start_date:
+                print(f"Prediction not inserted/updated: Game {teamGameId} has already started.")
+                continue
+        
+        # Check if the prediction already exists; update prediction if it does
+        c.execute('''
+            SELECT id, wager FROM predictions WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
+        ''', (teamGameId, sport, minerId, league))
+        
+        existing_prediction = c.fetchone()
+        
+        if existing_prediction:
+            existing_id, existing_wager = existing_prediction
+            total_wager = calculate_total_wager(c, minerId, event_start_date, exclude_id=teamGameId)
             
-            # Check if the prediction already exists
+            # Add the new wager and subtract the existing one
+            total_wager = total_wager - existing_wager + wager
+            
+            if total_wager > 1000:
+                print(f"Error: Total wager for the date exceeds $1000.")
+                continue
+            
+            # Update the existing prediction
             c.execute('''
-                SELECT 1 FROM predictions WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
-            ''', (teamGameId, sport, minerId, league))
+                UPDATE predictions
+                SET predictionDate = ?, predictedOutcome = ?, wager = ?
+                WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
+            ''', (predictionDate, predictedOutcome, wager, teamGameId, sport, minerId, league))
+        else:
+            total_wager = calculate_total_wager(c, minerId, event_start_date)
             
-            if c.fetchone():
-                # Update the existing prediction
-                c.execute('''
-                    UPDATE predictions
-                    SET predictionDate = ?, predictedOutcome = ?
-                    WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
-                ''', (predictionDate, predictedOutcome, teamGameId, sport, minerId, league))
-            else:
-                # Insert a new prediction
-                c.execute('''
-                    INSERT INTO predictions (id, teamGameId, sport, minerId, league, predictionDate, predictedOutcome)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (pred_id, teamGameId, sport, minerId, league, predictionDate, predictedOutcome))
-        
-        # Commit the changes and close the connection
-        conn.commit()
-        conn.close()
+            # Add the new wager
+            total_wager += wager
+            
+            if total_wager > 1000:
+                print(f"Error: Total wager for the date exceeds $1000.")
+                continue
+
+            # Insert new prediction
+            c.execute('''
+                INSERT INTO predictions (id, teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (str(uuid4()), teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager))
+    
+    # Commit changes, close the connection
+    conn.commit()
+    conn.close()
 
     
     def connect_db():
@@ -216,7 +258,8 @@ class BettensorValidator(BaseNeuron):
             minerId TEXT,
             league TEXT,
             predictionDate TEXT,
-            predictedOutcome STRING
+            predictedOutcome STRING,
+            predictionCorrect INTEGER
         )
         ''')
     
@@ -232,13 +275,8 @@ class BettensorValidator(BaseNeuron):
 
         bt.logging.debug(f"prediction target set to: {target}")
 
-        hotkey = self.metagraph.hotkeys[processed_uids[i]]
-        if not scoring.process.validate_response(hotkey, response.output):
-            current_scores[processed_uids[i]] = 0.0
-            responses_invalid_uids.append(processed_uids[i])
-
         create_table()
-        insert_or_update_predictions(predictions)
+        insert_or_update_predictions(processed_uids, predictions)
 
 
     def check_hotkeys(self):
@@ -275,6 +313,33 @@ class BettensorValidator(BaseNeuron):
         bt.logging.info("Initiating validator with default scores for each UID")
         self.scores = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
         bt.logging.info(f"Validation weights have been initialized: {self.scores}")
+    
+    def update_games():
+        pass 
+        # Logic to pull in from API and updates games db
+    
+    def evaluate_miner(self, minerId):
+        # Fetch data from predictions table for the specified minerId
+        cursor.execute('''
+        SELECT predictions.id, predictions.teamGameId, predictions.predictedOutcome, teamGame.outcome
+        FROM predictions
+        JOIN teamGame ON predictions.teamGameId = teamGame.id
+        WHERE predictions.minerId = ?
+        ''', (miner_id,))
+        
+        # Update the predictionCorrect column based on the comparison
+        for row in cursor.fetchall():
+            prediction_id, team_game_id, predicted_outcome, actual_outcome = row
+            prediction_correct = 1 if predicted_outcome == actual_outcome else 0
+            cursor.execute('''
+            UPDATE predictions
+            SET predictionCorrect = ?
+            WHERE id = ?
+            ''', (prediction_correct, prediction_id))
+
+        # Commit the changes
+        conn.commit()
+        conn.close()
 
         
     def save_state(self):
@@ -492,3 +557,6 @@ class BettensorValidator(BaseNeuron):
         bt.logging.trace(f"Sending query to the following hotkeys: {list_of_hotkeys}")
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
+    
+    def get_games():
+        pass # func to get game data

@@ -62,7 +62,7 @@ class TeamGamePrediction(BaseModel):
     minerId : UUID # id of the miner (coldkey/hotkey) that made the prediction
     predictionDate : str # TODO: Match timestamp format
     predictedOutcome : str
-    wager: int
+    wager: float
     
     
 
@@ -73,6 +73,8 @@ class TeamGame(BaseModel):
     id : UUID # id of the team game
     teamA : str
     teamB : str
+    teamAodds: float
+    teamBodds: float
     sport : str
     league : str
     eventDescription : str
@@ -103,9 +105,52 @@ class Prediction(bt.Synapse, BaseModel):
 
 class GameData(bt.Synapse, BaseModel):
     '''
-    This class defines the synapse object for a game data, consisting of a dictionary of TeamGameobjects with a UUID as key.
+    This class defines the synapse object for game data, consisting of a dictionary of TeamGame object with a UUID as key.
     '''
     metadata : Metadata
     gamedata_dict: typing.Dict[UUID, TeamGame]
+
+    def __init__(self, current_timestamp, db_url):
+        super().__init__()
+        self.current_timestamp = current_timestamp
+        self.db_path = db_path
+        self.gamedata_dict = self.fetch_game_data()
+    
+    def fetch_game_data(self) -> typing.Dict[UUID, TeamGame]:
+        connection = sqlite3.connect(self.db_path)
+        cursor = connection.cursor()
+    
+        query = """
+            SELECT id, teamA, teamB, sport, league, eventDescription, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome 
+            FROM game_data
+            WHERE eventStartDate > ?
+            """
+            
+            cursor.execute(query, (self.current_timestamp,))
+            rows = cursor.fetchall()
+
+            gamedata_dict = {}
+            for row in rows:
+                team_game = TeamGame(
+                    id=UUID(row[0]),
+                    teamA=row[1],
+                    teamB=row[2],
+                    sport=row[3],
+                    league=row[4],
+                    eventDescription=row[5],
+                    externalId=row[6],
+                    createDate=row[7],
+                    lastUpdateDate=row[8],
+                    eventStartDate=row[9],
+                    active=bool(row[10]),
+                    outcome=row[11]
+                )
+                gamedata_dict[UUID(row[0])] = team_game
+
+        connection.close()
+        return gamedata_dict
+
+
+
     def deserialize(self) -> typing.Dict[UUID, TeamGame]:
         return self.gamedata_dict, self.metadata
