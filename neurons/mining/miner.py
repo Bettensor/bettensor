@@ -39,10 +39,14 @@ sys.path.append(great_grandparent_dir)
 # Optional: Print sys.path to verify the directories have been added
 print(sys.path)
 
+import datetime
+import sqlite3
 import json
 import time
 import typing
 from uuid import UUID
+import uuid
+from bettensor.protocol import TeamGamePrediction
 import bittensor as bt
 
 # Bittensor Miner Template:
@@ -50,6 +54,7 @@ import bettensor
 
 # import base miner class which takes care of most of the boilerplate
 from bettensor.base.miner import BaseMinerNeuron
+from bittensor import logging, synapse
 
 
 class Miner(BaseMinerNeuron):
@@ -63,43 +68,62 @@ class Miner(BaseMinerNeuron):
 
     def __init__(self, config=None):
         super(Miner, self).__init__(config=config)
+        
+        try:
+            db = sqlite3.connect('./miner.db')
+        except:
+            bt.logging.error("Failed to connect to local database")
+            raise Exception("Failed to connect to local database")
+        
+        cursor = db.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS predictions (gameId TEXT, dateTime TEXT, wager INTEGER, predictedOutcome INTEGER)''')
+        games_dict = {}
+        predictions_dict = {}
+        cash = 1000
 
-        # TODO(developer): Anything specific to your use case you can do here
+        try:
+            db = sqlite3.connect('./miner.db')
+        except:
+            bt.logging.error("Failed to connect to local database")
+            raise Exception("Failed to connect to local database")
+        
+        cursor = db.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS predictions (gameId TEXT, dateTime TEXT, wager INTEGER, predictedOutcome INTEGER)''')
+        games_dict = {}
+        predictions_dict = {}
+        cash = 1000
+
 
     async def forward(
-        self, synapse: bettensor.protocol.Dummy
-    ) -> bettensor.protocol.Dummy:
+        self, gamedata: bettensor.protocol.GameData, games_dict, predictions_dict
+    ) -> bettensor.protocol.Prediction:
         """
         Takes an incoming synapse of game data, and runs CLI for user to submit predictions. Submits UUID's of predicted games to chain, waits until acceptance, then returns synapse with prediction data to validator. If games have already been predicted and committed to chain, 
         return synapse to any "new" validator( one that has not yet communicated with this miner about recent games). If all validators have already been notified, wait until a new game is available. (this logic will happen above the forward function, we don't want to call it 
         repeatedly if we've already submitted predictions for the current period).
 
         Args:
-            synapse : The synapse object containing the game data.
+            GameData : The synapse object containing the game data.
 
         Returns:
             synapse : Synapse object with prediction data. Must be compared to on chain data before acceptance (Validator side)
         """
 
-        # Manual Prediction Implementation
 
+        deserialized_synapse = bettensor.protocol.GameData.deserialize(synapse.data)
 
-        # TODO : Check chain for available games that have no prediction submitted, yet. If miner has predicted all available games, then it should wait until a new game is available.
+        for game in deserialized_synapse.data:
+            if game not in bettensor.protocol.GameData.games_dict:
+                bettensor.protocol.GameData.games_dict[game[0]] = game
+        
 
-        # TODO : Notification System? Send an email/text/discord when new games are available.
+        response = bettensor.protocol.Prediction()
+        
 
-        # TODO : Deserialize Synapse and create dictionary of games.
+        return response
 
-        # TODO : CLI method to step through available games and submit predictions
-
-        # TODO : Submit Games for Validation. Commit UUID's of Games to Chain so that miner can only make one prediction per game.
-
-       
-        # Auto Prediction Implementation 
-        # Perhaps here we train a small neural network model to take in additional data (team/player stats, historical results, etc.) and return a prediction. At the very least, we should eventually provide some infrastructure for miners
-        # to use a model if they'd like to.
-
-        pass
+        
+        
 
     async def blacklist(
         self, synapse: bettensor.protocol.Dummy
@@ -191,23 +215,21 @@ class Miner(BaseMinerNeuron):
         return prirority
 
 
-async def manual_prediction(gamedata_dict: typing.Dict[UUID, json.JSONDecoder]) -> bettensor.protocol.Prediction:
-    # TODO : CLI method to step through available games and submit predictions
 
-    
-    
-
-
-
-    
-    # TODO : submit predictions to chain and wait for confirmation
-
-    # TODO : return prediction to validator
-
+def reset_daily_cash():
     pass
+        
 
-    
 
+
+def construct_prediction_json(prediction_dict: typing.Dict[UUID, TeamGamePrediction]) -> json.JSONDecoder:
+    '''
+    Method to take a dictionary of predictions and construct and validate a json object 
+    that gets sent to validators
+    '''
+   
+    prediction_json = json.dumps(prediction_dict)
+    return prediction_json
 
 
 
