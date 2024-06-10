@@ -126,12 +126,12 @@ class GameData(bt.Synapse, BaseModel):
             WHERE eventStartDate > ?
             """
             
-            cursor.execute(query, (self.current_timestamp,))
-            rows = cursor.fetchall()
+        cursor.execute(query, (self.current_timestamp,))
+        rows = cursor.fetchall()
 
-            gamedata_dict = {}
-            for row in rows:
-                team_game = TeamGame(
+        gamedata_dict = {}
+        for row in rows:
+            team_game = TeamGame(
                     id=UUID(row[0]),
                     teamA=row[1],
                     teamB=row[2],
@@ -145,7 +145,7 @@ class GameData(bt.Synapse, BaseModel):
                     active=bool(row[10]),
                     outcome=row[11]
                 )
-                gamedata_dict[UUID(row[0])] = team_game
+            gamedata_dict[UUID(row[0])] = team_game
 
         connection.close()
         return gamedata_dict

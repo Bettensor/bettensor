@@ -17,6 +17,7 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+import secrets
 
 import time
 import sys
@@ -44,18 +45,20 @@ print(sys.path)
 
 # Bittensor
 import bittensor as bt
-
+import copy
+from copy import deepcopy
 # Bittensor Validator Template:
 import bettensor
 from bettensor.validator import forward
 from uuid import UUID
+from argparse import ArgumentParser
 
 # import base validator class which takes care of most of the boilerplate
 from bettensor.base.validator import BaseValidatorNeuron
 # need to import the right protocol(s) here
-from bettensor.validaor.bettensor_validator import BettensorValidator
-from bettensor import protocol.
-from update_games import update_games
+from bettensor.validator.bettensor_validator import BettensorValidator
+from bettensor import protocol
+#from update_games import update_games
 
 
 def main(validator: BettensorValidator):
@@ -80,8 +83,9 @@ def main(validator: BettensorValidator):
                 validator.save_state()
 
             if validator.step % 20 == 0:
+                pass
                 # Update local knowledge of blacklisted miner hotkeys
-                validator.check_blacklisted_miner_hotkeys()
+                #validator.check_blacklisted_miner_hotkeys()
 
             # Get all axons
             all_axons = validator.metagraph.axons
@@ -115,7 +119,6 @@ def main(validator: BettensorValidator):
             if not uids_to_query:
                 bt.logging.warning(f"UIDs to query is empty: {uids_to_query}")
 
-            bt.logging.debug(f"Serving query: {query}")
 
             # Broadcast query to valid Axons
             nonce = secrets.token_hex(24)
@@ -207,7 +210,8 @@ def main(validator: BettensorValidator):
             # Sleep for a duration equivalent to the block time (i.e., time between successive blocks).
             bt.logging.debug("Sleeping for: 18 seconds")
             time.sleep(18)
-
+        except TimeoutError as e:
+            bt.logging.debug("Validator timed out")
     
 
 # The main function parses the configuration and runs the validator.
@@ -221,14 +225,19 @@ if __name__ == "__main__":
         default=128,
         help="Sets the value for the number of targets to query at once",
     )
-
+    parser.add_argument(
+        "--load_state",
+        type=str,
+        default="True",
+        help="WARNING: Setting this value to False clears the old state.",
+    )
     validator = BettensorValidator(parser=parser)
 
     if (
-        not subnet_validator.apply_config(
+        not validator.apply_config(
             bt_classes=[bt.subtensor, bt.logging, bt.wallet]
         )
-        or not subnet_validator.initialize_neuron()
+        or not validator.initialize_neuron()
     ):
         bt.logging.error("Unable to initialize Validator. Exiting.")
         sys.exit()

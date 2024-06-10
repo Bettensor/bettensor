@@ -2,13 +2,32 @@ from argparse import ArgumentParser
 import bittensor as bt
 import json
 from typing import Tuple
-from base import BaseNeuron
 import sqlite3
+import os
+import sys
+import torch
+from copy import deepcopy
+import copy
+# Get the current file's directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
 
+# Get the parent directory
+parent_dir = os.path.dirname(current_dir)
 
+# Get the grandparent directory
+grandparent_dir = os.path.dirname(parent_dir)
 
+# Get the great grandparent directory
+great_grandparent_dir = os.path.dirname(grandparent_dir)
+
+# Add parent, grandparent, and great grandparent directories to sys.path
+sys.path.append(parent_dir)
+sys.path.append(grandparent_dir)
+sys.path.append(great_grandparent_dir)
+from pathlib import Path
+from base.neuron import BaseNeuron
+from os import path, rename
 class BettensorValidator(BaseNeuron):
-
     def __init__(self, parser: ArgumentParser):
         super().__init__(parser=parser, profile="validator")
 
@@ -125,7 +144,6 @@ class BettensorValidator(BaseNeuron):
 
             if self.load_validator_state:
                 self.load_state()
-                self.load_miner_state()
             else:
                 self.init_default_scores()
 
@@ -147,104 +165,113 @@ class BettensorValidator(BaseNeuron):
         return parser.parse_args()
 
     def calculate_total_wager(c, minerId, event_start_date, exclude_id=None):
-    query = '''
-        SELECT wager FROM predictions WHERE minerId = ? AND DATE(eventStartDate) = DATE(?)
-    '''
-    params = (minerId, event_start_date)
+        query = '''
+            SELECT wager FROM predictions WHERE minerId = ? AND DATE(eventStartDate) = DATE(?)
+        '''
+        params = (minerId, event_start_date)
     
-    if exclude_id:
-        query += ' AND teamGameId != ?'
-        params += (exclude_id,)
+        if exclude_id:
+            query += ' AND teamGameId != ?'
+            params += (exclude_id,)
 
-    c.execute(query, params)
-    wagers = c.fetchall()
-    total_wager = sum([w[0] for w in wagers])
+        c.execute(query, params)
+        wagers = c.fetchall()
+        total_wager = sum([w[0] for w in wagers])
     
-    return total_wager
+        return total_wager
 
+    def validator_validation(self, metagraph, wallet, subtensor) -> bool:
+        """This method validates the validator has registered correctly"""
+        if wallet.hotkey.ss58_address not in metagraph.hotkeys:
+            bt.logging.error(
+                f"Your validator: {wallet} is not registered to chain connection: {subtensor}. Run btcli register and try again"
+            )
+            return False
+
+        return True
     def insert_or_update_predictions(self, processed_uids, predictions):
-    """
-    Updates database with new predictions
-    Accepts:
-        TeamGamePrediction object
-    """
-    conn = connect_db()
-    c = conn.cursor()
-    current_time = datetime.now().isoformat()
+        """
+        Updates database with new predictions
+        Accepts:
+            TeamGamePrediction object
+        """
+        conn = connect_db()
+        c = conn.cursor()
+        current_time = datetime.now().isoformat()
 
-    for i, res in enumerate(predictions):
-        hotkey = self.metagraph.hotkeys[processed_uids[i]]
+        for i, res in enumerate(predictions):
+            hotkey = self.metagraph.hotkeys[processed_uids[i]]
 
-        pred_id = res["pred_id"]
-        teamGameId = res["teamGameId"]
-        sport = res["sport"]
-        minerId = hotkey
-        league = res["league"]
-        predictionDate = res["predictionDate"]
-        predictedOutcome = res["predictedOutcome"]
-        wager = res["wager"]
+            pred_id = res["pred_id"]
+            teamGameId = res["teamGameId"]
+            sport = res["sport"]
+            minerId = hotkey
+            league = res["league"]
+            predictionDate = res["predictionDate"]
+            predictedOutcome = res["predictedOutcome"]
+            wager = res["wager"]
 
-        # Check if the game has already started; exclude prediction if it has
-        c.execute('''
-            SELECT eventStartDate FROM teamGame WHERE id = ? AND sport = ? AND league = ?
-        ''', (teamGameId, sport, league))
-        
-        row = c.fetchone()
-        if row:
-            event_start_date = row[0]
-            if current_time >= event_start_date:
-                print(f"Prediction not inserted/updated: Game {teamGameId} has already started.")
-                continue
-        
-        # Check if the prediction already exists; update prediction if it does
-        c.execute('''
-            SELECT id, wager FROM predictions WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
-        ''', (teamGameId, sport, minerId, league))
-        
-        existing_prediction = c.fetchone()
-        
-        if existing_prediction:
-            existing_id, existing_wager = existing_prediction
-            total_wager = calculate_total_wager(c, minerId, event_start_date, exclude_id=teamGameId)
-            
-            # Add the new wager and subtract the existing one
-            total_wager = total_wager - existing_wager + wager
-            
-            if total_wager > 1000:
-                print(f"Error: Total wager for the date exceeds $1000.")
-                continue
-            
-            # Update the existing prediction
+            # Check if the game has already started; exclude prediction if it has
             c.execute('''
-                UPDATE predictions
-                SET predictionDate = ?, predictedOutcome = ?, wager = ?
-                WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
-            ''', (predictionDate, predictedOutcome, wager, teamGameId, sport, minerId, league))
-        else:
-            total_wager = calculate_total_wager(c, minerId, event_start_date)
+                SELECT eventStartDate FROM teamGame WHERE id = ? AND sport = ? AND league = ?
+            ''', (teamGameId, sport, league))
             
-            # Add the new wager
-            total_wager += wager
+            row = c.fetchone()
+            if row:
+                event_start_date = row[0]
+                if current_time >= event_start_date:
+                    print(f"Prediction not inserted/updated: Game {teamGameId} has already started.")
+                    continue
             
-            if total_wager > 1000:
-                print(f"Error: Total wager for the date exceeds $1000.")
-                continue
-
-            # Insert new prediction
+            # Check if the prediction already exists; update prediction if it does
             c.execute('''
-                INSERT INTO predictions (id, teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (str(uuid4()), teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager))
-    
-    # Commit changes, close the connection
-    conn.commit()
-    conn.close()
+                SELECT id, wager FROM predictions WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
+            ''', (teamGameId, sport, minerId, league))
+            
+            existing_prediction = c.fetchone()
+            
+            if existing_prediction:
+                existing_id, existing_wager = existing_prediction
+                total_wager = calculate_total_wager(c, minerId, event_start_date, exclude_id=teamGameId)
+                
+                # Add the new wager and subtract the existing one
+                total_wager = total_wager - existing_wager + wager
+                
+                if total_wager > 1000:
+                    print(f"Error: Total wager for the date exceeds $1000.")
+                    continue
+                
+                # Update the existing prediction
+                c.execute('''
+                    UPDATE predictions
+                    SET predictionDate = ?, predictedOutcome = ?, wager = ?
+                    WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
+                ''', (predictionDate, predictedOutcome, wager, teamGameId, sport, minerId, league))
+            else:
+                total_wager = calculate_total_wager(c, minerId, event_start_date)
+                
+                # Add the new wager
+                total_wager += wager
+                
+                if total_wager > 1000:
+                    print(f"Error: Total wager for the date exceeds $1000.")
+                    continue
+
+                # Insert new prediction
+                c.execute('''
+                    INSERT INTO predictions (id, teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (str(uuid4()), teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager))
+        
+        # Commit changes, close the connection
+        conn.commit()
+        conn.close()
+        return sqlite3.connect('predictions.db')
 
     
     def connect_db():
         return sqlite3.connect('predictions.db')
 
-    
     def create_table():
         conn = connect_db()
         c = conn.cursor()
@@ -317,7 +344,6 @@ class BettensorValidator(BaseNeuron):
     def update_games():
         pass 
         # Logic to pull in from API and updates games db
-    
     def evaluate_miner(self, minerId):
         # Fetch data from predictions table for the specified minerId
         cursor.execute('''

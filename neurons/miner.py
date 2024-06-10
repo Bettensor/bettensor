@@ -16,6 +16,28 @@
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
+import sys
+import os
+
+# Get the current file's directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Get the parent directory
+parent_dir = os.path.dirname(current_dir)
+
+# Get the grandparent directory
+grandparent_dir = os.path.dirname(parent_dir)
+
+# Get the great grandparent directory
+great_grandparent_dir = os.path.dirname(grandparent_dir)
+
+# Add parent, grandparent, and great grandparent directories to sys.path
+sys.path.append(parent_dir)
+sys.path.append(grandparent_dir)
+sys.path.append(great_grandparent_dir)
+
+# Optional: Print sys.path to verify the directories have been added
+print(sys.path)
 
 import json
 import time
