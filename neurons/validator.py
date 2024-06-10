@@ -18,7 +18,6 @@
 # DEALINGS IN THE SOFTWARE.
 
 import secrets
-
 import time
 import sys
 import os
@@ -42,6 +41,7 @@ sys.path.append(great_grandparent_dir)
 
 # Optional: Print sys.path to verify the directories have been added
 print(sys.path)
+from bettensor.protocol import GameData
 
 # Bittensor
 import bittensor as bt
@@ -52,14 +52,14 @@ import bettensor
 from bettensor.validator import forward
 from uuid import UUID
 from argparse import ArgumentParser
-
+import sqlite3
 # import base validator class which takes care of most of the boilerplate
 from bettensor.base.validator import BaseValidatorNeuron
 # need to import the right protocol(s) here
 from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor import protocol
 #from update_games import update_games
-
+from datetime import datetime
 
 def main(validator: BettensorValidator):
     
@@ -124,10 +124,12 @@ def main(validator: BettensorValidator):
             nonce = secrets.token_hex(24)
             timestamp = str(int(time.time()))
             data_to_sign = f'{nonce}{timestamp}'
-            
+            current_timestamp = datetime.now().isoformat()
+            db_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'games.db')
+
             responses = validator.dendrite.query(
                 uids_to_query,
-                GameData(current_timestamp, db_path),
+                GameData.create(current_timestamp=current_timestamp, db_path=db_path),
                 timeout=validator.timeout,
                 deserialize=True,
             )
