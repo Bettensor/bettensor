@@ -59,7 +59,18 @@ class Miner(BaseMinerNeuron):
         predictions_dict = {}
         cash = 1000
 
-        # TODO(developer): Anything specific to your use case you can do here
+        try:
+            db = sqlite3.connect('./miner.db')
+        except:
+            bt.logging.error("Failed to connect to local database")
+            raise Exception("Failed to connect to local database")
+        
+        cursor = db.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS predictions (gameId TEXT, dateTime TEXT, wager INTEGER, predictedOutcome INTEGER)''')
+        games_dict = {}
+        predictions_dict = {}
+        cash = 1000
+
 
     async def forward(
         self, gamedata: bettensor.protocol.GameData, games_dict, predictions_dict
@@ -76,37 +87,21 @@ class Miner(BaseMinerNeuron):
             synapse : Synapse object with prediction data. Must be compared to on chain data before acceptance (Validator side)
         """
 
-        # Manual Prediction Implementation
 
+        deserialized_synapse = bettensor.protocol.GameData.deserialize(synapse.data)
 
-        # TODO : 
-
-        # TODO : Notification System? Send an email/text/discord when new games are available.
-
-        # TODO : Deserialize Synapse and update games_dict with new games
-        
-        for game in synapse.data:
-            if game not in games_dict:
-                games_dict[game[0]] = game
+        for game in deserialized_synapse.data:
+            if game not in bettensor.protocol.GameData.games_dict:
+                bettensor.protocol.GameData.games_dict[game[0]] = game
         
 
-        # TODO : CLI method to step through available games and submit predictions
-        # This should only run when the user calls it, otherwise we will use whatever is in the predictions_dict currently.
+        response = bettensor.protocol.Prediction()
         
 
-
-        # TODO : 
-
-
-        # TODO : Submit Games for Validation. Commit UUID's of Games to Chain so that miner can only make one prediction per game.
+        return response
 
         
-
-        #  TODO: Auto Prediction Implementation 
-        # Perhaps here we train a small neural network model to take in additional data (team/player stats, historical results, etc.) and return a prediction. At the very least, we should eventually provide some infrastructure for miners
-        # to use a model if they'd like to.
-
-        pass
+        
 
     async def blacklist(
         self, synapse: bettensor.protocol.Dummy
