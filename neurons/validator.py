@@ -125,7 +125,10 @@ def main(validator: BettensorValidator):
             timestamp = str(int(time.time()))
             data_to_sign = f'{nonce}{timestamp}'
             current_timestamp = datetime.now().isoformat()
-            db_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'games.db')
+            db_path = '/root/bettensor/bettensor/utils/games.db' #os.path.join(os.path.dirname(__file__), 'bettensor', 'utils', 'games.db')
+            print(f"Attempting to open database at: {db_path}")
+            if not os.path.exists(db_path):
+                            raise FileNotFoundError(f"Database file not found at path: {db_path}")
 
             responses = validator.dendrite.query(
                 uids_to_query,
