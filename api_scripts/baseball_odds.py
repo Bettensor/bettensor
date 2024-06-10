@@ -1,12 +1,15 @@
 import requests
 import json
-import time
+from datetime import datetime, timedelta
+
 
 def get_baseball_data():
     url = "https://api-baseball.p.rapidapi.com/games"
-
+    current_date = datetime.now().date()
+    tomorrows_date = current_date + timedelta(days=1)
+    tomorrows_date_formatted = tomorrows_date.strftime('%Y-%m-%d')
     # Will change these to be inputs to the function, just testing for now
-    querystring = {"league": "1", "season": "2024", "date": "2024-05-29"}
+    querystring = {"league": "1", "season": "2024", "date": tomorrows_date_formatted}
 
     # Yeah I put my API key in our github repo, what about it?
     headers = {
@@ -27,7 +30,7 @@ def get_baseball_data():
     } for i in games['response']]
     
     # save data to a json file, may not do this in the future
-    with open('games_data.json', 'w') as f:
+    with open('games_data.json', 'a') as f:
         json.dump(games_list, f, indent=4)
     return games_list
 
@@ -70,28 +73,31 @@ def get_game_odds(game_id):
                             total_away_odds += away_odds
                             count += 1
         # Sometimes there isnt data for a team, so I calculate it here. Some other times the data is absurd
-        # and this seems to happen more often when some data is missing. Maybe we'll excluse missing values
+        # and this seems to happen more often when some data is missing. Maybe we'll exclude missing values
         # also, betting lines shift pretty frequently. How often do we want to update the lines?
-        if home_odds is None:
-            home_odds = calculate_missing_odds(away_odds)
-            print('ran')
-            print(home_odds)
-        if away_odds is None:
-            away_odds = calculate_missing_odds(home_odds)
+        if home_odds is None or away_odds is None:
+            # API has issue that returns incorrect odds, assigning one team a ~99% chance of winning. Ignore game in that case.
+            count = 0
+        #elif home_odds is None:
+        #    home_odds = calculate_missing_odds(away_odds)
+        #    print('ran')
+        #    print(home_odds)
+        #elif away_odds is None:
+        #    away_odds = calculate_missing_odds(home_odds)
 
         if count > 0:
             avg_home_odds = total_home_odds / count
             avg_away_odds = total_away_odds / count
             return {
-                "average_home_odds": round(avg_home_odds, 2), 
-                "average_away_odds": round(avg_away_odds, 2)
+                "home": round(avg_home_odds, 2), 
+                "away": round(avg_away_odds, 2)
             }
     
-    return {"average_home_odds": None, "average_away_odds": None}
+    return {"home": None, "away": None}
 
 def calculate_missing_odds(known_odds):
     # This does not work for games where there can be a Tie
-    # Calculate the probability of the away team winning
+    # Calculate the probability of a team winning when only one teams odds are given
     probability_known_winning = 1 / known_odds
     
     probability_missing_winning = 1 - probability_known_winning
