@@ -113,10 +113,10 @@ class BettensorMiner(BaseNeuron):
         except sqlite3.Error as e:
             bt.logging.error(f"Failed to initialize local database: {e}")
             raise Exception("Failed to initialize local database")
-
-    def get_cursor(self):
+    @classmethod
+    def get_cursor(cls):
         try:
-            db = sqlite3.connect(self.db_path)
+            db = sqlite3.connect(cls.db_path)
             return db, db.cursor()
         except sqlite3.Error as e:
             bt.logging.error(f"Failed to connect to local database: {e}")

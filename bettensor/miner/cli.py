@@ -1,19 +1,5 @@
-# The MIT License (MIT)
-# Copyright © 2024 geardici
 
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
+import signal
 import bittensor as bt
 import rich
 import prompt_toolkit
@@ -68,6 +54,7 @@ predictions = {
         "tieOdds": "0",
         "prediction": "Real Madrid", 
         "wager_amount": 100,
+        "outcome": "",
         "can_overwrite": False
     },
     "1002": {
@@ -82,6 +69,7 @@ predictions = {
         "tieOdds": "0",
         "prediction": "Clippers", 
         "wager_amount": 150,
+        "outcome": "",
         "can_overwrite": True
     }
 }
@@ -209,21 +197,22 @@ class PredictionsList(InteractiveTable):
         max_prediction_len = max(max(len(pred['prediction']) for pred in all_predictions.values()), len('Prediction'))
         max_status_len = max(max(len('Overwritable') if pred['can_overwrite'] else len('Final') for pred in all_predictions.values()), len('Status'))
         max_wager_amount_len = max(max(len(str(pred.get('wager_amount', ''))) for pred in all_predictions.values()), len('Wager Amount'))
+        max_outcome_len = max(max(len(pred.get('outcome', '')) for pred in all_predictions.values()), len('Outcome'))
 
         # Define the header with calculated widths
         self.header = Label(
-            f"  {'Sport':<{max_sport_len}} | {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Start Time':<{max_startTime_len}} | {'Team A Odds':<{max_teamAOdds_len}} | {'Team B Odds':<{max_teamBOdds_len}} | {'Tie Odds':<{max_tieOdds_len}} | {'Prediction':<{max_prediction_len}} | {'Status':<{max_status_len}} | {'Wager Amount':<{max_wager_amount_len}} ",
+            f"  {'Sport':<{max_sport_len}} | {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Start Time':<{max_startTime_len}} | {'Team A Odds':<{max_teamAOdds_len}} | {'Team B Odds':<{max_teamBOdds_len}} | {'Tie Odds':<{max_tieOdds_len}} | {'Prediction':<{max_prediction_len}} | {'Status':<{max_status_len}} | {'Wager Amount':<{max_wager_amount_len}} | {'Outcome':<{max_outcome_len}} ",
             style="bold"
         )
 
         # Generate options for the scrollable list
         self.options = [
-            f"{pred['sport']:<{max_sport_len}} | {pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {pred['startTime']:<{max_startTime_len}} | {pred.get('teamAOdds', ''):<{max_teamAOdds_len}} | {pred.get('teamBOdds', ''):<{max_teamBOdds_len}} | {pred.get('tieOdds', ''):<{max_tieOdds_len}} | {pred['prediction']:<{max_prediction_len}} | {'Overwritable' if pred['can_overwrite'] else 'Final':<{max_status_len}} | {str(pred.get('wager_amount', '')):<{max_wager_amount_len}}"
+            f"{pred['sport']:<{max_sport_len}} | {pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {pred['startTime']:<{max_startTime_len}} | {pred.get('teamAOdds', ''):<{max_teamAOdds_len}} | {pred.get('teamBOdds', ''):<{max_teamBOdds_len}} | {pred.get('tieOdds', ''):<{max_tieOdds_len}} | {pred['prediction']:<{max_prediction_len}} | {'Overwritable' if pred['can_overwrite'] else 'Final':<{max_status_len}} | {str(pred.get('wager_amount', '')):<{max_wager_amount_len}} | {pred.get('outcome', ''):<{max_outcome_len}}"
             for pred in predictions.values()
         ]
         self.options.append("Unsubmitted Predictions:")
         self.options.extend([
-            f"{pred['sport']:<{max_sport_len}} | {pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {pred['startTime']:<{max_startTime_len}} | {pred.get('teamAOdds', ''):<{max_teamAOdds_len}} | {pred.get('teamBOdds', ''):<{max_teamBOdds_len}} | {pred.get('tieOdds', ''):<{max_tieOdds_len}} | {pred['prediction']:<{max_prediction_len}} | {'Overwritable' if pred['can_overwrite'] else 'Final':<{max_status_len}} | {str(pred.get('wager_amount', '')):<{max_wager_amount_len}}"
+            f"{pred['sport']:<{max_sport_len}} | {pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {pred['startTime']:<{max_startTime_len}} | {pred.get('teamAOdds', ''):<{max_teamAOdds_len}} | {pred.get('teamBOdds', ''):<{max_teamBOdds_len}} | {pred.get('tieOdds', ''):<{max_tieOdds_len}} | {pred['prediction']:<{max_prediction_len}} | {'Overwritable' if pred['can_overwrite'] else 'Final':<{max_status_len}} | {str(pred.get('wager_amount', '')):<{max_wager_amount_len}} | {pred.get('outcome', ''):<{max_outcome_len}}"
             for pred in self.app.unsubmitted_predictions.values()
         ])
         self.options.append("Go Back")  # Add "Go Back" option
@@ -410,7 +399,8 @@ class WagerConfirm(InteractiveTable):
                     "tieOdds": self.game_data['tieOdds'],
                     "prediction": self.selected_team,
                     "wager_amount": wager_amount,
-                    "can_overwrite": True
+                    "can_overwrite": True,
+                    "outcome": ""
                 }
                 self.app.miner_cash -= wager_amount  # Deduct wager amount from miner's cash
                 self.confirmation_message = "Wager confirmed! Returning to previous menu..."
@@ -495,14 +485,46 @@ def _(event):
 
 @bindings.add('q')
 def _(event):
-    event.app.exit()
+    custom_app = event.app.custom_app
+    graceful_shutdown(custom_app)
 
 def submit_predictions(miner: BettensorMiner, unsubmitted_predictions):
     for prediction in unsubmitted_predictions:
-        print(prediction)
+        try:
+            db, cursor = miner.get_cursor()
+            cursor.execute('''INSERT INTO predictions (sport, teamA, teamB, startTime, predictionTime, teamAOdds, teamBOdds, tieOdds, prediction, wager_amount, can_overwrite, outcome) 
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                           (prediction['sport'], 
+                            prediction['teamA'], 
+                            prediction['teamB'], 
+                            prediction['startTime'], 
+                            prediction['predictionTime'], 
+                            prediction['teamAOdds'], 
+                            prediction['teamBOdds'], 
+                            prediction['tieOdds'], 
+                            prediction['prediction'], 
+                            prediction['wager_amount'], 
+                            prediction['can_overwrite'],
+                            prediction['outcome']))
+            db.commit()
+            db.close()
+        except Exception as e:
+            print(f"Failed to submit predictions: {e}")
+
+def graceful_shutdown(custom_app):
+    submit_predictions(custom_app.miner, custom_app.unsubmitted_predictions)
+    custom_app.app.exit()
+
+def signal_handler(signal, frame):
+    print("Signal received, shutting down gracefully...")
+    graceful_shutdown(app)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 class Application:
-    def __init__(self, predictions, games, miner_stats):
+    def __init__(self, predictions, games, miner_stats, miner: BettensorMiner):
+        self.miner = miner
         self.predictions = predictions
         self.unsubmitted_predictions = {}
         self.games = games
@@ -517,15 +539,17 @@ class Application:
         self.layout.container = new_view.box
 
     def run(self):
-        app = PTApplication(
+        self.app = PTApplication(
             layout=self.layout,
             key_bindings=bindings,
             full_screen=True,
             style=self.style  # Apply the global style
         )
-        app.custom_app = self
-        app.run()
+        self.app.custom_app = self
+        self.app.run()
 
+        
+#standalone run for testing , otherwise call from miner subprocess
 if __name__ == "__main__":
     app = Application(predictions, gameData, miner_stats)
     app.run()
