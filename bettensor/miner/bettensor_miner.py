@@ -8,7 +8,7 @@ import sqlite3
 from bettensor.base.neuron import BaseNeuron
 from bettensor.protocol import Metadata, GameData, Prediction, TeamGamePrediction
 from bettensor.miner import cli
-from bettensor import validate_miner_blacklist, validate_signature
+from bettensor.utils.sign_and_validate import verify_signature
 import datetime
 import os
 
@@ -302,7 +302,7 @@ class BettensorMiner(BaseNeuron):
 
         # Synapse signature verification
         data = f'{synapse.synapse_nonce}{synapse.synapse_timestamp}'
-        if not validate_signature(
+        if not verify_signature(
             hotkey=synapse.dendrite.hotkey,
             data=data,
             signature=synapse.synapse_signature,

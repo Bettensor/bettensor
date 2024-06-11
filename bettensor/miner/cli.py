@@ -1,4 +1,5 @@
 
+import argparse
 import signal
 import bittensor as bt
 import rich
@@ -14,7 +15,7 @@ from prompt_toolkit.application import Application as PTApplication
 import time  # Import time module for handling timeout
 import threading  # Import threading for non-blocking delay
 from prompt_toolkit.layout.containers import Window, HSplit
-from miner.bettensor_miner import BettensorMiner
+
 
 
 global_style = Style.from_dict({
@@ -488,10 +489,16 @@ def _(event):
     custom_app = event.app.custom_app
     graceful_shutdown(custom_app)
 
-def submit_predictions(miner: BettensorMiner, unsubmitted_predictions):
+def submit_predictions(miner, unsubmitted_predictions):
+    from bettensor_miner import BettensorMiner
+    try:
+        db, cursor = miner.get_cursor()
+    except Exception as e:
+        print(f"Failed to get cursor: {e}")
+        return
     for prediction in unsubmitted_predictions:
         try:
-            db, cursor = miner.get_cursor()
+            
             cursor.execute('''INSERT INTO predictions (sport, teamA, teamB, startTime, predictionTime, teamAOdds, teamBOdds, tieOdds, prediction, wager_amount, can_overwrite, outcome) 
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
                            (prediction['sport'], 
@@ -523,7 +530,7 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 class Application:
-    def __init__(self, predictions, games, miner_stats, miner: BettensorMiner):
+    def __init__(self, predictions, games, miner_stats, miner):
         self.miner = miner
         self.predictions = predictions
         self.unsubmitted_predictions = {}
@@ -548,8 +555,18 @@ class Application:
         self.app.custom_app = self
         self.app.run()
 
-        
-#standalone run for testing , otherwise call from miner subprocess
+
+class MockMiner:
+    def get_cursor(self):
+        return None, None
+
 if __name__ == "__main__":
-    app = Application(predictions, gameData, miner_stats)
+    try:
+        from bettensor_miner import BettensorMiner
+        miner = BettensorMiner(parser = args.parser)  # Create your specific miner instance
+    except Exception as e:
+        print(f"Failed to import BettensorMiner: {e}")
+        miner = MockMiner()  # Use mock miner for standalone testing
+
+    app = Application(predictions, gameData, miner_stats, miner)
     app.run()
