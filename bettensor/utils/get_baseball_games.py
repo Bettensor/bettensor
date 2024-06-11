@@ -86,6 +86,9 @@ class BaseballData:
 
             all_games.extend(games_list)
 
+        # Filter games with odds less than 1.05
+        all_games = [game for game in all_games if game['odds']['average_home_odds'] >= 1.05 and game['odds']['average_away_odds'] >= 1.05]
+
         # Save the extracted data to a JSON file
         with open('games_data.json', 'w') as f:
             json.dump(all_games, f, indent=4)
@@ -104,7 +107,7 @@ class BaseballData:
                 lastUpdateDate = createDate
                 eventStartDate = game['date']
                 active = 1 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 0
-                outcome = ""
+                outcome = "Unfinished"
 
                 game_data = (game_id, teamA, teamB, teamAodds, teamBodds, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome)
                 self.insert_into_database(game_data)
@@ -160,4 +163,3 @@ class BaseballData:
                 return {"average_home_odds": avg_home_odds, "average_away_odds": avg_away_odds}
         
         return {"average_home_odds": None, "average_away_odds": None}
-
