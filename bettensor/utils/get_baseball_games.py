@@ -2,7 +2,8 @@ import requests
 import json
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from dateutil import parser
 import sqlite3
 
 class BaseballData:
@@ -86,7 +87,7 @@ class BaseballData:
             externalId = game['game_id']
             createDate = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
             lastUpdateDate = createDate
-            eventStartDate = self.fix_iso_format(game['date'])
+            eventStartDate = game['date']
             active = 1 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 0
             outcome = ""
 
@@ -140,3 +141,4 @@ class BaseballData:
                 return {"average_home_odds": avg_home_odds, "average_away_odds": avg_away_odds}
         
         return {"average_home_odds": None, "average_away_odds": None}
+
