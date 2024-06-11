@@ -77,7 +77,6 @@ class TeamGame(BaseModel):
     teamBodds: float
     sport : str
     league : str
-    eventDescription : str
     externalId : str # external id of the team game
     createDate : str # TODO: Match timestamp format
     lastUpdateDate : str # TODO: Match timestamp format 
