@@ -57,18 +57,33 @@ class BaseballData:
                 "X-RapidAPI-Host": self.api_host
             }
 
-            response = requests.get(url, headers=headers, params=querystring)
-            response.raise_for_status()  # Ensure we handle HTTP errors properly
-            games = response.json()
+            try:
+                response = requests.get(url, headers=headers, params=querystring)
+                response.raise_for_status()  # Ensure we handle HTTP errors properly
+                games = response.json()
+            except requests.exceptions.RequestException as e:
+                print(f"HTTP Request failed: {e}")
+                continue  # Skip to the next date if request fails
+            except json.JSONDecodeError as e:
+                print(f"JSON Decode Error: {e}")
+                continue  # Skip to the next date if JSON parsing fails
 
-            games_list = [{
-                "home": i['teams']['home']['name'],
-                "away": i['teams']['away']['name'],
-                "game_id": i['id'],
-                "date": i['date'],
-                "odds": self.get_game_odds(i['id'])  # Get averaged odds for each game
-            } for i in games['response']]
-            
+            if 'response' not in games:
+                print(f"Unexpected response format: {games}")
+                continue
+
+            try:
+                games_list = [{
+                    "home": i['teams']['home']['name'],
+                    "away": i['teams']['away']['name'],
+                    "game_id": i['id'],
+                    "date": i['date'],
+                    "odds": self.get_game_odds(i['id'])  # Get averaged odds for each game
+                } for i in games['response']]
+            except KeyError as e:
+                print(f"Key Error: {e} in game data: {i}")
+                continue  # Skip to the next date if key error occurs
+
             all_games.extend(games_list)
 
         # Save the extracted data to a JSON file
@@ -77,22 +92,26 @@ class BaseballData:
 
         # Insert the data into the database
         for game in all_games:
-            game_id = str(uuid.uuid4())
-            teamA = game['home']
-            teamB = game['away']
-            teamAodds = game['odds']['average_home_odds'] if game['odds']['average_home_odds'] is not None else 0.0
-            teamBodds = game['odds']['average_away_odds'] if game['odds']['average_away_odds'] is not None else 0.0
-            sport = "baseball"
-            league = league
-            externalId = game['game_id']
-            createDate = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-            lastUpdateDate = createDate
-            eventStartDate = game['date']
-            active = 1 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 0
-            outcome = ""
+            try:
+                game_id = str(uuid.uuid4())
+                teamA = game['home']
+                teamB = game['away']
+                teamAodds = game['odds']['average_home_odds']
+                teamBodds = game['odds']['average_away_odds']
+                sport = "baseball"
+                externalId = game['game_id']
+                createDate = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+                lastUpdateDate = createDate
+                eventStartDate = game['date']
+                active = 1 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 0
+                outcome = ""
 
-            game_data = (game_id, teamA, teamB, teamAodds, teamBodds, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome)
-            self.insert_into_database(game_data)
+                game_data = (game_id, teamA, teamB, teamAodds, teamBodds, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome)
+                self.insert_into_database(game_data)
+            except KeyError as e:
+                print(f"Key Error during database insertion: {e} in game data: {game}")
+            except Exception as e:
+                print(f"Unexpected error during database insertion: {e}")
 
         return all_games
 
