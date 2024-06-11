@@ -41,34 +41,41 @@ class BaseballData:
         conn.commit()
         conn.close()
 
-    def get_baseball_data(self, league="1", season="2024", date="2024-05-29"):
-        url = "https://api-baseball.p.rapidapi.com/games"
+    def get_baseball_data(self, league="1", season="2024"):
+        dates = [datetime.utcnow().date() + timedelta(days=i) for i in range(3)]
+        all_games = []
 
-        querystring = {"league": league, "season": season, "date": date}
+        for date in dates:
+            date_str = date.strftime("%Y-%m-%d")
+            url = "https://api-baseball.p.rapidapi.com/games"
 
-        headers = {
-            "X-RapidAPI-Key": self.api_key,
-            "X-RapidAPI-Host": self.api_host
-        }
+            querystring = {"league": league, "season": season, "date": date_str}
 
-        response = requests.get(url, headers=headers, params=querystring)
-        response.raise_for_status()  # Ensure we handle HTTP errors properly
-        games = response.json()
+            headers = {
+                "X-RapidAPI-Key": self.api_key,
+                "X-RapidAPI-Host": self.api_host
+            }
 
-        games_list = [{
-            "home": i['teams']['home']['name'],
-            "away": i['teams']['away']['name'],
-            "game_id": i['id'],
-            "date": i['date'],
-            "odds": self.get_game_odds(i['id'])  # Get averaged odds for each game
-        } for i in games['response']]
-        
+            response = requests.get(url, headers=headers, params=querystring)
+            response.raise_for_status()  # Ensure we handle HTTP errors properly
+            games = response.json()
+
+            games_list = [{
+                "home": i['teams']['home']['name'],
+                "away": i['teams']['away']['name'],
+                "game_id": i['id'],
+                "date": i['date'],
+                "odds": self.get_game_odds(i['id'])  # Get averaged odds for each game
+            } for i in games['response']]
+            
+            all_games.extend(games_list)
+
         # Save the extracted data to a JSON file
         with open('games_data.json', 'w') as f:
-            json.dump(games_list, f, indent=4)
+            json.dump(all_games, f, indent=4)
 
         # Insert the data into the database
-        for game in games_list:
+        for game in all_games:
             game_id = str(uuid.uuid4())
             teamA = game['home']
             teamB = game['away']
@@ -77,16 +84,16 @@ class BaseballData:
             sport = "baseball"
             league = league
             externalId = game['game_id']
-            createDate = datetime.utcnow().isoformat()
+            createDate = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
             lastUpdateDate = createDate
-            eventStartDate = game['date']
-            active = 1 if datetime.fromisoformat(eventStartDate[:-1]) > datetime.utcnow() else 0
+            eventStartDate = self.fix_iso_format(game['date'])
+            active = 1 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 0
             outcome = ""
 
             game_data = (game_id, teamA, teamB, teamAodds, teamBodds, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome)
             self.insert_into_database(game_data)
 
-        return games_list
+        return all_games
 
     def get_game_odds(self, game_id):
         url = "https://api-baseball.p.rapidapi.com/odds"
