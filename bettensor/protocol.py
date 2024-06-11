@@ -17,52 +17,125 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+import datetime
 import json
 import typing
+import uuid
 import bittensor as bt
+import bettensor
+from bettensor.utils.sign_and_validate import create_signature
 from uuid import UUID
 import time
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import sqlite3
-# TODO(developer): Rewrite with your protocol definition.
 
-# This is the protocol for the dummy miner and validator.
-# It is a simple request-response protocol where the validator sends a request
-# to the miner, and the miner responds with a dummy response.
-
-# ---- miner ----
-# Example usage:
-#   def dummy( synapse: Dummy ) -> Dummy:
-#       synapse.dummy_output = synapse.dummy_input + 1
-#       return synapse
-#   axon = bt.axon().attach( dummy ).serve(netuid=...).start()
-
-# ---- validator ---
-# Example usage:
-#   dendrite = bt.dendrite()
-#   dummy_output = dendrite.query( Dummy( dummy_input = 1 ) )
-#   assert dummy_output == 2
 
 
 
 class Metadata(BaseModel):
     '''Synapse Metadata class, add more fields if needed'''
-    synapse_id : UUID
-    neuron_id : UUID
-    timestamp : str # TODO: Match timestamp format
+    synapse_id : UUID = Field(
+        ...,
+        description="UUID of the synapse",
+        allow_mutation=False,
+    )
+    neuron_uid : str = Field(
+        ...,
+        description="UUID of the serving neuron",
+        allow_mutation=False,
+    )
+    timestamp : str = Field(
+        ...,
+        description="Timestamp of the synapse",
+        allow_mutation=False,
+    )
+    signature : str = Field(
+        ...,
+        description="Signature of the serving neuron",
+        allow_mutation=False,
+    )
+    subnet_version : str = Field(
+        ...,
+        description="Subnet version of the neuron sending the synapse",
+        allow_mutation=False,
+    )
+    @classmethod
+    def create(cls, wallet, subnet_version, neuron_uid):
+        '''
+        Creates a new metadata object
+        Args:
+            neuron_id: UUID
+            signature: str
+            subnet_id: str
+        Returns:
+            Metadata: A new metadata object to attach to a synapse
+        '''
+        synapse_id = uuid.uuid4()
+        timestamp = datetime.datetime.now().isoformat()
+        data_to_sign = f"{synapse_id}{timestamp}{neuron_uid}"
+        signature = create_signature(wallet, data_to_sign)
+        return cls(synapse_id=synapse_id, neuron_uid=neuron_uid, timestamp=timestamp, signature=signature, subnet_version=subnet_version)
 
     
 class TeamGamePrediction(BaseModel):
     '''
-    Data class from json. May need to be modified in the future for more complex prediction types
+    Data class from json. Will need to be modified in the future for more complex prediction types.
     '''
-    pred_id : UUID # id of the prediction
-    teamGameId : UUID # id of the team game
-    league: int
-    minerId : UUID # id of the miner (coldkey/hotkey) that made the prediction
-    predictionDate : str # TODO: Match timestamp format
-    predictedOutcome : str
-    wager: float
+    predictionID : UUID = Field(
+        ...,
+        description="UUID of the prediction",
+        allow_mutation=False,
+    )
+    teamGameID : UUID = Field(
+        ...,
+        description="UUID of the team game",
+        allow_mutation=False,
+    )
+    minerID : UUID = Field(
+        ...,
+        description="UUID of the miner (coldkey/hotkey) that made the prediction",
+        allow_mutation=False,
+    )
+    predictionDate : str = Field(
+        ...,
+        description="Prediction date of the prediction",
+        allow_mutation=False,
+    )
+    predictedOutcome : str = Field(
+        ...,
+        description="Predicted outcome",
+        allow_mutation=False,
+    )
+    wager: float = Field(
+        ...,
+        description="Wager of the prediction",
+        allow_mutation=False,
+    )
+    teamAodds: float = Field(
+        ...,
+        description="Team A odds",
+        allow_mutation=False,
+    )
+    teamBodds: float = Field(
+        ...,
+        description="Team B odds",
+        allow_mutation=False,
+    )
+    tieOdds: float = Field(
+        ...,
+        description="Tie odds",
+        allow_mutation=False,
+    )
+    outcome: str = Field(
+        ...,
+        description="Outcome of prediction",
+        allow_mutation=False,
+    )
+    can_overwrite: bool = Field(
+        ...,
+        description="Can overwrite",
+        allow_mutation=False,
+    )
     
     
 
@@ -70,50 +143,121 @@ class TeamGame(BaseModel):
     '''
     Data class from json. May need to be modified in the future for more complex prediction types
     '''
-    id : UUID # id of the team game
-    teamA : str
-    teamB : str
-    teamAodds: float
-    teamBodds: float
-    sport : str
-    league : str
-    eventDescription : str
-    externalId : str # external id of the team game
-    createDate : str # TODO: Match timestamp format
-    lastUpdateDate : str # TODO: Match timestamp format 
-    eventStartDate: str
-    active : bool
-    outcome : str
+    id : UUID = Field(
+        ...,
+        description="UUID of the team game",
+        allow_mutation=False,
+    )
+    teamA : str = Field(
+        ...,
+        description="Team A",
+        allow_mutation=False,
+    )
+    teamB : str = Field(
+        ...,
+        description="Team B",
+        allow_mutation=False,
+    )
+    
+    sport : str = Field(
+        ...,
+        description="Sport",
+        allow_mutation=False,
+    )
+    league : str = Field(
+        ...,
+        description="League",
+        allow_mutation=False,
+    )
+    externalId : str = Field(
+        ...,
+        description="External id of the team game",
+        allow_mutation=False,
+    )
+    createDate : str = Field(
+        ...,
+        description="Create date",
+        allow_mutation=False,
+    )
+    lastUpdateDate : str = Field(
+        ...,
+        description="Last update date",
+        allow_mutation=False,
+    )
+    eventStartDate: str = Field(
+        ...,
+        description="Event start date",
+        allow_mutation=False,
+    )
+    active : bool = Field(
+        ...,
+        description="Active",
+        allow_mutation=False,
+    )
+    outcome : str = Field(
+        ...,
+        description="Outcome",
+        allow_mutation=False,
+    )
+    teamAodds: float = Field(
+        ...,
+        description="Team B odds",
+        allow_mutation=False,
+    )
+    teamBodds: float = Field(
+        ...,
+        description="Team B odds",
+        allow_mutation=False,
+    )
+    tieOdds: float = Field(
+        ...,
+        description="Tie odds",
+        allow_mutation=False,
+    )
+    canTie: bool = Field(
+        ...,
+        description="Can tie",
+        allow_mutation=False,
+    )
     
     
 
 
 
-class Prediction(bt.Synapse, BaseModel):
+class Prediction(bt.Synapse):
     '''
     This class defines the synapse object for a miner prediction, consisting of a dictionary of TeamGamePrediction objects with a UUID as key.
     '''
-    #dummy_data: int
     metadata : Metadata
     prediction_dict: typing.Dict[UUID, TeamGamePrediction]
-    def deserialize(self) -> typing.Dict[UUID, TeamGamePrediction]:
-    #def deserialize(self) -> int:
-        
-        #return self.dummy_data
+
+    @classmethod
+    def create(cls, metadata: Metadata, prediction_dict: typing.Dict[UUID, TeamGamePrediction]):
+        '''
+        Creates a new prediction synapse
+        Args:
+            metadata: Metadata
+            prediction_dict: typing.Dict[UUID, TeamGamePrediction]
+        Returns:
+            Prediction: A new prediction synapse
+        '''
+
+        return cls(metadata=metadata, prediction_dict=prediction_dict)
+    def deserialize(self):
         return self.prediction_dict, self.metadata
 
-class GameData(BaseModel):
+class GameData(bt.Synapse):
     '''
     This class defines the synapse object for game data, consisting of a dictionary of TeamGame objects with a UUID as key.
     '''
-    #metadata: Metadata
+    metadata: Metadata
     gamedata_dict: typing.Dict[UUID, TeamGame]
 
     @classmethod
-    def create(cls, current_timestamp, db_path):
-        gamedata_dict = cls.fetch_game_data(current_timestamp, db_path)
+    def create(cls, metadata: Metadata, db_path):
+        gamedata_dict = cls.fetch_game_data(metadata.timestamp, db_path)
         #metadata = cls.create_metadata()
-        return cls(gamedata_dict=gamedata_dict)
+        return cls(metadata=metadata, gamedata_dict=gamedata_dict)
 
     @staticmethod
     def fetch_game_data(current_timestamp, db_path) -> typing.Dict[UUID, TeamGame]:
@@ -121,7 +265,7 @@ class GameData(BaseModel):
         cursor = connection.cursor()
 
         query = """
-            SELECT id, teamA, teamB, sport, league, eventDescription, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome 
+            SELECT id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie
             FROM game_data
             WHERE eventStartDate > ?
         """
@@ -137,18 +281,17 @@ class GameData(BaseModel):
                 teamB=row[2],
                 sport=row[3],
                 league=row[4],
-                eventDescription=row[5],
-                externalId=row[6],
-                createDate=row[7],
-                lastUpdateDate=row[8],
-                eventStartDate=row[9],
-                active=bool(row[10]),
-                outcome=row[11]
+                externalId=row[5],
+                createDate=row[6],
+                lastUpdateDate=row[7],
+                eventStartDate=row[8],
+                active=bool(row[9]),
+                outcome=row[10]
             )
             gamedata_dict[UUID(row[0])] = team_game
 
         connection.close()
         return gamedata_dict
 
-    def deserialize(self) -> typing.Dict[UUID, TeamGame]:
-        return self.gamedata_dict
+    def deserialize(self):
+        return self.gamedata_dict, self.metadata

@@ -16,8 +16,18 @@
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
+from argparse import ArgumentParser
 import sys
 import os
+import torch
+import traceback
+import time
+import bittensor as bt
+from bettensor import __version__ as version
+from bettensor.miner.bettensor_miner import BettensorMiner
+
+
+
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -39,204 +49,152 @@ sys.path.append(great_grandparent_dir)
 # Optional: Print sys.path to verify the directories have been added
 print(sys.path)
 
-import datetime
-import sqlite3
-import json
-import time
-import typing
-from uuid import UUID
-import uuid
-from bettensor.protocol import TeamGamePrediction
-import bittensor as bt
-
-# Bittensor Miner Template:
-import bettensor
-
-# import base miner class which takes care of most of the boilerplate
-from bettensor.base.miner import BaseMinerNeuron
-from bittensor import logging, synapse
 
 
-class Miner(BaseMinerNeuron):
+
+
+def main(miner: BettensorMiner):
     """
-    Your miner neuron class. You should use this class to define your miner's behavior. In particular, you should replace the forward function with your own logic. You may also want to override the blacklist and priority functions according to your needs.
-
-    This class inherits from the BaseMinerNeuron class, which in turn inherits from BaseNeuron. The BaseNeuron class takes care of routine tasks such as setting up wallet, subtensor, metagraph, logging directory, parsing config, etc. You can override any of the methods in BaseNeuron if you need to customize the behavior.
-
-    This class provides reasonable default behavior for a miner such as blacklisting unrecognized hotkeys, prioritizing requests based on stake, and forwarding requests to the forward function. If you need to define custom
+    This function executes the main miner loop. The miner is configured
+    upon the initialization of the miner. If you want to change the
+    miner configuration, please adjust the initialization parameters.
     """
 
-    def __init__(self, config=None):
-        super(Miner, self).__init__(config=config)
-        
+    # Link the miner to the Axon
+    axon = bt.axon(wallet=miner.wallet, config=miner.neuron_config)
+    bt.logging.info(f"Linked miner to Axon: {axon}")
+
+    # Attach the miner functions to the Axon
+    axon.attach(
+        forward_fn=miner.forward,
+        blacklist_fn=miner.blacklist,
+        priority_fn=miner.priority,
+    )
+    bt.logging.info(f"Attached functions to Axon: {axon}")
+
+    # Pass the Axon information to the network
+    axon.serve(netuid=miner.neuron_config.netuid, subtensor=miner.subtensor)
+
+    bt.logging.info(
+        f"Axon {miner.forward} served on network: {miner.neuron_config.subtensor.chain_endpoint} with netuid: {miner.neuron_config.netuid}"
+    )
+    # Activate the Miner on the network
+    axon.start()
+    bt.logging.info(f"Axon started on port: {miner.neuron_config.axon.port}")
+
+    # Step 7: Keep the miner alive
+    # This loop maintains the miner's operations until intentionally stopped.
+    bt.logging.info(
+        "Miner has been initialized and we are connected to the network. Start main loop."
+    )
+
+    # When we init, set last_updated_block to current_block
+    miner.last_updated_block = miner.subtensor.block
+    while True:
         try:
-            db = sqlite3.connect('./miner.db')
-        except:
-            bt.logging.error("Failed to connect to local database")
-            raise Exception("Failed to connect to local database")
-        
-        cursor = db.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS predictions (gameId TEXT, dateTime TEXT, wager INTEGER, predictedOutcome INTEGER)''')
-        games_dict = {}
-        predictions_dict = {}
-        cash = 1000
+            # Below: Periodically update our knowledge of the network graph.
+            if miner.step % 20 == 0:
+                # Periodically update the weights on the Bittensor blockchain.
+                current_block = miner.subtensor.block
+                if (
+                    current_block - miner.last_updated_block > 100
+                    and miner.miner_set_weights == True
+                ):
+                    weights = torch.Tensor([0.0] * len(miner.metagraph.uids))
+                    weights[miner.miner_uid] = 1.0
 
-        try:
-            db = sqlite3.connect('./miner.db')
-        except:
-            bt.logging.error("Failed to connect to local database")
-            raise Exception("Failed to connect to local database")
-        
-        cursor = db.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS predictions (gameId TEXT, dateTime TEXT, wager INTEGER, predictedOutcome INTEGER)''')
-        games_dict = {}
-        predictions_dict = {}
-        cash = 1000
+                    bt.logging.warning(
+                        "DEPRECATION NOTICE: Miners do not need to set weights in this subnet. The capability to do so will be removed in a future release"
+                    )
+                    bt.logging.debug(
+                        f"Setting weights with the following parameters: netuid={miner.neuron_config.netuid}, wallet={miner.wallet}, uids={miner.metagraph.uids}, weights={weights}, version_key={miner.subnet_version}"
+                    )
 
+                    result = miner.subtensor.set_weights(
+                        netuid=miner.neuron_config.netuid,  # Subnet to set weights on.
+                        wallet=miner.wallet,  # Wallet to sign set weights using hotkey.
+                        uids=miner.metagraph.uids,  # Uids of the miners to set weights for.
+                        weights=weights,  # Weights to set for the miners.
+                        wait_for_inclusion=False,
+                        version_key=miner.subnet_version,
+                    )
 
-    async def forward(
-        self, gamedata: bettensor.protocol.GameData, games_dict, predictions_dict
-    ) -> bettensor.protocol.Prediction:
-        """
-        Takes an incoming synapse of game data, and runs CLI for user to submit predictions. Submits UUID's of predicted games to chain, waits until acceptance, then returns synapse with prediction data to validator. If games have already been predicted and committed to chain, 
-        return synapse to any "new" validator( one that has not yet communicated with this miner about recent games). If all validators have already been notified, wait until a new game is available. (this logic will happen above the forward function, we don't want to call it 
-        repeatedly if we've already submitted predictions for the current period).
+                    if result:
+                        bt.logging.success("Successfully set weights.")
+                    else:
+                        bt.logging.error("Failed to set weights.")
 
-        Args:
-            GameData : The synapse object containing the game data.
+                    miner.last_updated_block = miner.subtensor.block
 
-        Returns:
-            synapse : Synapse object with prediction data. Must be compared to on chain data before acceptance (Validator side)
-        """
+                # if miner.step % 300 == 0:
+                    # Check if the miners hotkey is on the remote blacklist
+                    # miner.check_remote_blacklist()
 
+                if miner.step % 600 == 0:
+                    bt.logging.debug(
+                        f"Syncing metagraph: {miner.metagraph} with subtensor: {miner.subtensor}"
+                    )
 
-        deserialized_synapse = bettensor.protocol.GameData.deserialize(synapse.data)
+                    miner.metagraph.sync(subtensor=miner.subtensor)
 
-        for game in deserialized_synapse.data:
-            if game not in bettensor.protocol.GameData.games_dict:
-                bettensor.protocol.GameData.games_dict[game[0]] = game
-        
-
-        response = bettensor.protocol.Prediction()
-        
-
-        return response
-
-        
-        
-
-    async def blacklist(
-        self, synapse: bettensor.protocol.Dummy
-    ) -> typing.Tuple[bool, str]:
-        """
-        Determines whether an incoming request should be blacklisted and thus ignored. Your implementation should
-        define the logic for blacklisting requests based on your needs and desired security parameters.
-
-        Blacklist runs before the synapse data has been deserialized (i.e. before synapse.data is available).
-        The synapse is instead contructed via the headers of the request. It is important to blacklist
-        requests before they are deserialized to avoid wasting resources on requests that will be ignored.
-
-        Args:
-            synapse (template.protocol.Dummy): A synapse object constructed from the headers of the incoming request.
-
-        Returns:
-            Tuple[bool, str]: A tuple containing a boolean indicating whether the synapse's hotkey is blacklisted,
-                            and a string providing the reason for the decision.
-
-        This function is a security measure to prevent resource wastage on undesired requests. It should be enhanced
-        to include checks against the metagraph for entity registration, validator status, and sufficient stake
-        before deserialization of synapse data to minimize processing overhead.
-
-        Example blacklist logic:
-        - Reject if the hotkey is not a registered entity within the metagraph.
-        - Consider blacklisting entities that are not validators or have insufficient stake.
-
-        In practice it would be wise to blacklist requests from entities that are not validators, or do not have
-        enough stake. This can be checked via metagraph.S and metagraph.validator_permit. You can always attain
-        the uid of the sender via a metagraph.hotkeys.index( synapse.dendrite.hotkey ) call.
-
-        Otherwise, allow the request to be processed further.
-        """
-        # TODO(developer): Define how miners should blacklist requests.
-        uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        if (
-            not self.config.blacklist.allow_non_registered
-            and synapse.dendrite.hotkey not in self.metagraph.hotkeys
-        ):
-            # Ignore requests from un-registered entities.
-            bt.logging.trace(
-                f"Blacklisting un-registered hotkey {synapse.dendrite.hotkey}"
-            )
-            return True, "Unrecognized hotkey"
-
-        if self.config.blacklist.force_validator_permit:
-            # If the config is set to force validator permit, then we should only allow requests from validators.
-            if not self.metagraph.validator_permit[uid]:
-                bt.logging.warning(
-                    f"Blacklisting a request from non-validator hotkey {synapse.dendrite.hotkey}"
+                miner.metagraph = miner.subtensor.metagraph(miner.neuron_config.netuid)
+                log = (
+                    f"Version:{version} | "
+                    f"Blacklist:{miner.hotkey_blacklisted} | "
+                    f"Step:{miner.step} | "
+                    f"Block:{miner.metagraph.block.item()} | "
+                    f"Stake:{miner.metagraph.S[miner.miner_uid]} | "
+                    f"Rank:{miner.metagraph.R[miner.miner_uid]} | "
+                    f"Trust:{miner.metagraph.T[miner.miner_uid]} | "
+                    f"Consensus:{miner.metagraph.C[miner.miner_uid] } | "
+                    f"Incentive:{miner.metagraph.I[miner.miner_uid]} | "
+                    f"Emission:{miner.metagraph.E[miner.miner_uid]}"
                 )
-                return True, "Non-validator hotkey"
 
-        bt.logging.trace(
-            f"Not Blacklisting recognized hotkey {synapse.dendrite.hotkey}"
-        )
-        return False, "Hotkey recognized!"
+                bt.logging.info(log)
 
-    async def priority(self, synapse: bettensor.protocol.Dummy) -> float:
-        """
-        The priority function determines the order in which requests are handled. More valuable or higher-priority
-        requests are processed before others. You should design your own priority mechanism with care.
+            miner.step += 1
+            time.sleep(1)
 
-        This implementation assigns priority to incoming requests based on the calling entity's stake in the metagraph.
-
-        Args:
-            synapse (template.protocol.Dummy): The synapse object that contains metadata about the incoming request.
-
-        Returns:
-            float: A priority score derived from the stake of the calling entity.
-
-        Miners may recieve messages from multiple entities at once. This function determines which request should be
-        processed first. Higher values indicate that the request should be processed first. Lower values indicate
-        that the request should be processed later.
-
-        Example priority logic:
-        - A higher stake results in a higher priority value.
-        """
-        # TODO(developer): Define how miners should prioritize requests.
-        caller_uid = self.metagraph.hotkeys.index(
-            synapse.dendrite.hotkey
-        )  # Get the caller index.
-        prirority = float(
-            self.metagraph.S[caller_uid]
-        )  # Return the stake as the priority.
-        bt.logging.trace(
-            f"Prioritizing {synapse.dendrite.hotkey} with value: ", prirority
-        )
-        return prirority
-
-
-
-def reset_daily_cash():
-    pass
-        
-
-
-
-def construct_prediction_json(prediction_dict: typing.Dict[UUID, TeamGamePrediction]) -> json.JSONDecoder:
-    '''
-    Method to take a dictionary of predictions and construct and validate a json object 
-    that gets sent to validators
-    '''
-   
-    prediction_json = json.dumps(prediction_dict)
-    return prediction_json
-
+        # If someone intentionally stops the miner, it'll safely terminate operations.
+        except KeyboardInterrupt:
+            axon.stop()
+            bt.logging.success("Miner killed by keyboard interrupt.")
+            break
+        # In case of unforeseen errors, the miner will log the error and continue operations.
+        except Exception:
+            bt.logging.error(traceback.format_exc())
+            continue
 
 
 
 # This is the main function, which runs the miner.
 if __name__ == "__main__":
-    with Miner() as miner:
-        while True:
-            bt.logging.info("Miner running...", time.time())
-            time.sleep(5)
+    # Parse command line arguments
+    parser = ArgumentParser()
+    parser.add_argument("--netuid", type=int, default=14, help="The chain subnet uid")
+    parser.add_argument(
+        "--logging.logging_dir",
+        type=str,
+        default="/var/log/bittensor",
+        help="Provide the log directory",
+    )
+
+    parser.add_argument(
+        "--miner_set_weights",
+        type=str,
+        default="False",
+        help="Determines if miner should set weights or not",
+    )
+
+    parser.add_argument(
+        "--validator_min_stake",
+        type=float,
+        default=10000.0,
+        help="Determine the minimum stake the validator should have to accept requests",
+    )
+
+    # Create a miner based on the Class definitions
+    subnet_miner = BettensorMiner(parser=parser)
+
+    main(subnet_miner)

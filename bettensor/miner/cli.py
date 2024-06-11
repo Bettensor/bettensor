@@ -28,6 +28,7 @@ from prompt_toolkit.application import Application as PTApplication
 import time  # Import time module for handling timeout
 import threading  # Import threading for non-blocking delay
 from prompt_toolkit.layout.containers import Window, HSplit
+from miner.bettensor_miner import BettensorMiner
 
 
 global_style = Style.from_dict({
@@ -495,7 +496,10 @@ def _(event):
 @bindings.add('q')
 def _(event):
     event.app.exit()
-    
+
+def submit_predictions(miner: BettensorMiner, unsubmitted_predictions):
+    for prediction in unsubmitted_predictions:
+        print(prediction)
 
 class Application:
     def __init__(self, predictions, games, miner_stats):

@@ -16,8 +16,7 @@
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
-
-import secrets
+import torch
 import time
 import sys
 import os
@@ -41,7 +40,7 @@ sys.path.append(great_grandparent_dir)
 
 # Optional: Print sys.path to verify the directories have been added
 print(sys.path)
-from bettensor.protocol import GameData
+from bettensor.protocol import GameData, Metadata
 
 # Bittensor
 import bittensor as bt
@@ -120,15 +119,22 @@ def main(validator: BettensorValidator):
                 bt.logging.warning(f"UIDs to query is empty: {uids_to_query}")
 
 
+            
+            # nonce = secrets.token_hex(24)
+            # timestamp = str(int(time.time()))
+            # data_to_sign = f'{nonce}{timestamp}'
+
             # Broadcast query to valid Axons
-            nonce = secrets.token_hex(24)
-            timestamp = str(int(time.time()))
-            data_to_sign = f'{nonce}{timestamp}'
             current_timestamp = datetime.now().isoformat()
             db_path = '/root/bettensor/bettensor/utils/games.db' #os.path.join(os.path.dirname(__file__), 'bettensor', 'utils', 'games.db')
             print(f"Attempting to open database at: {db_path}")
             if not os.path.exists(db_path):
                             raise FileNotFoundError(f"Database file not found at path: {db_path}")
+            
+            
+            metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
+
+
 
             responses = validator.dendrite.query(
                 uids_to_query,
