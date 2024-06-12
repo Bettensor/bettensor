@@ -80,7 +80,7 @@ gameData = {
     "1003": {"sport": "Soccer", "teamA": "Manchester United", "teamB": "Chelsea", "startTime": "2024-06-10 12:00:00", "teamAOdds": "2.0", "teamBOdds": "1.7","canTie": True, "tieOdds": '3.6'},
     "1004": {"sport": "Baseball", "teamA": "Yankees", "teamB": "Mets", "startTime": "2024-06-11 12:00:00", "teamAOdds": "1.6", "teamBOdds": "2.2","canTie": False, "tieOdds": '0'},
     "1005": {"sport": "Hockey", "teamA": "Bruins", "teamB": "Canucks", "startTime": "2024-06-12 12:00:00", "teamAOdds": "1.9", "teamBOdds": "2.0","canTie": False, "tieOdds": '0'},
-    "1006": {"sport": "Football", "teamA": "Real Madrid", "teamB": "FC Barcelona", "startTime": "2024-06-13 12:00:00", "teamAOdds": "1.5", "teamBOdds": "2.5","canTie": False, "tieOdds": '0'}
+    "1006": {"sport": "Soccer", "teamA": "Real Madrid", "teamB": "FC Barcelona", "startTime": "2024-06-13 12:00:00", "teamAOdds": "1.5", "teamBOdds": "2.5","canTie": False, "tieOdds": '0'}
 }
 
 
@@ -475,7 +475,7 @@ def _(event):
         custom_app = event.app.custom_app
         if hasattr(custom_app, 'current_view'):
             if isinstance(custom_app.current_view, WagerConfirm):
-                if custom_app.currnt_view.app.layout.has_focus(custom_app.current_view.wager_input):
+                if custom_app.current_view.app.layout.has_focus(custom_app.current_view.wager_input):
                     custom_app.current_view.handle_wager_input_enter()
                 else:
                     custom_app.current_view.handle_enter()

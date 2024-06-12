@@ -65,6 +65,7 @@ class Metadata(BaseModel):
         Returns:
             Metadata: A new metadata object to attach to a synapse
         '''
+        print(type(wallet))
         synapse_id = uuid.uuid4()
         timestamp = datetime.datetime.now().isoformat()
         data_to_sign = f"{synapse_id}{timestamp}{neuron_uid}"
