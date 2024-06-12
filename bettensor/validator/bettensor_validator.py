@@ -46,6 +46,7 @@ class BettensorValidator(BaseNeuron):
         self.blacklisted_miner_hotkeys = None
         self.load_validator_state = None
         self.data_entry = None
+        self.uid = None
     
     def apply_config(self, bt_classes) -> bool:
         """This method applies the configuration to specified bittensor classes"""
@@ -127,6 +128,7 @@ class BettensorValidator(BaseNeuron):
 
         # Get the unique identity (UID) from the network
         validator_uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)
+        self.uid = validator_uid
         bt.logging.info(f"Validator is running with UID: {validator_uid}")
 
         self.wallet = wallet
