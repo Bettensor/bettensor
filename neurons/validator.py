@@ -145,7 +145,7 @@ def main(validator: BettensorValidator):
             if not os.path.exists(db_path):
                             raise FileNotFoundError(f"Database file not found at path: {db_path}")
             
-            
+            print(validator.wallet.hotkey_str) 
             metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
 
 

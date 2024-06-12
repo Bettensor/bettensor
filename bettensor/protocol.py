@@ -56,7 +56,7 @@ class Metadata(BaseModel):
         description="Subnet version of the neuron sending the synapse"
     )
     @classmethod
-    def create(cls, wallet, subnet_version, neuron_uid):
+    def create(cls, wallet: bt.wallet, subnet_version, neuron_uid):
         '''
         Creates a new metadata object
         Args:
@@ -66,6 +66,7 @@ class Metadata(BaseModel):
         Returns:
             Metadata: A new metadata object to attach to a synapse
         '''
+        print(type(wallet))
         synapse_id = uuid.uuid4()
         timestamp = datetime.datetime.now().isoformat()
         data_to_sign = f"{synapse_id}{timestamp}{neuron_uid}"
