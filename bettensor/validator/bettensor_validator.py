@@ -190,6 +190,7 @@ class BettensorValidator(BaseNeuron):
             return False
 
         return True
+
     def insert_or_update_predictions(self, processed_uids, predictions):
         """
         Updates database with new predictions
@@ -201,6 +202,7 @@ class BettensorValidator(BaseNeuron):
         current_time = datetime.now().isoformat()
 
         for i, res in enumerate(predictions):
+            # TODO: nest another loop to iterate through all the predictions
             hotkey = self.metagraph.hotkeys[processed_uids[i]]
 
             pred_id = res["pred_id"]
@@ -232,6 +234,7 @@ class BettensorValidator(BaseNeuron):
             existing_prediction = c.fetchone()
             
             if existing_prediction:
+                # TODO: fix this function; does not properly check if wager > 1000, updates wager in weird way
                 existing_id, existing_wager = existing_prediction
                 total_wager = calculate_total_wager(c, minerId, event_start_date, exclude_id=teamGameId)
                 
@@ -287,7 +290,7 @@ class BettensorValidator(BaseNeuron):
             league TEXT,
             predictionDate TEXT,
             predictedOutcome STRING,
-            predictionCorrect INTEGER
+            wager REAL,
         )
         ''')
     

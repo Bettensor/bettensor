@@ -20,8 +20,6 @@ class BaseballData:
                         id TEXT PRIMARY KEY,
                         teamA TEXT,
                         teamB TEXT,
-                        teamAodds REAL,
-                        teamBodds REAL,
                         sport TEXT,
                         league TEXT,
                         externalId TEXT,
@@ -29,7 +27,11 @@ class BaseballData:
                         lastUpdateDate TEXT,
                         eventStartDate TEXT,
                         active INTEGER,
-                        outcome TEXT
+                        outcome TEXT,
+                        teamAodds REAL,
+                        teamBodds REAL,
+                        tieOdds REAL,
+                        canTie BOOLEAN
                     )''')
         conn.commit()
         conn.close()
@@ -37,7 +39,7 @@ class BaseballData:
     def insert_into_database(self, game_data):
         conn = sqlite3.connect(self.db_name)
         c = conn.cursor()
-        c.execute('''INSERT INTO game_data (id, teamA, teamB, teamAodds, teamBodds, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome)
+        c.execute('''INSERT INTO game_data (id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', game_data)
         conn.commit()
         conn.close()
