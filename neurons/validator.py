@@ -21,7 +21,6 @@ import secrets
 import time
 import sys
 import os
-from get_baseball_games import BaseballData
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -43,7 +42,7 @@ sys.path.append(great_grandparent_dir)
 # Optional: Print sys.path to verify the directories have been added
 print(sys.path)
 from bettensor.protocol import GameData
-
+from bettensor.utils.get_baseball_games import BaseballData
 # Bittensor
 import bittensor as bt
 import copy
@@ -63,7 +62,13 @@ from bettensor import protocol
 from datetime import datetime
 
 def main(validator: BettensorValidator):
-    
+    # Get data and populate DB if it doesn't exist
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    db_path = os.path.normpath(os.path.join(script_dir, '../bettensor/utils/games.db'))
+    if not os.path.exists(db_path):
+        print(f"Database not found at path: {db_path}, creating and populating it.")
+        baseball_data = BaseballData(db_name=db_path)
+        baseball_data.get_baseball_data() 
     while True:
         try:
             # Periodically sync subtensor status and save the state file
@@ -121,8 +126,9 @@ def main(validator: BettensorValidator):
                 bt.logging.warning(f"UIDs to query is empty: {uids_to_query}")
 
             # Get data and populate DB
-            baseball_data = BaseballData()
-            baseball_data.get_baseball_data()
+            if validator.step % 200 == 0:
+                baseball_data = BaseballData()
+                baseball_data.get_baseball_data()
             
             # Broadcast query to valid Axons
             nonce = secrets.token_hex(24)
@@ -130,7 +136,7 @@ def main(validator: BettensorValidator):
             data_to_sign = f'{nonce}{timestamp}'
             current_timestamp = datetime.now().isoformat()
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            db_relative_path = os.path.join(script_dir, '../bettensor/utils/game_data.db')
+            db_path = os.path.join(script_dir, '../bettensor/utils/games.db')
             print(f"Attempting to open database at: {db_path}")
             if not os.path.exists(db_path):
                             raise FileNotFoundError(f"Database file not found at path: {db_path}")
@@ -141,7 +147,6 @@ def main(validator: BettensorValidator):
                 timeout=validator.timeout,
                 deserialize=True,
             )
-
             # Process blacklisted UIDs (set scores to 0)
             for uid in blacklisted_uids:
                 bt.logging.debug(f'Setting score for blacklisted UID: {uid}. Old score: {validator.scores[uid]}')
@@ -163,12 +168,14 @@ def main(validator: BettensorValidator):
                 bt.logging.trace(
                     f"Set score for not queried UID: {uid}. New score: {validator.scores[uid]}"
                 )
-
+            if responses is None:
+                print("No responses received. Sleeping for 18 seconds.")
+                time.sleep(18)
             # Log the results for monitoring purposes.
-            if all(item.output is None for item in responses):
+            elif all(item.output is None for item in responses):
                 bt.logging.info("Received empty response from all miners")
                 bt.logging.debug("Sleeping for: 36 seconds")
-                time.sleep(36)
+                time.sleep(18)
                 # If we receive empty responses from all axons, we can just set the scores to none for all the uids we queried
                 for uid in list_of_uids:
                     bt.logging.trace(
@@ -187,9 +194,9 @@ def main(validator: BettensorValidator):
 
             # Process the responses
             # processed_uids = torch.nonzero(list_of_uids).squeeze()
-            response_data = validator.process_responses(
+            response_data = validator.process_prediction(
                 processed_uids=list_of_uids,
-                responses=responses
+                predictions=responses
             )
 
             for res in response_data:

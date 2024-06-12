@@ -42,6 +42,23 @@ class BaseballData:
         conn.commit()
         conn.close()
 
+    def update_odds_in_database(self, externalId, teamAodds, teamBodds):
+        conn = sqlite3.connect(self.db_name)
+        c = conn.cursor()
+        c.execute('''UPDATE game_data
+                     SET teamAodds = ?, teamBodds = ?, lastUpdateDate = ?
+                     WHERE externalId = ?''', (teamAodds, teamBodds, datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(), externalId))
+        conn.commit()
+        conn.close()
+
+    def external_id_exists(self, externalId):
+        conn = sqlite3.connect(self.db_name)
+        c = conn.cursor()
+        c.execute('''SELECT 1 FROM game_data WHERE externalId = ? LIMIT 1''', (externalId,))
+        exists = c.fetchone() is not None
+        conn.close()
+        return exists
+
     def get_baseball_data(self, league="1", season="2024"):
         dates = [datetime.utcnow().date() + timedelta(days=i) for i in range(3)]
         all_games = []
@@ -86,31 +103,41 @@ class BaseballData:
 
             all_games.extend(games_list)
 
-        # Filter games with odds less than 1.05
-        all_games = [game for game in all_games if game['odds']['average_home_odds'] >= 1.05 and game['odds']['average_away_odds'] >= 1.05]
+        # Filter games with odds less than 1.05, ensuring odds are not None
+        all_games = [
+            game for game in all_games 
+            if game['odds']['average_home_odds'] is not None and game['odds']['average_away_odds'] is not None
+            and game['odds']['average_home_odds'] >= 1.05 and game['odds']['average_away_odds'] >= 1.05
+        ]
 
         # Save the extracted data to a JSON file
         with open('games_data.json', 'w') as f:
             json.dump(all_games, f, indent=4)
 
-        # Insert the data into the database
+        # Insert or update the data in the database
         for game in all_games:
             try:
-                game_id = str(uuid.uuid4())
-                teamA = game['home']
-                teamB = game['away']
+                externalId = game['game_id']
                 teamAodds = game['odds']['average_home_odds']
                 teamBodds = game['odds']['average_away_odds']
-                sport = "baseball"
-                externalId = game['game_id']
-                createDate = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-                lastUpdateDate = createDate
-                eventStartDate = game['date']
-                active = 1 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 0
-                outcome = "Unfinished"
 
-                game_data = (game_id, teamA, teamB, teamAodds, teamBodds, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome)
-                self.insert_into_database(game_data)
+                if self.external_id_exists(externalId):
+                    # Update the existing record with new odds
+                    self.update_odds_in_database(externalId, teamAodds, teamBodds)
+                else:
+                    # Insert a new record
+                    game_id = str(uuid.uuid4())
+                    teamA = game['home']
+                    teamB = game['away']
+                    sport = "baseball"
+                    createDate = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+                    lastUpdateDate = createDate
+                    eventStartDate = game['date']
+                    active = 1 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 0
+                    outcome = "Unfinished"
+
+                    game_data = (game_id, teamA, teamB, teamAodds, teamBodds, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome)
+                    self.insert_into_database(game_data)
             except KeyError as e:
                 print(f"Key Error during database insertion: {e} in game data: {game}")
             except Exception as e:
@@ -163,3 +190,4 @@ class BaseballData:
                 return {"average_home_odds": avg_home_odds, "average_away_odds": avg_away_odds}
         
         return {"average_home_odds": None, "average_away_odds": None}
+

@@ -120,7 +120,7 @@ class GameData(BaseModel):
         cursor = connection.cursor()
 
         query = """
-            SELECT id, teamA, teamB, sport, league, eventDescription, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome 
+            SELECT id, teamA, teamB, teamAodds, teamBodds, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome 
             FROM game_data
             WHERE eventStartDate > ?
         """
@@ -134,9 +134,10 @@ class GameData(BaseModel):
                 id=UUID(row[0]),
                 teamA=row[1],
                 teamB=row[2],
-                sport=row[3],
-                league=row[4],
-                eventDescription=row[5],
+                teamAodds=row[3],
+                teamBodds=row[4],
+                sport=row[4],
+                league=row[5],
                 externalId=row[6],
                 createDate=row[7],
                 lastUpdateDate=row[8],

@@ -8,6 +8,7 @@ import sys
 import torch
 from copy import deepcopy
 import copy
+from datetime import datetime
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -195,7 +196,7 @@ class BettensorValidator(BaseNeuron):
         Accepts:
             TeamGamePrediction object
         """
-        conn = connect_db()
+        conn = self.connect_db()
         c = conn.cursor()
         current_time = datetime.now().isoformat()
 
@@ -269,11 +270,11 @@ class BettensorValidator(BaseNeuron):
         return sqlite3.connect('predictions.db')
 
     
-    def connect_db():
+    def connect_db(self):
         return sqlite3.connect('predictions.db')
 
-    def create_table():
-        conn = connect_db()
+    def create_table(self):
+        conn = self.connect_db()
         c = conn.cursor()
         
         # Create table if it doesn't exist
@@ -300,10 +301,8 @@ class BettensorValidator(BaseNeuron):
         Processes responses received by miners
         """        
 
-        bt.logging.debug(f"prediction target set to: {target}")
-
-        create_table()
-        insert_or_update_predictions(processed_uids, predictions)
+        self.create_table()
+        self.insert_or_update_predictions(processed_uids, predictions)
 
 
     def check_hotkeys(self):
