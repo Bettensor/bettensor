@@ -27,7 +27,7 @@ from bettensor.utils.config import check_config, add_args, config
 from bettensor.utils.misc import ttl_get_block
 from bettensor import __spec_version__ as spec_version
 from bettensor.mock import MockSubtensor, MockMetagraph
-
+from bettensor import __version__ as version
 
 class BaseNeuron():
     """
@@ -40,7 +40,9 @@ class BaseNeuron():
         self.profile = profile
         self.step = 0
         self.last_updated_block = 0
-        self.base_path = f"{path.expanduser('~')}/bettensor" 
+        self.base_path = f"{path.expanduser('~')}/bettensor"
+        self.subnet_version = version
+
     def config(self, bt_classes: list) -> bt.config:
         """Applies neuron configuration.
 

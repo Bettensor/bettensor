@@ -1,3 +1,4 @@
+
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
 # TODO(developer): Set your name
@@ -55,7 +56,7 @@ class Metadata(BaseModel):
         description="Subnet version of the neuron sending the synapse"
     )
     @classmethod
-    def create(cls, wallet, subnet_version, neuron_uid):
+    def create(cls, wallet: bt.wallet, subnet_version, neuron_uid):
         '''
         Creates a new metadata object
         Args:

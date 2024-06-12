@@ -8,6 +8,7 @@ import sys
 import torch
 from copy import deepcopy
 import copy
+from datetime import datetime
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -191,17 +192,19 @@ class BettensorValidator(BaseNeuron):
             return False
 
         return True
+
     def insert_or_update_predictions(self, processed_uids, predictions):
         """
         Updates database with new predictions
         Accepts:
             TeamGamePrediction object
         """
-        conn = connect_db()
+        conn = self.connect_db()
         c = conn.cursor()
         current_time = datetime.now().isoformat()
 
         for i, res in enumerate(predictions):
+            # TODO: nest another loop to iterate through all the predictions
             hotkey = self.metagraph.hotkeys[processed_uids[i]]
 
             pred_id = res["pred_id"]
@@ -233,6 +236,7 @@ class BettensorValidator(BaseNeuron):
             existing_prediction = c.fetchone()
             
             if existing_prediction:
+                # TODO: fix this function; does not properly check if wager > 1000, updates wager in weird way
                 existing_id, existing_wager = existing_prediction
                 total_wager = calculate_total_wager(c, minerId, event_start_date, exclude_id=teamGameId)
                 
@@ -271,11 +275,11 @@ class BettensorValidator(BaseNeuron):
         return sqlite3.connect('predictions.db')
 
     
-    def connect_db():
+    def connect_db(self):
         return sqlite3.connect('predictions.db')
 
-    def create_table():
-        conn = connect_db()
+    def create_table(self):
+        conn = self.connect_db()
         c = conn.cursor()
         
         # Create table if it doesn't exist
@@ -288,7 +292,7 @@ class BettensorValidator(BaseNeuron):
             league TEXT,
             predictionDate TEXT,
             predictedOutcome STRING,
-            predictionCorrect INTEGER
+            wager REAL,
         )
         ''')
     
@@ -302,10 +306,8 @@ class BettensorValidator(BaseNeuron):
         Processes responses received by miners
         """        
 
-        bt.logging.debug(f"prediction target set to: {target}")
-
-        create_table()
-        insert_or_update_predictions(processed_uids, predictions)
+        self.create_table()
+        self.insert_or_update_predictions(processed_uids, predictions)
 
 
     def check_hotkeys(self):
