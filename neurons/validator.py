@@ -131,12 +131,6 @@ def main(validator: BettensorValidator):
                 baseball_data = BaseballData()
                 baseball_data.get_baseball_data()
             
-
-            
-            # nonce = secrets.token_hex(24)
-            # timestamp = str(int(time.time()))
-            # data_to_sign = f'{nonce}{timestamp}'
-
             # Broadcast query to valid Axons
             current_timestamp = datetime.now().isoformat()
             script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -145,17 +139,16 @@ def main(validator: BettensorValidator):
             if not os.path.exists(db_path):
                             raise FileNotFoundError(f"Database file not found at path: {db_path}")
             
-            print(validator.wallet.hotkey_str) 
             metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
-
-
 
             responses = validator.dendrite.query(
                 uids_to_query,
-                GameData.create(current_timestamp=current_timestamp, db_path=db_path),
+                GameData.create(db_path=db_path, metadata=metadata),
                 timeout=validator.timeout,
                 deserialize=True,
             )
+            print("responses: ")
+            print(responses)
             # Process blacklisted UIDs (set scores to 0)
             for uid in blacklisted_uids:
                 bt.logging.debug(f'Setting score for blacklisted UID: {uid}. Old score: {validator.scores[uid]}')
@@ -181,23 +174,23 @@ def main(validator: BettensorValidator):
                 print("No responses received. Sleeping for 18 seconds.")
                 time.sleep(18)
             # Log the results for monitoring purposes.
-            elif all(item.output is None for item in responses):
-                bt.logging.info("Received empty response from all miners")
-                bt.logging.debug("Sleeping for: 36 seconds")
-                time.sleep(18)
+            #elif all(item.output is None for item in responses):
+            #    bt.logging.info("Received empty response from all miners")
+            #    bt.logging.debug("Sleeping for: 36 seconds")
+            #    time.sleep(18)
                 # If we receive empty responses from all axons, we can just set the scores to none for all the uids we queried
-                for uid in list_of_uids:
-                    bt.logging.trace(
-                        f"Setting score for empty response from UID: {uid}. Old score: {validator.scores[uid]}"
-                    )
-                    validator.scores[uid] = (
-                        validator.neuron_config.alpha * validator.scores[uid]
-                        + (1 - validator.neuron_config.alpha) * 0.0
-                    )
-                    bt.logging.trace(
-                        f"Set score for empty response from UID: {uid}. New score: {validator.scores[uid]}"
-                    )
-                continue
+            #    for uid in list_of_uids:
+            #        bt.logging.trace(
+            #            f"Setting score for empty response from UID: {uid}. Old score: {validator.scores[uid]}"
+            #        )
+            #        validator.scores[uid] = (
+            #            validator.neuron_config.alpha * validator.scores[uid]
+            #            + (1 - validator.neuron_config.alpha) * 0.0
+            #        )
+            #        bt.logging.trace(
+            #            f"Set score for empty response from UID: {uid}. New score: {validator.scores[uid]}"
+            #        )
+            #    continue
 
             bt.logging.trace(f"Received responses: {responses}")
 

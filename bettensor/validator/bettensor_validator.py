@@ -292,7 +292,7 @@ class BettensorValidator(BaseNeuron):
             league TEXT,
             predictionDate TEXT,
             predictedOutcome STRING,
-            wager REAL,
+            wager REAL
         )
         ''')
     

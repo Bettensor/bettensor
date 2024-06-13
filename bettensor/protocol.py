@@ -32,7 +32,6 @@ import sqlite3
 
 
 
-
 class Metadata(BaseModel):
     '''Synapse Metadata class, add more fields if needed'''
     synapse_id: UUID = Field(
@@ -70,7 +69,7 @@ class Metadata(BaseModel):
         synapse_id = uuid.uuid4()
         timestamp = datetime.datetime.now().isoformat()
         data_to_sign = f"{synapse_id}{timestamp}{neuron_uid}"
-        signature = create_signature(wallet, data_to_sign)
+        signature = create_signature(data_to_sign, wallet)
         return cls(synapse_id=synapse_id, neuron_uid=neuron_uid, timestamp=timestamp, signature=signature, subnet_version=subnet_version)
 
     
