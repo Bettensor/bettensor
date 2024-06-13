@@ -140,15 +140,18 @@ def main(validator: BettensorValidator):
                             raise FileNotFoundError(f"Database file not found at path: {db_path}")
             
             metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
-
+            print(uids_to_query)
+            # TODO: verify validators are not queries
             responses = validator.dendrite.query(
-                uids_to_query,
-                GameData.create(db_path=db_path, metadata=metadata),
+                axons=uids_to_query,
+                synapse=GameData.create(db_path=db_path, metadata=metadata),
                 timeout=validator.timeout,
                 deserialize=True,
+                name=GameData,
             )
             print("responses: ")
             print(responses)
+            print('line after responses')
             # Process blacklisted UIDs (set scores to 0)
             for uid in blacklisted_uids:
                 bt.logging.debug(f'Setting score for blacklisted UID: {uid}. Old score: {validator.scores[uid]}')

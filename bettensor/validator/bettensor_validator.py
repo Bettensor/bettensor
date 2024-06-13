@@ -491,7 +491,7 @@ class BettensorValidator(BaseNeuron):
 
         # Get UIDs with an IP address of 0.0.0.0
         invalid_uids = torch.tensor(
-            [
+           [
                 bool(value)
                 for value in [
                     ip != "0.0.0.0"

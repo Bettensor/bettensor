@@ -40,7 +40,7 @@ class BaseballData:
         conn = sqlite3.connect(self.db_name)
         c = conn.cursor()
         c.execute('''INSERT INTO game_data (id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', game_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', game_data)
         conn.commit()
         conn.close()
 
@@ -137,8 +137,10 @@ class BaseballData:
                     eventStartDate = game['date']
                     active = 1 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 0
                     outcome = "Unfinished"
+                    tieOdds = 0
+                    canTie = False
 
-                    game_data = (game_id, teamA, teamB, teamAodds, teamBodds, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome)
+                    game_data = (game_id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie)
                     self.insert_into_database(game_data)
             except KeyError as e:
                 print(f"Key Error during database insertion: {e} in game data: {game}")
@@ -192,4 +194,5 @@ class BaseballData:
                 return {"average_home_odds": avg_home_odds, "average_away_odds": avg_away_odds}
         
         return {"average_home_odds": None, "average_away_odds": None}
+
 
