@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 state.pt
 .gitignore
+bettensor/utils/print_all_tables.py
 # C extensions
 *.so
 
