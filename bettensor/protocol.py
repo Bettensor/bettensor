@@ -199,7 +199,7 @@ class Prediction(bt.Synapse):
     '''
     This class defines the synapse object for a miner prediction, consisting of a dictionary of TeamGamePrediction objects with a UUID as key.
     '''
-    metadata: Metadata
+    #metadata: Metadata
     prediction_dict: typing.Dict[str, TeamGamePrediction]
 
     @classmethod
@@ -212,25 +212,28 @@ class Prediction(bt.Synapse):
         Returns:
             Prediction: A new prediction synapse
         '''
+        bt.logging.debug(f"Creating Prediction with wallet: {wallet}, subnet_version: {subnet_version}, neuron_uid: {neuron_uid}")
         metadata = Metadata.create(wallet=wallet, subnet_version=subnet_version, neuron_uid=neuron_uid)
-        return cls(metadata=metadata, prediction_dict=prediction_dict)
+        return cls(prediction_dict=prediction_dict)
     def deserialize(self):
-        return self.prediction_dict, self.metadata
+        return self.prediction_dict# self.metadata
 
 class GameData(bt.Synapse):
     '''
     This class defines the synapse object for game data, consisting of a dictionary of TeamGame objects with a UUID as key.
     '''
-    metadata: Metadata
+    #metadata: Metadata
     gamedata_dict: typing.Dict[str, TeamGame]
+    subnet_version: str
+    
 
     @classmethod
     def create(cls, db_path, wallet: bt.wallet, subnet_version, neuron_uid):
-        metadata = Metadata.create(wallet=wallet, subnet_version=None, neuron_uid=None)
+        metadata = Metadata.create(wallet=wallet, subnet_version=subnet_version, neuron_uid=neuron_uid)
         gamedata_dict = cls.fetch_game_data(metadata.timestamp, db_path)
         #metadata = cls.create_metadata()
-        return cls(metadata=metadata, gamedata_dict=gamedata_dict)
-
+        return cls(gamedata_dict=gamedata_dict, subnet_version=subnet_version)
+    
     @staticmethod
     def fetch_game_data(current_timestamp, db_path) -> typing.Dict[str, TeamGame]:
         connection = sqlite3.connect(db_path)
@@ -270,4 +273,4 @@ class GameData(bt.Synapse):
         return gamedata_dict
 
     def deserialize(self):
-        return self.gamedata_dict, self.metadata
+        return self.gamedata_dict #self.metadata

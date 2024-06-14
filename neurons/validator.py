@@ -143,7 +143,10 @@ def main(validator: BettensorValidator):
             print(f"uids_to_query: {uids_to_query}")
             # TODO: verify validators are not queries
             
+            
 
+            
+            
             #need to make sure we have the subnet version and wallet 
             bt.logging.debug(f"Subnet version: {validator.subnet_version}, wallet: {validator.wallet} , uid: {validator.uid}")
 

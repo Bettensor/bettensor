@@ -37,6 +37,8 @@ class BettensorMiner(BaseNeuron):
 
     """
 
+    db_path = './miner.db'
+
     def __init__(self, parser: ArgumentParser):
         """
         Initializes the Miner class.
@@ -67,7 +69,6 @@ class BettensorMiner(BaseNeuron):
         self.hotkey_blacklisted = False
 
         # Initialize local sqlite
-        self.db_path = './miner.db'
         self.ensure_db_directory_exists(self.db_path)
         self.initialize_database()
 
@@ -113,10 +114,9 @@ class BettensorMiner(BaseNeuron):
         except sqlite3.Error as e:
             bt.logging.error(f"Failed to initialize local database: {e}")
             raise Exception("Failed to initialize local database")
-    @classmethod
-    def get_cursor(cls):
+    def get_cursor(self):
         try:
-            db = sqlite3.connect(cls.db_path)
+            db = sqlite3.connect(self.db_path)
             return db, db.cursor()
         except sqlite3.Error as e:
             bt.logging.error(f"Failed to connect to local database: {e}")
@@ -301,7 +301,7 @@ class BettensorMiner(BaseNeuron):
                 f"Received a synapse from a validator with higher subnet version ({synapse.subnet_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
             )
 
-        # Synapse signature verification
+        """    # Synapse signature verification
         data = f'{synapse.synapse_nonce}{synapse.synapse_timestamp}'
         if not verify_signature(
             hotkey=synapse.dendrite.hotkey,
@@ -315,16 +315,17 @@ class BettensorMiner(BaseNeuron):
         else:
             print(
                 f"Succesfully validated signature for the synapse. Hotkey: {synapse.dendrite.hotkey}, data: {data}, signature: {synapse.synapse_signature}"
-            )
+            ) 
+        """
 
 
-        
+        """   
         synapse_timestamp = synapse.metadata.timestamp
         synapse_id = synapse.metadata.id
         validator_id = synapse.metadata.neuron_id
         server_subnet_version = synapse.metadata.subnet_version
         bt.logging.info(f"Received synapse from validator: {validator_id} with ID: {synapse_id} subnet version: {server_subnet_version} and timestamp: {synapse_timestamp}")
-        
+         """
         #update games table
         games_dict = synapse.gamedata_dict
         bt.logging.info(f"Received {len(games_dict)} games, updating games table in local database")
@@ -393,11 +394,14 @@ class BettensorMiner(BaseNeuron):
                                 game.outcome, 
                                 game.id))
                 db.commit()
+
+        bt.logging.info(f"Updated games table in local database")
         # construct prediction 
         prediction_dict = {}
-
+        self.print_table_schema()
         #get games that have not started yet
-        games = cursor.execute('SELECT gameID FROM games WHERE eventStartDate < ?', (datetime.now().isoformat()))
+        current_time = datetime.datetime.now().isoformat(timespec="minutes")
+        games = cursor.execute('SELECT gameID FROM games WHERE eventStartDate < ?', (current_time,))
 
         #get predictions for these games
         predictions = cursor.execute('SELECT * FROM predictions WHERE gameID IN (?)', (games))
@@ -405,9 +409,9 @@ class BettensorMiner(BaseNeuron):
         # add predictions to prediction_dict
         for prediction in predictions:
             single_prediction = TeamGamePrediction(
-                predictionID = UUID(prediction[0]),
-                teamGameID = UUID(prediction[1]),
-                minerID = UUID(prediction[2]),
+                predictionID = prediction[0],
+                teamGameID = prediction[1],
+                minerID = prediction[2],
                 predictionDate = prediction[3],
                 predictedOutcome = prediction[4],
                 wager = prediction[5],
@@ -416,7 +420,7 @@ class BettensorMiner(BaseNeuron):
                 tieOdds = prediction[8],
                 outcome = prediction[9]
             )
-            prediction_dict[UUID(prediction[0])] = single_prediction
+            prediction_dict[prediction[0]] = single_prediction
             
         try:
             prediction_synapse = Prediction.create(self.wallet, self.subnet_version, self.miner_uid, prediction_dict)
@@ -426,3 +430,10 @@ class BettensorMiner(BaseNeuron):
 
         return prediction_synapse
 
+def print_table_schema(self):
+    db, cursor = self.get_cursor()
+    cursor.execute("PRAGMA table_info(games)")
+    schema = cursor.fetchall()
+    for column in schema:
+        print(column)
+    db.close()
