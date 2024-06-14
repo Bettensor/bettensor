@@ -77,6 +77,14 @@ class BettensorMiner(BaseNeuron):
         if not os.path.exists(db_dir):
             os.makedirs(db_dir)
 
+    def print_table_schema(self):
+        db, cursor = self.get_cursor()
+        cursor.execute("PRAGMA table_info(games)")
+        schema = cursor.fetchall()
+        for column in schema:
+            print(column)
+        db.close()
+
     def initialize_database(self):
         try:
             db = sqlite3.connect(self.db_path)
@@ -286,142 +294,53 @@ class BettensorMiner(BaseNeuron):
         return stake
 
     def forward(self, synapse: GameData) -> Prediction:
-        """
-        
-        """
         bt.logging.info(f"Forwarding synapse: {synapse}")
         db, cursor = self.get_cursor()
 
         # Print version information and perform version checks
-        print(
-            f"Synapse version: {synapse.subnet_version}, our version: {self.subnet_version}"
-        )
+        print(f"Synapse version: {synapse.subnet_version}, our version: {self.subnet_version}")
         if synapse.subnet_version > self.subnet_version:
             bt.logging.warning(
                 f"Received a synapse from a validator with higher subnet version ({synapse.subnet_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
             )
 
-        """    # Synapse signature verification
-        data = f'{synapse.synapse_nonce}{synapse.synapse_timestamp}'
-        if not verify_signature(
-            hotkey=synapse.dendrite.hotkey,
-            data=data,
-            signature=synapse.synapse_signature,
-        ):
-            print(
-                f"Failed to validate signature for the synapse. Hotkey: {synapse.dendrite.hotkey}, data: {data}, signature: {synapse.synapse_signature}"
-            )
-            return synapse
-        else:
-            print(
-                f"Succesfully validated signature for the synapse. Hotkey: {synapse.dendrite.hotkey}, data: {data}, signature: {synapse.synapse_signature}"
-            ) 
-        """
-
-
-        """   
-        synapse_timestamp = synapse.metadata.timestamp
-        synapse_id = synapse.metadata.id
-        validator_id = synapse.metadata.neuron_id
-        server_subnet_version = synapse.metadata.subnet_version
-        bt.logging.info(f"Received synapse from validator: {validator_id} with ID: {synapse_id} subnet version: {server_subnet_version} and timestamp: {synapse_timestamp}")
-         """
-        #update games table
-        games_dict = synapse.gamedata_dict
-        bt.logging.info(f"Received {len(games_dict)} games, updating games table in local database")
-        for game in games_dict:
-            #if UUID.to_string not in games table, insert
-            if game not in cursor.execute('SELECT * FROM games WHERE gameId = ?', (game.to_string(),)):
-                cursor.execute('''INSERT INTO games (
-                               gameID, 
-                               teamA, 
-                               teamAOdds, 
-                               teamB, 
-                               teamBodds, 
-                               sport, 
-                               league, 
-                               eventDescription, 
-                               externalId, 
-                               createDate, 
-                               lastUpdateDate, 
-                               eventStartDate, 
-                               active, 
-                               outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-                               (game.to_string(), 
-                                game.teamA, 
-                                game.teamAOdds, 
-                                game.teamB, 
-                                game.teamBodds, 
-                                game.sport, 
-                                game.league, 
-                                game.eventDescription, 
-                                game.externalId, 
-                                game.createDate, 
-                                game.lastUpdateDate, 
-                                game.eventStartDate, 
-                                str(game.active), #bool to string
-                                game.outcome))
-                db.commit()
-            else:
-                # if game.id in games table, update to latest data
-                cursor.execute('''
-                               UPDATE games SET teamA = ?, 
-                               teamAOdds = ?, 
-                               teamB = ?, 
-                               teamBodds = ?, 
-                               sport = ?, 
-                               league = ?, 
-                               eventDescription = ?, 
-                               externalId = ?, 
-                               createDate = ?, 
-                               lastUpdateDate = ?, 
-                               eventStartDate = ?, 
-                               active = ?, 
-                               outcome = ? 
-                               WHERE gameId = ?''', 
-                               (game.teamA, 
-                                game.teamAOdds, 
-                                game.teamB, 
-                                game.teamBodds, 
-                                game.sport, 
-                                game.league, 
-                                game.eventDescription, 
-                                game.externalId, 
-                                game.createDate, 
-                                game.lastUpdateDate, 
-                                game.eventStartDate, 
-                                str(game.active), 
-                                game.outcome, 
-                                game.id))
-                db.commit()
-
-        bt.logging.info(f"Updated games table in local database")
-        # construct prediction 
-        prediction_dict = {}
+        # Verify schema
         self.print_table_schema()
-        #get games that have not started yet
+
+        # Get current time
         current_time = datetime.datetime.now().isoformat(timespec="minutes")
-        games = cursor.execute('SELECT gameID FROM games WHERE eventStartDate < ?', (current_time,))
 
-        #get predictions for these games
-        predictions = cursor.execute('SELECT * FROM predictions WHERE gameID IN (?)', (games))
+        # Fetch games that have not started yet
+        cursor.execute('SELECT gameID FROM games WHERE eventStartDate > ?', (current_time,))
+        games = cursor.fetchall()
 
-        # add predictions to prediction_dict
-        for prediction in predictions:
-            single_prediction = TeamGamePrediction(
-                predictionID = prediction[0],
-                teamGameID = prediction[1],
-                minerID = prediction[2],
-                predictionDate = prediction[3],
-                predictedOutcome = prediction[4],
-                wager = prediction[5],
-                teamAodds = prediction[6],
-                teamBodds = prediction[7],
-                tieOdds = prediction[8],
-                outcome = prediction[9]
-            )
-            prediction_dict[prediction[0]] = single_prediction
-            
+        # Log the fetched games
+        bt.logging.info(f"Fetched games: {games}")
+
+        # Process the fetched games
+        prediction_dict = {}
+        for game in games:
+            game_id = game[0]
+            # Fetch predictions for the game
+            cursor.execute('SELECT * FROM predictions WHERE gameID = ?', (game_id,))
+            predictions = cursor.fetchall()
+
+            # Add predictions to prediction_dict
+            for prediction in predictions:
+                single_prediction = TeamGamePrediction(
+                    predictionID=prediction[0],
+                    teamGameID=prediction[1],
+                    minerID=prediction[2],
+                    predictionDate=prediction[3],
+                    predictedOutcome=prediction[4],
+                    wager=prediction[5],
+                    teamAodds=prediction[6],
+                    teamBodds=prediction[7],
+                    tieOdds=prediction[8],
+                    outcome=prediction[9]
+                )
+                prediction_dict[prediction[0]] = single_prediction
+
         try:
             prediction_synapse = Prediction.create(self.wallet, self.subnet_version, self.miner_uid, prediction_dict)
         except Exception as e:
@@ -430,10 +349,4 @@ class BettensorMiner(BaseNeuron):
 
         return prediction_synapse
 
-def print_table_schema(self):
-    db, cursor = self.get_cursor()
-    cursor.execute("PRAGMA table_info(games)")
-    schema = cursor.fetchall()
-    for column in schema:
-        print(column)
-    db.close()
+
