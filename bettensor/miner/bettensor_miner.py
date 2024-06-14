@@ -289,6 +289,7 @@ class BettensorMiner(BaseNeuron):
         """
         
         """
+        bt.logging.debug(f"Forwarding synapse: {synapse}")
         db, cursor = self.get_cursor()
 
         # Print version information and perform version checks

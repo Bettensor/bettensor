@@ -70,6 +70,7 @@ class Metadata(BaseModel):
         timestamp = datetime.datetime.now().isoformat()
         data_to_sign = f"{synapse_id}{timestamp}{neuron_uid}"
         signature = create_signature(data_to_sign, wallet)
+        bt.logging.debug(f"Creating Metadata with synapse_id: {synapse_id}, neuron_uid: {neuron_uid}, timestamp: {timestamp}, signature: {signature}, subnet_version: {subnet_version}")
         return cls(synapse_id=synapse_id, neuron_uid=neuron_uid, timestamp=timestamp, signature=signature, subnet_version=subnet_version)
 
     

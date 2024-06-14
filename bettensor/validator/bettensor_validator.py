@@ -590,3 +590,7 @@ class BettensorValidator(BaseNeuron):
     
     def get_games():
         pass # func to get game data
+
+    def set_weights(self):
+        bt.logging.debug(f"Setting weights for validator: This function needs to be implemented")
+         # func to set weights

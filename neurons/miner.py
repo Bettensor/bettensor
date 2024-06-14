@@ -81,7 +81,7 @@ def main(miner: BettensorMiner):
     # Activate the Miner on the network
     axon.start()
     bt.logging.info(f"Axon started on port: {miner.neuron_config.axon.port}")
-
+    bt.logging.info(f"Axon: {axon}")
     # Step 7: Keep the miner alive
     # This loop maintains the miner's operations until intentionally stopped.
     bt.logging.info(

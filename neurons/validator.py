@@ -140,39 +140,47 @@ def main(validator: BettensorValidator):
                             raise FileNotFoundError(f"Database file not found at path: {db_path}")
             
             metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
-            print(uids_to_query)
+            print(f"uids_to_query: {uids_to_query}")
             # TODO: verify validators are not queries
             responses = validator.dendrite.query(
                 axons=uids_to_query,
                 synapse=GameData.create(db_path=db_path, metadata=metadata),
                 timeout=validator.timeout,
                 deserialize=True,
-                name=GameData,
             )
             print("responses: ")
             print(responses)
             print('line after responses')
             # Process blacklisted UIDs (set scores to 0)
+            bt.logging.debug(f"blacklisted_uids: {blacklisted_uids}")
             for uid in blacklisted_uids:
-                bt.logging.debug(f'Setting score for blacklisted UID: {uid}. Old score: {validator.scores[uid]}')
-                validator.scores[uid] = (
+                if uid is not None:
+                    bt.logging.debug(f'Setting score for blacklisted UID: {uid}. Old score: {validator.scores[uid]}')
+                    validator.scores[uid] = (
                     validator.neuron_config.alpha * validator.scores[uid]
                     + (1 - validator.neuron_config.alpha) * 0.0
-                )
-                bt.logging.debug(f'Set score for blacklisted UID: {uid}. New score: {validator.scores[uid]}')
+                    )
+                    bt.logging.debug(f'Set score for blacklisted UID: {uid}. New score: {validator.scores[uid]}')
 
             # Process UIDs we did not query (set scores to 0)
+            bt.logging.debug(f"uids_not_to_query: {uids_not_to_query}")
             for uid in uids_not_to_query:
-                bt.logging.trace(
-                    f"Setting score for not queried UID: {uid}. Old score: {validator.scores[uid]}"
-                )
-                validator.scores[uid] = (
-                    validator.neuron_config.alpha * validator.scores[uid]
-                    + (1 - validator.neuron_config.alpha) * 0.0
-                )
-                bt.logging.trace(
-                    f"Set score for not queried UID: {uid}. New score: {validator.scores[uid]}"
-                )
+                if uid is not None:
+                    bt.logging.trace(
+                        f"Setting score for not queried UID: {uid}. Old score: {validator.scores[uid]}"
+                    )
+
+                    validator_alpha_type = type(validator.neuron_config.alpha)
+                    validator_scores_type = type(validator.scores[uid])
+
+                    bt.logging.debug(f"validator_alpha_type: {validator_alpha_type}, validator_scores_type: {validator_scores_type}")
+                    validator.scores[uid] = (
+                        validator.neuron_config.alpha * validator.scores[uid]
+                        + (1 - validator.neuron_config.alpha) * 0.0
+                    )
+                    bt.logging.trace(
+                        f"Set score for not queried UID: {uid}. New score: {validator.scores[uid]}"
+                    )
             if responses is None:
                 print("No responses received. Sleeping for 18 seconds.")
                 time.sleep(18)
@@ -199,21 +207,24 @@ def main(validator: BettensorValidator):
 
             # Process the responses
             # processed_uids = torch.nonzero(list_of_uids).squeeze()
-            response_data = validator.process_prediction(
-                processed_uids=list_of_uids,
-                predictions=responses
-            )
+            if responses is not None:
+                response_data = validator.process_prediction(
+                    processed_uids=list_of_uids,
+                    predictions=responses
+                )
 
-            for res in response_data:
-                if validator.miner_responses:
-                    if res["hotkey"] in validator.miner_responses:
-                        validator.miner_responses[res["hotkey"]].append(res)
+                for res in response_data:
+                    if validator.miner_responses:
+                        if res["hotkey"] in validator.miner_responses:
+                            validator.miner_responses[res["hotkey"]].append(res)
                     else:
                         validator.miner_responses[res["hotkey"]] = [res]
                 else:
                     validator.miner_responses = {}
                     validator.miner_responses[res["hotkey"]] = [res]
+            current_block = validator.subtensor.block
             
+            bt.logging.debug(f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}")
 
             if current_block - validator.last_updated_block > 200:
                 # Periodically update the weights on the Bittensor blockchain.
@@ -224,7 +235,7 @@ def main(validator: BettensorValidator):
                 except TimeoutError as e:
                     bt.logging.error(f"Setting weights timed out: {e}")
                 # update local games database
-                update_games
+                #update_games()
 
             # End the current step and prepare for the next iteration.
             validator.step += 1
@@ -239,7 +250,11 @@ def main(validator: BettensorValidator):
 # The main function parses the configuration and runs the validator.
 if __name__ == "__main__":
     parser = ArgumentParser()
+    
+    parser.add_argument("--alpha", type=float, default=0.9, help="The alpha value for the validator.")
+    
     parser.add_argument("--netuid", type=int, default=34, help="The chain subnet uid.")
+
 
     parser.add_argument(
         "--max_targets",
