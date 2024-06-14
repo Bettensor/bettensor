@@ -1,6 +1,7 @@
 
 import argparse
 import signal
+import sqlite3
 import bittensor as bt
 import rich
 import prompt_toolkit
@@ -489,13 +490,9 @@ def _(event):
     custom_app = event.app.custom_app
     graceful_shutdown(custom_app)
 
-def submit_predictions(miner, unsubmitted_predictions):
-    from bettensor_miner import BettensorMiner
-    try:
-        db, cursor = miner.get_cursor()
-    except Exception as e:
-        print(f"Failed to get cursor: {e}")
-        return
+def submit_predictions(db, cursor, unsubmitted_predictions):
+   
+   
     for prediction in unsubmitted_predictions:
         try:
             
@@ -519,7 +516,7 @@ def submit_predictions(miner, unsubmitted_predictions):
             print(f"Failed to submit predictions: {e}")
 
 def graceful_shutdown(custom_app):
-    submit_predictions(custom_app.miner, custom_app.unsubmitted_predictions)
+    submit_predictions(custom_app.db, custom_app.cursor, custom_app.unsubmitted_predictions)
     custom_app.app.exit()
 
 def signal_handler(signal, frame):
@@ -530,8 +527,9 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 class Application:
-    def __init__(self, predictions, games, miner_stats, miner):
-        self.miner = miner
+    def __init__(self, predictions, games, miner_stats, db, cursor):
+        self.db = db
+        self.cursor = cursor
         self.predictions = predictions
         self.unsubmitted_predictions = {}
         self.games = games
@@ -555,18 +553,17 @@ class Application:
         self.app.custom_app = self
         self.app.run()
 
-
-class MockMiner:
-    def get_cursor(self):
+def get_database():
+    try:
+        db = sqlite3.connect('./miner.db')
+        return db, db.cursor()
+    except Exception as e:
+        print(f"Failed to get database: {e}")
         return None, None
 
-if __name__ == "__main__":
-    try:
-        from bettensor_miner import BettensorMiner
-        miner = BettensorMiner(parser = args.parser)  # Create your specific miner instance
-    except Exception as e:
-        print(f"Failed to import BettensorMiner: {e}")
-        miner = MockMiner()  # Use mock miner for standalone testing
 
-    app = Application(predictions, gameData, miner_stats, miner)
+if __name__ == "__main__":
+    
+
+    app = Application(predictions, gameData, miner_stats, get_database())
     app.run()
