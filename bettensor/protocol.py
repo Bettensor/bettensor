@@ -34,7 +34,7 @@ import sqlite3
 
 class Metadata(BaseModel):
     '''Synapse Metadata class, add more fields if needed'''
-    synapse_id: UUID = Field(
+    synapse_id: str = Field(
         ...,
         description="UUID of the synapse"
     )
@@ -66,27 +66,27 @@ class Metadata(BaseModel):
             Metadata: A new metadata object to attach to a synapse
         '''
         print(type(wallet))
-        synapse_id = uuid.uuid4()
+        synapse_id = str(uuid.uuid4())
         timestamp = datetime.datetime.now().isoformat()
         data_to_sign = f"{synapse_id}{timestamp}{neuron_uid}"
         signature = create_signature(data_to_sign, wallet)
         bt.logging.debug(f"Creating Metadata with synapse_id: {synapse_id}, neuron_uid: {neuron_uid}, timestamp: {timestamp}, signature: {signature}, subnet_version: {subnet_version}")
-        return cls(synapse_id=synapse_id, neuron_uid=neuron_uid, timestamp=timestamp, signature=signature, subnet_version=subnet_version)
+        return Metadata(synapse_id=synapse_id, neuron_uid=neuron_uid, timestamp=timestamp, signature=signature, subnet_version=subnet_version)
 
     
 class TeamGamePrediction(BaseModel):
     '''
     Data class from json. Will need to be modified in the future for more complex prediction types.
     '''
-    predictionID: UUID = Field(
+    predictionID: str = Field(
         ...,
         description="UUID of the prediction"
     )
-    teamGameID: UUID = Field(
+    teamGameID: str = Field(
         ...,
         description="UUID of the team game"
     )
-    minerID: UUID = Field(
+    minerID: str = Field(
         ...,
         description="UUID of the miner (coldkey/hotkey) that made the prediction"
     )
@@ -129,7 +129,7 @@ class TeamGame(BaseModel):
     '''
     Data class from json. May need to be modified in the future for more complex prediction types
     '''
-    id: UUID = Field(
+    id: str = Field(
         ...,
         description="UUID of the team game"
     )
@@ -200,10 +200,10 @@ class Prediction(bt.Synapse):
     This class defines the synapse object for a miner prediction, consisting of a dictionary of TeamGamePrediction objects with a UUID as key.
     '''
     metadata: Metadata
-    prediction_dict: typing.Dict[UUID, TeamGamePrediction]
+    prediction_dict: typing.Dict[str, TeamGamePrediction]
 
     @classmethod
-    def create(cls, metadata: Metadata, prediction_dict: typing.Dict[UUID, TeamGamePrediction]):
+    def create(cls, wallet: bt.wallet, subnet_version, neuron_uid, prediction_dict: typing.Dict[str, TeamGamePrediction]):
         '''
         Creates a new prediction synapse
         Args:
@@ -212,7 +212,7 @@ class Prediction(bt.Synapse):
         Returns:
             Prediction: A new prediction synapse
         '''
-
+        metadata = Metadata.create(wallet=wallet, subnet_version=subnet_version, neuron_uid=neuron_uid)
         return cls(metadata=metadata, prediction_dict=prediction_dict)
     def deserialize(self):
         return self.prediction_dict, self.metadata
@@ -222,16 +222,17 @@ class GameData(bt.Synapse):
     This class defines the synapse object for game data, consisting of a dictionary of TeamGame objects with a UUID as key.
     '''
     metadata: Metadata
-    gamedata_dict: typing.Dict[UUID, TeamGame]
+    gamedata_dict: typing.Dict[str, TeamGame]
 
     @classmethod
-    def create(cls, metadata: Metadata, db_path):
+    def create(cls, db_path, wallet: bt.wallet, subnet_version, neuron_uid):
+        metadata = Metadata.create(wallet=wallet, subnet_version=None, neuron_uid=None)
         gamedata_dict = cls.fetch_game_data(metadata.timestamp, db_path)
         #metadata = cls.create_metadata()
         return cls(metadata=metadata, gamedata_dict=gamedata_dict)
 
     @staticmethod
-    def fetch_game_data(current_timestamp, db_path) -> typing.Dict[UUID, TeamGame]:
+    def fetch_game_data(current_timestamp, db_path) -> typing.Dict[str, TeamGame]:
         connection = sqlite3.connect(db_path)
         cursor = connection.cursor()
 
@@ -247,7 +248,7 @@ class GameData(bt.Synapse):
         gamedata_dict = {}
         for row in rows:
             team_game = TeamGame(
-                id=UUID(row[0]),
+                id=row[0],
                 teamA=row[1],
                 teamB=row[2],
                 sport=row[3],
@@ -263,7 +264,7 @@ class GameData(bt.Synapse):
                 tieOdds=row[13],
                 canTie=bool(row[14])
             )
-            gamedata_dict[UUID(row[0])] = team_game
+            gamedata_dict[row[0]] = team_game
 
         connection.close()
         return gamedata_dict

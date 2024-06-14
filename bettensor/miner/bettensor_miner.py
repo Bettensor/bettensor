@@ -289,7 +289,7 @@ class BettensorMiner(BaseNeuron):
         """
         
         """
-        bt.logging.debug(f"Forwarding synapse: {synapse}")
+        bt.logging.info(f"Forwarding synapse: {synapse}")
         db, cursor = self.get_cursor()
 
         # Print version information and perform version checks
@@ -419,12 +419,7 @@ class BettensorMiner(BaseNeuron):
             prediction_dict[UUID(prediction[0])] = single_prediction
             
         try:
-            metadata = Metadata.create(self.wallet, self.subnet_version, self.miner_uid)
-        except Exception as e:
-            bt.logging.error(f"Failed to create metadata: {e}")
-            raise Exception("Failed to create metadata")
-        try:
-            prediction_synapse = Prediction.create(metadata, prediction_dict)
+            prediction_synapse = Prediction.create(self.wallet, self.subnet_version, self.miner_uid, prediction_dict)
         except Exception as e:
             bt.logging.error(f"Failed to create prediction synapse: {e}")
             raise Exception("Failed to create prediction synapse")

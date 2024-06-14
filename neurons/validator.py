@@ -139,12 +139,17 @@ def main(validator: BettensorValidator):
             if not os.path.exists(db_path):
                             raise FileNotFoundError(f"Database file not found at path: {db_path}")
             
-            metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
+            #metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
             print(f"uids_to_query: {uids_to_query}")
             # TODO: verify validators are not queries
+            
+
+            #need to make sure we have the subnet version and wallet 
+            bt.logging.debug(f"Subnet version: {validator.subnet_version}, wallet: {validator.wallet} , uid: {validator.uid}")
+
             responses = validator.dendrite.query(
                 axons=uids_to_query,
-                synapse=GameData.create(db_path=db_path, metadata=metadata),
+                synapse=GameData.create(db_path=db_path, wallet=validator.wallet, subnet_version=validator.subnet_version, neuron_uid=validator.uid),
                 timeout=validator.timeout,
                 deserialize=True,
             )
