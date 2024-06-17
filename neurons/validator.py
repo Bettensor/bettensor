@@ -189,7 +189,7 @@ def main(validator: BettensorValidator):
                     bt.logging.trace(
                         f"Set score for not queried UID: {uid}. New score: {validator.scores[uid]}"
                     )
-            if responses is None:
+            if  not responses:
                 print("No responses received. Sleeping for 18 seconds.")
                 time.sleep(18)
             # Log the results for monitoring purposes.
@@ -215,7 +215,7 @@ def main(validator: BettensorValidator):
 
             # Process the responses
             # processed_uids = torch.nonzero(list_of_uids).squeeze()
-            if responses is not None:
+            if responses and any(responses):
                 response_data = validator.process_prediction(
                     processed_uids=list_of_uids,
                     predictions=responses
