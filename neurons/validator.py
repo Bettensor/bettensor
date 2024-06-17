@@ -21,25 +21,7 @@ import time
 import sys
 import os
 
-# Get the current file's directory
-current_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Get the parent directory
-parent_dir = os.path.dirname(current_dir)
-
-# Get the grandparent directory
-grandparent_dir = os.path.dirname(parent_dir)
-
-# Get the great grandparent directory
-great_grandparent_dir = os.path.dirname(grandparent_dir)
-
-# Add parent, grandparent, and great grandparent directories to sys.path
-sys.path.append(parent_dir)
-sys.path.append(grandparent_dir)
-sys.path.append(great_grandparent_dir)
-
-# Optional: Print sys.path to verify the directories have been added
-print(sys.path)
 from bettensor.protocol import GameData
 from bettensor.utils.get_baseball_games import BaseballData
 from bettensor.protocol import GameData, Metadata
@@ -64,9 +46,7 @@ from datetime import datetime
 
 def main(validator: BettensorValidator):
     # Get data and populate DB if it doesn't exist
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.normpath(os.path.join(script_dir, 'validator.db'))
-    baseball_data = BaseballData(db_name=db_path)
+    baseball_data = BaseballData(db_name="validator.db")
     baseball_data.get_baseball_data() 
     while True:
         try:
@@ -131,26 +111,16 @@ def main(validator: BettensorValidator):
             
             # Broadcast query to valid Axons
             current_timestamp = datetime.now().isoformat()
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            db_path = os.path.join(script_dir, '../validator.db')
-            print(f"Attempting to open database at: {db_path}")
-            if not os.path.exists(db_path):
-                            raise FileNotFoundError(f"Database file not found at path: {db_path}")
-            
             #metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
             print(f"uids_to_query: {uids_to_query}")
             # TODO: verify validators are not queries
-            
-            
-
-            
             
             #need to make sure we have the subnet version and wallet 
             bt.logging.debug(f"Subnet version: {validator.subnet_version}, wallet: {validator.wallet} , uid: {validator.uid}")
 
             responses = validator.dendrite.query(
                 axons=uids_to_query,
-                synapse=GameData.create(db_path=db_path, wallet=validator.wallet, subnet_version=validator.subnet_version, neuron_uid=validator.uid),
+                synapse=GameData.create(db_path="validator.db", wallet=validator.wallet, subnet_version=validator.subnet_version, neuron_uid=validator.uid),
                 timeout=validator.timeout,
                 deserialize=True,
             )
