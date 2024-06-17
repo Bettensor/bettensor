@@ -65,11 +65,9 @@ from datetime import datetime
 def main(validator: BettensorValidator):
     # Get data and populate DB if it doesn't exist
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.normpath(os.path.join(script_dir, '../bettensor/utils/games.db'))
-    if not os.path.exists(db_path):
-        print(f"Database not found at path: {db_path}, creating and populating it.")
-        baseball_data = BaseballData(db_name=db_path)
-        baseball_data.get_baseball_data() 
+    db_path = os.path.normpath(os.path.join(script_dir, 'validator.db'))
+    baseball_data = BaseballData(db_name=db_path)
+    baseball_data.get_baseball_data() 
     while True:
         try:
             # Periodically sync subtensor status and save the state file
@@ -134,7 +132,7 @@ def main(validator: BettensorValidator):
             # Broadcast query to valid Axons
             current_timestamp = datetime.now().isoformat()
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            db_path = os.path.join(script_dir, '../bettensor/utils/games.db')
+            db_path = os.path.join(script_dir, '../validator.db')
             print(f"Attempting to open database at: {db_path}")
             if not os.path.exists(db_path):
                             raise FileNotFoundError(f"Database file not found at path: {db_path}")

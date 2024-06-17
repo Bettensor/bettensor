@@ -7,7 +7,7 @@ from dateutil import parser
 import sqlite3
 
 class BaseballData:
-    def __init__(self, db_name='games_data.db'):
+    def __init__(self, db_name='validator.db'):
         self.db_name = db_name
         self.api_key = "b416b1c26dmsh6f20cd13ee1f7ccp11cc1djsnf64975aaacde"
         self.api_host = "api-baseball.p.rapidapi.com"

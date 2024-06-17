@@ -276,11 +276,11 @@ class BettensorValidator(BaseNeuron):
         # Commit changes, close the connection
         conn.commit()
         conn.close()
-        return sqlite3.connect('predictions.db')
+        return sqlite3.connect('validator.db')
 
     
     def connect_db(self):
-        return sqlite3.connect('predictions.db')
+        return sqlite3.connect('validator.db')
 
     def create_table(self):
         conn = self.connect_db()
