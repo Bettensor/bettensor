@@ -6,7 +6,7 @@ import requests
 import bittensor as bt
 import sqlite3
 from bettensor.base.neuron import BaseNeuron
-from bettensor.protocol import Metadata, GameData, Prediction, TeamGamePrediction
+from bettensor.protocol import Metadata, GameData, TeamGamePrediction
 from bettensor.utils.sign_and_validate import verify_signature
 import datetime
 import os
@@ -296,13 +296,13 @@ class BettensorMiner(BaseNeuron):
 
         return stake
 
-    def forward(self, synapse: GameData) -> Prediction:
-        bt.logging.info(f"Forwarding synapse: {synapse}")
+    def forward(self, synapse: GameData) -> GameData:
+        bt.logging.info(f"Miner: forward()")
         db, cursor = self.get_cursor()
 
         # Print version information and perform version checks
-        print(f"Synapse version: {synapse.subnet_version}, our version: {self.subnet_version}")
-        if synapse.subnet_version > self.subnet_version:
+        print(f"Synapse version: {synapse.metadata.subnet_version}, our version: {self.subnet_version}")
+        if synapse.metadata.subnet_version > self.subnet_version:
             bt.logging.warning(
                 f"Received a synapse from a validator with higher subnet version ({synapse.subnet_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
             )
@@ -363,13 +363,10 @@ class BettensorMiner(BaseNeuron):
                 prediction_dict[prediction[0]] = single_prediction
 
         bt.logging.info(f"prediction_dict: {prediction_dict}")
-        try:
-            prediction_synapse = Prediction.create(self.wallet, self.subnet_version, self.miner_uid, prediction_dict)
-        except Exception as e:
-            bt.logging.error(f"Failed to create prediction synapse: {e}")
-            raise Exception("Failed to create prediction synapse")
-
-        return prediction_synapse
+        synapse.prediction_dict = prediction_dict
+        synapse.gamedata_dict = None
+        synapse.metadata = Metadata.create(wallet=self.wallet, subnet_version=self.subnet_version, neuron_uid=self.miner_uid, synapse_type="prediction")
+        return synapse
 
 
     def add_game_data(self, game_data_dict):

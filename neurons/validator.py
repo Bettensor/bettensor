@@ -42,12 +42,17 @@ from bettensor.base.validator import BaseValidatorNeuron
 from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor import protocol
 #from update_games import update_games
+from bettensor.utils.miner_stats import MinerStatsHandler
 from datetime import datetime
 
 def main(validator: BettensorValidator):
     # Get data and populate DB if it doesn't exist
     baseball_data = BaseballData(db_name="validator.db")
     baseball_data.get_baseball_data() 
+    # init miner stats
+    
+
+
     while True:
         try:
             # Periodically sync subtensor status and save the state file
@@ -76,7 +81,7 @@ def main(validator: BettensorValidator):
             all_axons = validator.metagraph.axons
             bt.logging.trace(f"All axons: {all_axons}")
 
-            # If there are more axons than scores, append the scores list
+            # If there are more axons than scores, append the scores list and add new miners to the database 
             if len(validator.metagraph.uids.tolist()) > len(validator.scores):
                 bt.logging.info(
                     f"Discovered new Axons, current scores: {validator.scores}"
@@ -94,11 +99,17 @@ def main(validator: BettensorValidator):
                     )
                 )
                 bt.logging.info(f"Updated scores, new scores: {validator.scores}")
+
+            # TODO: test this method
+            validator.add_new_miners()
+
+
+
             # Get list of UIDs to query
             (
                 uids_to_query,
                 list_of_uids,
-                blacklisted_uids,
+                blacklisted_uids,   
                 uids_not_to_query,
             ) = validator.get_uids_to_query(all_axons=all_axons)
             if not uids_to_query:
@@ -116,17 +127,21 @@ def main(validator: BettensorValidator):
             # TODO: verify validators are not queries
             
             #need to make sure we have the subnet version and wallet 
-            bt.logging.debug(f"Subnet version: {validator.subnet_version}, wallet: {validator.wallet} , uid: {validator.uid}")
-
+            #bt.logging.debug(f"Subnet version: {validator.subnet_version}, wallet: {validator.wallet} , uid: {validator.uid}")
+            
+            synapse = GameData.create(db_path="validator.db", wallet=validator.wallet, subnet_version=validator.subnet_version, neuron_uid=validator.uid,synapse_type="game_data")
+            bt.logging.info(f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}")
             responses = validator.dendrite.query(
                 axons=uids_to_query,
-                synapse=GameData.create(db_path="validator.db", wallet=validator.wallet, subnet_version=validator.subnet_version, neuron_uid=validator.uid),
+                synapse=synapse,
                 timeout=validator.timeout,
                 deserialize=True,
             )
-            print("responses: ")
-            print(responses)
-            print('line after responses')
+
+            #print("responses: ")
+            #print(len(responses))
+            #print('line after responses')
+
             # Process blacklisted UIDs (set scores to 0)
             bt.logging.debug(f"blacklisted_uids: {blacklisted_uids}")
             for uid in blacklisted_uids:

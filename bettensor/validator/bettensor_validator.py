@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from bettensor.utils.miner_stats import MinerStatsHandler
 import bittensor as bt
 import json
 from typing import Tuple
@@ -9,6 +10,7 @@ import torch
 from copy import deepcopy
 import copy
 from datetime import datetime
+from bettensor.protocol import TeamGamePrediction
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -166,6 +168,8 @@ class BettensorValidator(BaseNeuron):
 
         self.target_group = 0
 
+        self.miner_stats = MinerStatsHandler()
+
         return True
 
     def _parse_args(self, parser):
@@ -200,8 +204,10 @@ class BettensorValidator(BaseNeuron):
     def insert_or_update_predictions(self, processed_uids, predictions):
         """
         Updates database with new predictions
-        Accepts:
-            TeamGamePrediction object
+        Args:
+        processed_uids: list of uids that have been processed
+        predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
+
         """
         conn = self.connect_db()
         c = conn.cursor()
@@ -209,22 +215,31 @@ class BettensorValidator(BaseNeuron):
 
         for i, res in enumerate(predictions):
             # TODO: nest another loop to iterate through all the predictions
-            hotkey = self.metagraph.hotkeys[processed_uids[i]]
 
-            pred_id = res["pred_id"]
-            teamGameId = res["teamGameId"]
-            sport = res["sport"]
-            minerId = hotkey
-            league = res["league"]
-            predictionDate = res["predictionDate"]
-            predictedOutcome = res["predictedOutcome"]
-            wager = res["wager"]
-
-            # Check if the game has already started; exclude prediction if it has
-            c.execute('''
-                SELECT eventStartDate FROM teamGame WHERE id = ? AND sport = ? AND league = ?
-            ''', (teamGameId, sport, league))
+            #ensure that prediction uid is in processed_uids 
+            if i not in processed_uids:
+                bt.logging.warn(f"Warning: Prediction uid: {res.metadata.neuron_uid} not in processed_uids")
+                #TODO : handle? Toss this prediction?
+                continue
             
+            # We need to pull some game data from the database to fill sport, league
+
+            hotkey = self.metagraph.hotkeys[i]
+            predictionID = res.predictionID
+            teamGameId = res.teamGameID
+            #sport = res.sport
+            minerId = hotkey
+            #league = res.league
+            predictionDate = res.predictionDate
+            predictedOutcome = res.predictedOutcome
+            wager = res.wager
+
+            
+            c.execute('''
+                SELECT eventStartDate FROM teamGame WHERE id = ?
+            ''', (teamGameId))
+
+
             row = c.fetchone()
             if row:
                 event_start_date = row[0]
@@ -234,8 +249,8 @@ class BettensorValidator(BaseNeuron):
             
             # Check if the prediction already exists; update prediction if it does
             c.execute('''
-                SELECT id, wager FROM predictions WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
-            ''', (teamGameId, sport, minerId, league))
+                SELECT id, wager FROM predictions WHERE predictionID = ?
+            ''', (predictionID))
             
             existing_prediction = c.fetchone()
             
@@ -289,14 +304,19 @@ class BettensorValidator(BaseNeuron):
         # Create table if it doesn't exist
         c.execute('''
         CREATE TABLE IF NOT EXISTS predictions (
-            id INTEGER PRIMARY KEY,
-            teamGameId INTEGER,
-            sport TEXT,
+            predictionID INTEGER PRIMARY KEY,
+            teamGameID INTEGER,
             minerId TEXT,
-            league TEXT,
             predictionDate TEXT,
-            predictedOutcome STRING,
-            wager REAL
+            predictedOutcome TEXT,
+            teamA TEXT,
+            teamB TEXT,
+            wager REAL,
+            teamAodds REAL,
+            teamBodds REAL,
+            tieOdds REAL,
+            canOverwrite BOOLEAN,
+            outcome TEXT
         )
         ''')
     
@@ -308,10 +328,40 @@ class BettensorValidator(BaseNeuron):
     def process_prediction(self, processed_uids: torch.tensor, predictions:list) ->list:
         """
         Processes responses received by miners
-        """        
+
+        Args: 
+            processed_uids: list of uids that have been processed
+            predictions: list of deserialized synapses
+        """ 
+        
+        predictions_dict = {}
+
+        for synapse in predictions:
+            prediction_dict : TeamGamePrediction = synapse[1]
+            uid = synapse[2].neuron_uid
+            bt.logging.info(f"Processing prediction from miner: {uid}")
+            bt.logging.info(f"Prediction: {prediction_dict}")
+            predictions_dict[uid] = prediction_dict       
 
         self.create_table()
-        self.insert_or_update_predictions(processed_uids, predictions)
+        self.insert_or_update_predictions(processed_uids, predictions_dict)
+
+    def add_new_miners(self):
+        '''
+        adds new miners to the database, if there are new hotkeys in the metagraph
+        '''
+        if self.hotkeys:
+            uids_with_stake = self.metagraph.total_stake >= 0.0
+            for i, hotkey in enumerate(self.metagraph.hotkeys):
+                if (hotkey not in self.hotkeys) and (i not in uids_with_stake):
+                    coldkey = self.metagraph.coldkeys[i]
+                    
+
+
+                    if self.miner_stats.init_miner_row(hotkey,coldkey,i):
+                        bt.logging.info(f"Added new miner to the database: {hotkey}")
+                    else:
+                        bt.logging.error(f"Failed to add new miner to the database: {hotkey}")
 
 
     def check_hotkeys(self):

@@ -19,7 +19,7 @@
 
 import bittensor as bt
 
-from bettensor.protocol import Metadata, TeamGamePrediction, TeamGame, Prediction, GameData
+from bettensor.protocol import Metadata, TeamGamePrediction, TeamGame, GameData
 from bettensor.validator.reward import get_rewards
 from bettensor.utils.uids import get_random_uids
 import uuid
