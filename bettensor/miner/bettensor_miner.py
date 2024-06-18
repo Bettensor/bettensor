@@ -7,7 +7,6 @@ import bittensor as bt
 import sqlite3
 from bettensor.base.neuron import BaseNeuron
 from bettensor.protocol import Metadata, GameData, Prediction, TeamGamePrediction
-from bettensor.miner import cli
 from bettensor.utils.sign_and_validate import verify_signature
 import datetime
 import os
@@ -94,28 +93,32 @@ class BettensorMiner(BaseNeuron):
                                teamGameID TEXT, 
                                minerID UUID, 
                                predictionDate TEXT, 
-                               predictedOutcome TEXT, 
+                               predictedOutcome TEXT,
+                               teamA TEXT,
+                               teamB TEXT,
                                wager REAL,
                                teamAodds REAL,
                                teamBodds REAL,
                                tieOdds REAL,
+                               canOverwrite BOOLEAN,
                                outcome TEXT
                                )''')
             cursor.execute('''CREATE TABLE IF NOT EXISTS games (
                                gameID TEXT PRIMARY KEY, 
                                teamA TEXT,
-                               teamAOdds REAL,
+                               teamAodds REAL,
                                teamB TEXT,
                                teamBodds REAL,
                                sport TEXT, 
                                league TEXT, 
-                               eventDescription TEXT, 
                                externalID TEXT, 
                                createDate TEXT, 
                                lastUpdateDate TEXT, 
                                eventStartDate TEXT, 
                                active BOOLEAN, 
-                               outcome TEXT
+                               outcome TEXT,
+                               tieOdds REAL,
+                               canTie BOOLEAN
                                )''')
             db.commit()
             db.close()
@@ -303,9 +306,23 @@ class BettensorMiner(BaseNeuron):
             bt.logging.warning(
                 f"Received a synapse from a validator with higher subnet version ({synapse.subnet_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
             )
-
+        
         # Verify schema
-        self.print_table_schema()
+        #self.print_table_schema()
+
+        # TODO: METADATA / Signature Verification
+
+        game_data_dict = synapse.gamedata_dict
+        self.add_game_data(game_data_dict)
+
+        #check if tables in db are initialized
+        #if not, initialize them
+        
+        cursor.execute('SELECT * FROM games')
+        if not cursor.fetchone():
+            self.initialize_database()
+
+
 
         # Get current time
         current_time = datetime.datetime.now().isoformat(timespec="minutes")
@@ -315,32 +332,37 @@ class BettensorMiner(BaseNeuron):
         games = cursor.fetchall()
 
         # Log the fetched games
-        bt.logging.info(f"Fetched games: {games}")
+        #bt.logging.info(f"Fetched games: {games}")
 
         # Process the fetched games
+        bt.logging.info(f"Processing predictions")
         prediction_dict = {}
         for game in games:
             game_id = game[0]
             # Fetch predictions for the game
-            cursor.execute('SELECT * FROM predictions WHERE gameID = ?', (game_id,))
+            cursor.execute('SELECT * FROM predictions WHERE teamGameID = ?', (game_id,))
             predictions = cursor.fetchall()
 
             # Add predictions to prediction_dict
             for prediction in predictions:
                 single_prediction = TeamGamePrediction(
-                    predictionID=prediction[0],
-                    teamGameID=prediction[1],
-                    minerID=prediction[2],
-                    predictionDate=prediction[3],
-                    predictedOutcome=prediction[4],
-                    wager=prediction[5],
-                    teamAodds=prediction[6],
-                    teamBodds=prediction[7],
-                    tieOdds=prediction[8],
-                    outcome=prediction[9]
+                    predictionID=prediction[0],  # Access using integer index
+                    teamGameID=prediction[1],    # Access using integer index
+                    minerID=str(self.miner_uid),       # Access using integer index
+                    predictionDate=prediction[3],  # Access using integer index
+                    predictedOutcome=prediction[4],  # Access using integer index
+                    teamA=prediction[5],         # Access using integer index
+                    teamB=prediction[6],         # Access using integer index
+                    wager=prediction[7],         # Access using integer index
+                    teamAodds=prediction[8],     # Access using integer index
+                    teamBodds=prediction[9],     # Access using integer index
+                    tieOdds=prediction[10],      # Access using integer index
+                    can_overwrite=prediction[11], # Access using integer index
+                    outcome=prediction[12]       # Access using integer index
                 )
                 prediction_dict[prediction[0]] = single_prediction
 
+        bt.logging.info(f"prediction_dict: {prediction_dict}")
         try:
             prediction_synapse = Prediction.create(self.wallet, self.subnet_version, self.miner_uid, prediction_dict)
         except Exception as e:
@@ -350,3 +372,39 @@ class BettensorMiner(BaseNeuron):
         return prediction_synapse
 
 
+    def add_game_data(self, game_data_dict):
+        try:
+            bt.logging.info(f"add_game_data() | Adding game data to local database")
+            db, cursor = self.get_cursor()
+
+            # Check games table, add games that are not in the table
+            for game_id, game_data in game_data_dict.items():
+                cursor.execute('SELECT * FROM games WHERE gameID = ?', (game_id,))
+                if not cursor.fetchone():
+                    # Game is not in the table, add it
+                    cursor.execute('''INSERT INTO games (
+                        gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, createDate, lastUpdateDate, 
+                        eventStartDate, active, outcome, tieOdds, canTie
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+                        game_id, 
+                        game_data.teamA, 
+                        game_data.teamAodds, 
+                        game_data.teamB, 
+                        game_data.teamBodds, 
+                        game_data.sport, 
+                        game_data.league,
+                        game_data.externalId, 
+                        game_data.createDate, 
+                        game_data.lastUpdateDate, 
+                        game_data.eventStartDate, 
+                        game_data.active, 
+                        game_data.outcome,
+                        game_data.tieOdds,
+                        game_data.canTie
+                    ))
+                db.commit()
+        except Exception as e:
+            bt.logging.error(f"Failed to add game data: {e}")
+            
+
+        

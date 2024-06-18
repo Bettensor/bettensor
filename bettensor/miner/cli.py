@@ -1,7 +1,9 @@
 
 import argparse
+import datetime
 import signal
 import sqlite3
+import uuid
 import bittensor as bt
 import rich
 import prompt_toolkit
@@ -18,6 +20,13 @@ import threading  # Import threading for non-blocking delay
 from prompt_toolkit.layout.containers import Window, HSplit
 
 
+import logging
+
+
+logging.basicConfig(filename='cli_errors.log', level=logging.DEBUG,
+                    format='%(asctime)s %(levelname)s %(message)s')
+
+
 
 global_style = Style.from_dict({
     'text-area': 'fg:green',
@@ -26,6 +35,45 @@ global_style = Style.from_dict({
     'wager-input': 'fg:green',
 })
 
+
+
+class Application:
+    def __init__(self, db, cursor):
+        self.db = db
+        self.cursor = cursor
+        self.predictions = get_predictions(self.cursor)
+        self.unsubmitted_predictions = {}
+        self.games = get_game_data(self.cursor)
+        self.miner_cash = miner_stats['miner_cash']
+        self.current_view = MainMenu(self)  # Initialize current_view first
+        root_container = self.current_view.box  # Use the box directly
+        self.layout = Layout(root_container)
+        self.style = global_style  # Apply the global style
+        self.check_db_init()
+
+    
+
+    def change_view(self, new_view):
+        self.current_view = new_view
+        self.layout.container = new_view.box
+
+    def run(self):
+        self.app = PTApplication(
+            layout=self.layout,
+            key_bindings=bindings,
+            full_screen=True,
+            style=self.style  # Apply the global style
+        )
+        self.app.custom_app = self
+        self.app.run()
+
+    def check_db_init(self):
+        try:
+            self.cursor.execute("SELECT * FROM predictions")
+        except Exception as e:
+            print(e)
+            print("Database not initialized properly, restart your miner first")
+            
 
 
 # TODO: add miner stat recalc method in miner.py
@@ -43,7 +91,7 @@ miner_stats = {
     "last_reward": 1.5
 }
 
-predictions = {
+""" predictions = {
     "1001": {
         "sport": "Football", 
         "teamA": "Real Madrid", 
@@ -82,7 +130,7 @@ gameData = {
     "1004": {"sport": "Baseball", "teamA": "Yankees", "teamB": "Mets", "startTime": "2024-06-11 12:00:00", "teamAOdds": "1.6", "teamBOdds": "2.2","canTie": False, "tieOdds": '0'},
     "1005": {"sport": "Hockey", "teamA": "Bruins", "teamB": "Canucks", "startTime": "2024-06-12 12:00:00", "teamAOdds": "1.9", "teamBOdds": "2.0","canTie": False, "tieOdds": '0'},
     "1006": {"sport": "Football", "teamA": "Real Madrid", "teamB": "FC Barcelona", "startTime": "2024-06-13 12:00:00", "teamAOdds": "1.5", "teamBOdds": "2.5","canTie": False, "tieOdds": '0'}
-}
+} """
 
 
 class InteractiveTable:
@@ -132,7 +180,7 @@ class MainMenu(InteractiveTable):
         super().__init__(app)
         self.miner_cash = app.miner_cash
         self.header = Label(" BetTensor Miner Main Menu", style="bold")  # Added leading space
-        self.options = ["View/Edit Predictions", "View Games and Make Predictions"]
+        self.options = ["View/Edit Predictions", "View Games and Make Predictions", "Quit and Submit Predictions", "Quit"]
         self.update_text_area()
 
     def update_text_area(self):
@@ -166,6 +214,10 @@ class MainMenu(InteractiveTable):
             self.app.change_view(PredictionsList(self.app))
         elif self.selected_index == 1:
             self.app.change_view(GamesList(self.app))
+        elif self.selected_index == 2:
+            graceful_shutdown(self.app, submit=True)
+        elif self.selected_index == 3:
+            graceful_shutdown(self.app, submit=False)
 
     def move_up(self):
         super().move_up()
@@ -174,6 +226,8 @@ class MainMenu(InteractiveTable):
     def move_down(self):
         super().move_down()
         self.update_text_area()
+
+    
 
 
 class PredictionsList(InteractiveTable):
@@ -186,35 +240,47 @@ class PredictionsList(InteractiveTable):
 
     def update_options(self):
         # Combine predictions and unsubmitted_predictions for formatting calculation
-        all_predictions = {**predictions, **self.app.unsubmitted_predictions}
+        all_predictions = {**self.app.predictions, **self.app.unsubmitted_predictions}
 
-        # Calculate maximum widths for each column based on data and header
-        max_sport_len = max(max(len(pred['sport']) for pred in all_predictions.values()), len('Sport'))
-        max_teamA_len = max(max(len(pred['teamA']) for pred in all_predictions.values()), len('Team A'))
-        max_teamB_len = max(max(len(pred['teamB']) for pred in all_predictions.values()), len('Team B'))
-        max_startTime_len = max(max(len(pred['startTime']) for pred in all_predictions.values()), len('Start Time'))
-        max_teamAOdds_len = max(max(len(pred.get('teamAOdds', '')) for pred in all_predictions.values()), len('Team A Odds'))
-        max_teamBOdds_len = max(max(len(pred.get('teamBOdds', '')) for pred in all_predictions.values()), len('Team B Odds'))
-        max_tieOdds_len = max(max(len(pred.get('tieOdds', '')) for pred in all_predictions.values()), len('Tie Odds'))
-        max_prediction_len = max(max(len(pred['prediction']) for pred in all_predictions.values()), len('Prediction'))
-        max_status_len = max(max(len('Overwritable') if pred['can_overwrite'] else len('Final') for pred in all_predictions.values()), len('Status'))
-        max_wager_amount_len = max(max(len(str(pred.get('wager_amount', ''))) for pred in all_predictions.values()), len('Wager Amount'))
-        max_outcome_len = max(max(len(pred.get('outcome', '')) for pred in all_predictions.values()), len('Outcome'))
+        if not all_predictions:
+            # Set default lengths if there are no predictions
+            max_teamA_len = len('Team A')
+            max_teamB_len = len('Team B')
+            max_teamAodds_len = len('Team A Odds')
+            max_teamBodds_len = len('Team B Odds')
+            max_tieOdds_len = len('Tie Odds')
+            max_prediction_len = len('Prediction')
+            max_status_len = len('Status')
+            max_wager_amount_len = len('Wager Amount')
+            max_outcome_len = len('Outcome')
+        else:
+            # Calculate maximum widths for each column based on data and header
+            
+            max_teamA_len = max(max(len(pred.get('teamA', '')) for pred in all_predictions.values()), len('Team A'))
+            max_teamB_len = max(max(len(pred.get('teamB', '')) for pred in all_predictions.values()), len('Team B'))
+            max_teamAodds_len = max(max(len(str(pred.get('teamAodds', ''))) for pred in all_predictions.values()), len('Team A Odds'))
+            max_teamBodds_len = max(max(len(str(pred.get('teamBodds', ''))) for pred in all_predictions.values()), len('Team B Odds'))
+            max_tieOdds_len = max(max(len(str(pred.get('tieOdds', ''))) for pred in all_predictions.values()), len('Tie Odds'))
+            max_prediction_len = max(max(len(pred.get('predictedOutcome', '')) for pred in all_predictions.values()), len('Prediction'))
+            # TODO : no canOverwrite column in the database, so we need to handle that logic here.
+            max_status_len = max(max(len('Overwritable') if pred.get('canOverwrite', False) else len('Final') for pred in all_predictions.values()), len('Status'))
+            max_wager_amount_len = max(max(len(str(pred.get('wager', ''))) for pred in all_predictions.values()), len('Wager Amount'))
+            max_outcome_len = max(max(len(pred.get('outcome', '')) for pred in all_predictions.values()), len('Outcome'))
 
         # Define the header with calculated widths
         self.header = Label(
-            f"  {'Sport':<{max_sport_len}} | {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Start Time':<{max_startTime_len}} | {'Team A Odds':<{max_teamAOdds_len}} | {'Team B Odds':<{max_teamBOdds_len}} | {'Tie Odds':<{max_tieOdds_len}} | {'Prediction':<{max_prediction_len}} | {'Status':<{max_status_len}} | {'Wager Amount':<{max_wager_amount_len}} | {'Outcome':<{max_outcome_len}} ",
+            f" {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Team A Odds':<{max_teamAodds_len}} | {'Team B Odds':<{max_teamBodds_len}} | {'Tie Odds':<{max_tieOdds_len}} | {'Prediction':<{max_prediction_len}} | {'Status':<{max_status_len}} | {'Wager Amount':<{max_wager_amount_len}} | {'Outcome':<{max_outcome_len}} ",
             style="bold"
         )
 
         # Generate options for the scrollable list
         self.options = [
-            f"{pred['sport']:<{max_sport_len}} | {pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {pred['startTime']:<{max_startTime_len}} | {pred.get('teamAOdds', ''):<{max_teamAOdds_len}} | {pred.get('teamBOdds', ''):<{max_teamBOdds_len}} | {pred.get('tieOdds', ''):<{max_tieOdds_len}} | {pred['prediction']:<{max_prediction_len}} | {'Overwritable' if pred['can_overwrite'] else 'Final':<{max_status_len}} | {str(pred.get('wager_amount', '')):<{max_wager_amount_len}} | {pred.get('outcome', ''):<{max_outcome_len}}"
-            for pred in predictions.values()
+            f"{pred.get('teamA', ''):<{max_teamA_len}} | {pred.get('teamB', ''):<{max_teamB_len}} | {str(pred.get('teamAodds', '')):<{max_teamAodds_len}} | {str(pred.get('teamBodds', '')):<{max_teamBodds_len}} | {str(pred.get('tieOdds', '')):<{max_tieOdds_len}} | {pred.get('predictedOutcome', ''):<{max_prediction_len}} | {'Overwritable' if pred.get('canOverwrite', False) else 'Final':<{max_status_len}} | {str(pred.get('wager', '')):<{max_wager_amount_len}} | {pred.get('outcome', ''):<{max_outcome_len}}"
+            for pred in self.app.predictions.values()
         ]
         self.options.append("Unsubmitted Predictions:")
         self.options.extend([
-            f"{pred['sport']:<{max_sport_len}} | {pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {pred['startTime']:<{max_startTime_len}} | {pred.get('teamAOdds', ''):<{max_teamAOdds_len}} | {pred.get('teamBOdds', ''):<{max_teamBOdds_len}} | {pred.get('tieOdds', ''):<{max_tieOdds_len}} | {pred['prediction']:<{max_prediction_len}} | {'Overwritable' if pred['can_overwrite'] else 'Final':<{max_status_len}} | {str(pred.get('wager_amount', '')):<{max_wager_amount_len}} | {pred.get('outcome', ''):<{max_outcome_len}}"
+            f"{pred.get('teamA', ''):<{max_teamA_len}} | {pred.get('teamB', ''):<{max_teamB_len}} | {str(pred.get('teamAodds', '')):<{max_teamAodds_len}} | {str(pred.get('teamBodds', '')):<{max_teamBodds_len}} | {str(pred.get('tieOdds', '')):<{max_tieOdds_len}} | {pred.get('predictedOutcome', ''):<{max_prediction_len}} | {'Overwritable' if pred.get('canOverwrite', False) else 'Final':<{max_status_len}} | {str(pred.get('wager', '')):<{max_wager_amount_len}} | {pred.get('outcome', ''):<{max_outcome_len}}"
             for pred in self.app.unsubmitted_predictions.values()
         ])
         self.options.append("Go Back")  # Add "Go Back" option
@@ -223,25 +289,28 @@ class PredictionsList(InteractiveTable):
         # Update the text area to include the header, divider, options, and space before "Go Back"
         header_text = self.header.text
         divider = "-" * len(header_text)
-        options_text = "\n".join(
-            f"> {option}" if i == self.selected_index else f"  {option}"
-            for i, option in enumerate(self.options[:-1])
-        )
+        if len(self.options) <= 2:  # Only "Unsubmitted Predictions:" and "Go Back" are present
+            options_text = "No predictions available."
+        else:
+            options_text = "\n".join(
+                f"> {option}" if i == self.selected_index else f"  {option}"
+                for i, option in enumerate(self.options[:-1])
+            )
         go_back_text = f"\n\n  {self.options[-1]}" if self.selected_index != len(self.options) - 1 else f"\n\n> {self.options[-1]}"
         self.text_area.text = f"{header_text}\n{divider}\n{options_text}{go_back_text}\n\n{self.message}"
 
     def handle_enter(self):
         if self.selected_index == len(self.options) - 1:  # Go Back
             self.app.change_view(MainMenu(self.app))
-        elif self.selected_index == len(predictions):  # Unsubmitted Predictions label
+        elif self.selected_index == len(self.app.predictions):  # Unsubmitted Predictions label
             return  # Do nothing
         else:
             selected_index = self.selected_index
-            if selected_index > len(predictions):
-                selected_prediction = list(self.app.unsubmitted_predictions.values())[selected_index - len(predictions) - 1]
+            if selected_index > len(self.app.predictions):
+                selected_prediction = list(self.app.unsubmitted_predictions.values())[selected_index - len(self.app.predictions) - 1]
             else:
-                selected_prediction = list(predictions.values())[selected_index]
-            if selected_prediction['can_overwrite']:
+                selected_prediction = list(self.app.predictions.values())[selected_index]
+            if selected_prediction['canOverwrite']:
                 self.app.change_view(WagerConfirm(self.app, selected_prediction, self, selected_prediction.get('wager_amount', '')))
             else:
                 self.message = "Too late to overwrite this prediction"
@@ -255,14 +324,14 @@ class PredictionsList(InteractiveTable):
     def move_up(self):
         if self.selected_index > 0:
             self.selected_index -= 1
-            if self.selected_index == len(predictions):  # Skip "Unsubmitted Predictions" label
+            if self.selected_index == len(self.app.predictions):  # Skip "Unsubmitted Predictions" label
                 self.selected_index -= 1
             self.update_text_area()
 
     def move_down(self):
         if self.selected_index < len(self.options) - 1:
             self.selected_index += 1
-            if self.selected_index == len(predictions):  # Skip "Unsubmitted Predictions" label
+            if self.selected_index == len(self.app.predictions):  # Skip "Unsubmitted Predictions" label
                 self.selected_index += 1
             self.update_text_area()
 
@@ -288,25 +357,37 @@ class GameResult(InteractiveTable):
 class GamesList(InteractiveTable):
     def __init__(self, app):
         super().__init__(app)
-        # Calculate maximum widths for each column based on data and header
-        max_sport_len = max(max(len(game['sport']) for game in gameData.values()), len('Sport'))
-        max_teamA_len = max(max(len(game['teamA']) for game in gameData.values()), len('Team A'))
-        max_teamB_len = max(max(len(game['teamB']) for game in gameData.values()), len('Team B'))
-        max_startTime_len = max(max(len(game['startTime']) for game in gameData.values()), len('Start Time'))
-        max_teamAOdds_len = max(max(len(game['teamAOdds']) for game in gameData.values()), len('Team A Odds'))
-        max_teamBOdds_len = max(max(len(game['teamBOdds']) for game in gameData.values()), len('Team B Odds'))
-        max_tieOdds_len = max(max(len(game['tieOdds']) for game in gameData.values()), len('Tie Odds'))
+        self.app = app
+
+        if not self.app.games:
+            # Set default lengths if there are no games
+            max_sport_len = len('Sport')
+            max_teamA_len = len('Team A')
+            max_teamB_len = len('Team B')
+            max_eventStartDate_len = len('Event Start Date')
+            max_teamAodds_len = len('Team A Odds')
+            max_teamBodds_len = len('Team B Odds')
+            max_tieOdds_len = len('Tie Odds')
+        else:
+            # Calculate maximum widths for each column based on data and header
+            max_sport_len = max(max(len(game['sport']) for game in self.app.games.values()), len('Sport'))
+            max_teamA_len = max(max(len(game['teamA']) for game in self.app.games.values()), len('Team A'))
+            max_teamB_len = max(max(len(game['teamB']) for game in self.app.games.values()), len('Team B'))
+            max_eventStartDate_len = max(max(len(game['eventStartDate']) for game in self.app.games.values()), len('Event Start Date'))
+            max_teamAodds_len = max(max(len(str(game.get('teamAodds', ''))) for game in self.app.games.values()), len('Team A Odds'))
+            max_teamBodds_len = max(max(len(str(game.get('teamBodds', ''))) for game in self.app.games.values()), len('Team B Odds'))
+            max_tieOdds_len = max(max(len(str(game.get('tieOdds', ''))) for game in self.app.games.values()), len('Tie Odds'))
 
         # Define the header with calculated widths
         self.header = Label(
-            f"  {'Sport':<{max_sport_len}} | {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Start Time':<{max_startTime_len}} | {'Team A Odds':<{max_teamAOdds_len}} | {'Team B Odds':<{max_teamBOdds_len}} | {'Tie Odds':<{max_tieOdds_len}} ",
+            f"  {'Sport':<{max_sport_len}} | {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Event Start Date':<{max_eventStartDate_len}} | {'Team A Odds':<{max_teamAodds_len}} | {'Team B Odds':<{max_teamBodds_len}} | {'Tie Odds':<{max_tieOdds_len}} ",
             style="bold"
         )
 
         # Generate options for the scrollable list
         self.options = [
-            f"{game['sport']:<{max_sport_len}} | {game['teamA']:<{max_teamA_len}} | {game['teamB']:<{max_teamB_len}} | {game['startTime']:<{max_startTime_len}} | {game['teamAOdds']:<{max_teamAOdds_len}} | {game['teamBOdds']:<{max_teamBOdds_len}} | {game['tieOdds']:<{max_tieOdds_len}}"
-            for game in gameData.values()
+            f"{game['sport']:<{max_sport_len}} | {game['teamA']:<{max_teamA_len}} | {game['teamB']:<{max_teamB_len}} | {game['eventStartDate']:<{max_eventStartDate_len}} | {str(game.get('teamAodds', '')):<{max_teamAodds_len}} | {str(game.get('teamBodds', '')):<{max_teamBodds_len}} | {str(game.get('tieOdds', '')):<{max_tieOdds_len}}"
+            for game in self.app.games.values()
         ]
         self.options.append("Go Back")  # Add "Go Back" option
         self.update_text_area()
@@ -315,10 +396,13 @@ class GamesList(InteractiveTable):
         # Update the text area to include the header, divider, options, and space before "Go Back"
         header_text = self.header.text
         divider = "-" * len(header_text)
-        options_text = "\n".join(
-            f"> {option}" if i == self.selected_index else f"  {option}"
-            for i, option in enumerate(self.options[:-1])
-        )
+        if len(self.options) == 1:  # Only "Go Back" is present
+            options_text = "No games available."
+        else:
+            options_text = "\n".join(
+                f"> {option}" if i == self.selected_index else f"  {option}"
+                for i, option in enumerate(self.options[:-1])
+            )
         go_back_text = f"\n\n  {self.options[-1]}" if self.selected_index != len(self.options) - 1 else f"\n\n> {self.options[-1]}"
         self.text_area.text = f"{header_text}\n{divider}\n{options_text}{go_back_text}"
 
@@ -327,7 +411,7 @@ class GamesList(InteractiveTable):
             self.app.change_view(MainMenu(self.app))
         else:
             # Get the currently selected game data
-            selected_game_data = gameData[list(gameData.keys())[self.selected_index]]
+            selected_game_data = self.app.games[list(self.app.games.keys())[self.selected_index]]
             # Change view to WagerConfirm, passing the selected game data
             self.app.change_view(WagerConfirm(self.app, selected_game_data, self))
 
@@ -365,8 +449,8 @@ class WagerConfirm(InteractiveTable):
 
     def update_text_area(self):
         game_info = (
-            f" {self.game_data['sport']} | {self.game_data['teamA']} vs {self.game_data['teamB']} | {self.game_data['startTime']} | "
-            f"Team A Odds: {self.game_data['teamAOdds']} | Team B Odds: {self.game_data['teamBOdds']} | Tie Odds: {self.game_data['tieOdds']}"
+            f" {self.game_data['sport']} | {self.game_data['teamA']} vs {self.game_data['teamB']} | {self.game_data['eventStartDate']} | "
+            f"Team A Odds: {self.game_data['teamAodds']} | Team B Odds: {self.game_data['teamBodds']} | Tie Odds: {self.game_data['tieOdds']}"
         )
         cash_info = f"Miner's Cash: ${self.miner_cash}"
         selected_team_text = f"Selected Team: {self.selected_team}"
@@ -389,19 +473,21 @@ class WagerConfirm(InteractiveTable):
                 if wager_amount <= 0 or wager_amount > self.miner_cash:
                     raise ValueError("Invalid wager amount")
                 # Add the prediction to unsubmitted_predictions
-                prediction_id = str(len(self.app.unsubmitted_predictions) + 1)
+                prediction_id = str(uuid.uuid4())
                 self.app.unsubmitted_predictions[prediction_id] = {
+                    "predictionID": prediction_id,
+                    "teamGameID": self.game_data['gameID'],
                     "sport": self.game_data['sport'],
                     "teamA": self.game_data['teamA'],
                     "teamB": self.game_data['teamB'],
-                    "startTime": self.game_data['startTime'],
-                    "predictionTime": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "teamAOdds": self.game_data['teamAOdds'],
-                    "teamBOdds": self.game_data['teamBOdds'],
+                    "eventStartDate": self.game_data['eventStartDate'],
+                    "predictionDate": datetime.datetime.now().isoformat(),
+                    "teamAodds": self.game_data['teamAodds'],
+                    "teamBodds": self.game_data['teamBodds'],
                     "tieOdds": self.game_data['tieOdds'],
-                    "prediction": self.selected_team,
-                    "wager_amount": wager_amount,
-                    "can_overwrite": True,
+                    "predictedOutcome": self.selected_team,
+                    "wager": wager_amount,
+                    "canOverwrite": True,
                     "outcome": ""
                 }
                 self.app.miner_cash -= wager_amount  # Deduct wager amount from miner's cash
@@ -457,6 +543,7 @@ def _(event):
             if isinstance(custom_app.current_view, WagerConfirm):
                 custom_app.current_view.blur_wager_input()
     except AttributeError as e:
+        logging.error(f"Failed to move up: {e}")
         print("Failed to move up:", str(e))
 
 @bindings.add('down')
@@ -468,6 +555,7 @@ def _(event):
             if isinstance(custom_app.current_view, WagerConfirm):
                 custom_app.current_view.blur_wager_input()
     except AttributeError as e:
+        logging.error(f"Failed to move down: {e}")
         print("Failed to move down:", str(e))
 
 @bindings.add('enter')
@@ -476,82 +564,70 @@ def _(event):
         custom_app = event.app.custom_app
         if hasattr(custom_app, 'current_view'):
             if isinstance(custom_app.current_view, WagerConfirm):
-                if custom_app.currnt_view.app.layout.has_focus(custom_app.current_view.wager_input):
+                if custom_app.current_view.app.layout.has_focus(custom_app.current_view.wager_input):
                     custom_app.current_view.handle_wager_input_enter()
                 else:
                     custom_app.current_view.handle_enter()
             else:
                 custom_app.current_view.handle_enter()
     except AttributeError as e:
+        logging.error(f"Failed to handle enter: {e}")
         print("Failed to handle enter:", str(e))
 
 @bindings.add('q')
 def _(event):
     custom_app = event.app.custom_app
-    graceful_shutdown(custom_app)
+    graceful_shutdown(custom_app, submit=False)
+@bindings.add('c-z', eager=True)
+def _(event):
+    custom_app = event.app.custom_app
+    graceful_shutdown(custom_app, submit=False)
 
-def submit_predictions(db, cursor, unsubmitted_predictions):
-   
-   
-    for prediction in unsubmitted_predictions:
-        try:
-            
-            cursor.execute('''INSERT INTO predictions (sport, teamA, teamB, startTime, predictionTime, teamAOdds, teamBOdds, tieOdds, prediction, wager_amount, can_overwrite, outcome) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-                           (prediction['sport'], 
-                            prediction['teamA'], 
-                            prediction['teamB'], 
-                            prediction['startTime'], 
-                            prediction['predictionTime'], 
-                            prediction['teamAOdds'], 
-                            prediction['teamBOdds'], 
-                            prediction['tieOdds'], 
-                            prediction['prediction'], 
-                            prediction['wager_amount'], 
-                            prediction['can_overwrite'],
-                            prediction['outcome']))
-            db.commit()
-            db.close()
-        except Exception as e:
-            print(f"Failed to submit predictions: {e}")
+@bindings.add('c-c', eager=True)
+def _(event):
+    custom_app = event.app.custom_app
+    graceful_shutdown(custom_app, submit=False)
 
-def graceful_shutdown(custom_app):
-    submit_predictions(custom_app.db, custom_app.cursor, custom_app.unsubmitted_predictions)
-    custom_app.app.exit()
+
+
+
+def graceful_shutdown(app, submit: bool):
+    if submit:
+        print("Submitting predictions...")
+        logging.info("Submitting predictions...")
+        submit_predictions(app)
+    app.app.exit()
 
 def signal_handler(signal, frame):
-    print("Signal received, shutting down gracefully...")
+    logging.info(f"Signal received, shutting down gracefully...")
     graceful_shutdown(app)
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-class Application:
-    def __init__(self, predictions, games, miner_stats, db, cursor):
-        self.db = db
-        self.cursor = cursor
-        self.predictions = predictions
-        self.unsubmitted_predictions = {}
-        self.games = games
-        self.miner_cash = miner_stats['miner_cash']
-        self.current_view = MainMenu(self)  # Initialize current_view first
-        root_container = self.current_view.box  # Use the box directly
-        self.layout = Layout(root_container)
-        self.style = global_style  # Apply the global style
 
-    def change_view(self, new_view):
-        self.current_view = new_view
-        self.layout.container = new_view.box
+def submit_predictions(app):
+    for prediction in app.unsubmitted_predictions.values():
+        try:
+            
+            app.cursor.execute('''INSERT INTO predictions (predictionID, teamGameID, predictionDate, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                           (prediction['predictionID'],
+                            prediction['teamGameID'],                   
+                            prediction['predictionDate'], 
+                            prediction['teamAodds'], 
+                            prediction['teamBodds'], 
+                            prediction['tieOdds'], 
+                            prediction['predictedOutcome'], 
+                            prediction['wager'], 
+                            prediction['outcome'],
+                            prediction['canOverwrite']))
+            app.db.commit()
+        except Exception as e:
+            logging.error(f"Failed to submit prediction: {e}")
+            print(f"Failed to submit prediction: {e}")  # Print error to console for immediate feedback
 
-    def run(self):
-        self.app = PTApplication(
-            layout=self.layout,
-            key_bindings=bindings,
-            full_screen=True,
-            style=self.style  # Apply the global style
-        )
-        self.app.custom_app = self
-        self.app.run()
+
 
 def get_database():
     try:
@@ -561,9 +637,24 @@ def get_database():
         print(f"Failed to get database: {e}")
         return None, None
 
+def get_predictions(cursor):
+    predictions = {}
+    cursor.execute('SELECT * FROM predictions')
+    columns = [column[0] for column in cursor.description]  # Get column names from the cursor description
+    for row in cursor.fetchall():
+        predictions[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
+    return predictions
+
+def get_game_data(cursor):
+    game_data = {}
+    cursor.execute('SELECT * FROM games')
+    columns = [column[0] for column in cursor.description]  # Get column names from the cursor description
+    for row in cursor.fetchall():
+        game_data[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
+    return game_data
 
 if __name__ == "__main__":
     
-
-    app = Application(predictions, gameData, miner_stats, get_database())
+    db, cursor = get_database()
+    app = Application(db, cursor)
     app.run()
