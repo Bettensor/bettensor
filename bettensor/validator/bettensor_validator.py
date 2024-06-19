@@ -213,12 +213,11 @@ class BettensorValidator(BaseNeuron):
         c = conn.cursor()
         current_time = datetime.now().isoformat()
 
-        for i, res in enumerate(predictions):
+        for uid, res in predictions.items():
             # TODO: nest another loop to iterate through all the predictions
 
             #ensure that prediction uid is in processed_uids 
-            if i not in processed_uids:
-                bt.logging.warn(f"Warning: Prediction uid: {res.metadata.neuron_uid} not in processed_uids")
+            if uid not in processed_uids:
                 #TODO : handle? Toss this prediction?
                 continue
             
