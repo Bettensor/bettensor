@@ -226,16 +226,26 @@ class BettensorValidator(BaseNeuron):
             hotkey = self.metagraph.hotkeys[i]
             predictionID = res.predictionID
             teamGameId = res.teamGameID
-            #sport = res.sport
             minerId = hotkey
-            #league = res.league
             predictionDate = res.predictionDate
             predictedOutcome = res.predictedOutcome
             wager = res.wager
+            query = "SELECT sport, league FROM game_data WHERE id = ?"
+
+            # Execute the query
+            cursor.execute(query, (team_game_id,))
+            result = cursor.fetchone()
+
+            # Check if the result is found and return it
+            if result:
+                sport, league = result
+                return sport, league
+            else:
+                return None, None
 
             
             c.execute('''
-                SELECT eventStartDate FROM teamGame WHERE id = ?
+                SELECT eventStartDate FROM game_data WHERE id = ?
             ''', (teamGameId))
 
 
@@ -654,7 +664,7 @@ class BettensorValidator(BaseNeuron):
         cursor = conn.cursor()
         three_days_ago = datetime.now() - timedelta(hours=72)
         three_days_ago_str = three_days_ago.isoformat()
-        cursor.execute("SELECT id, teamA, teamB, externalId FROM game_data WHERE eventStartDate >= ?", (three_days_ago_str,))
+        cursor.execute("SELECT id, teamA, teamB, externalId FROM game_data WHERE eventStartDate >= ? AND active = 1", (three_days_ago_str,))
         return cursor.fetchall()
 
     def determine_winner(self, game_info):
@@ -689,7 +699,7 @@ class BettensorValidator(BaseNeuron):
                 self.update_game_outcome(game_id, winner)
                 bt.logging.info(f"Game ID: {game_id}, Winner: {winner}")
 
-    def update_game_results(self):
+    def update_recent_games(self):
         recent_games = self.get_recent_games()
         for game_info in recent_games:
             self.determine_winner(game_info)
