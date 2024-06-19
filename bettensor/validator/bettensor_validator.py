@@ -341,6 +341,7 @@ class BettensorValidator(BaseNeuron):
             uid = synapse[2].neuron_uid
             bt.logging.info(f"Processing prediction from miner: {uid}")
             bt.logging.info(f"Prediction: {prediction_dict}")
+            bt.logging.info(f"Prediction type: {type(prediction_dict)}")
             predictions_dict[uid] = prediction_dict       
 
         self.create_table()
