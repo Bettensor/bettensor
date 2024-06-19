@@ -207,99 +207,99 @@ class BettensorValidator(BaseNeuron):
         Args:
         processed_uids: list of uids that have been processed
         predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
-
         """
+        bt.logging.info(f"predictions: {predictions}")
+        print("processed:")
+        print(processed_uids)
         conn = self.connect_db()
         c = conn.cursor()
         current_time = datetime.now().isoformat()
 
-        for uid, res in predictions.items():
-            # TODO: nest another loop to iterate through all the predictions
-
-            #ensure that prediction uid is in processed_uids 
-            if uid not in processed_uids:
-                #TODO : handle? Toss this prediction?
-                continue
-            
-            # We need to pull some game data from the database to fill sport, league
-
-            hotkey = self.metagraph.hotkeys[i]
-            predictionID = res.predictionID
-            teamGameId = res.teamGameID
-            minerId = hotkey
-            predictionDate = res.predictionDate
-            predictedOutcome = res.predictedOutcome
-            wager = res.wager
-            query = "SELECT sport, league FROM game_data WHERE id = ?"
-
-            # Execute the query
-            cursor.execute(query, (team_game_id,))
-            result = cursor.fetchone()
-
-            # Check if the result is found and return it
-            if result:
-                sport, league = result
-                return sport, league
-            else:
-                return None, None
-
-            
-            c.execute('''
-                SELECT eventStartDate FROM game_data WHERE id = ?
-            ''', (teamGameId))
-
-
-            row = c.fetchone()
-            if row:
-                event_start_date = row[0]
-                if current_time >= event_start_date:
-                    print(f"Prediction not inserted/updated: Game {teamGameId} has already started.")
+        for uid, prediction_dict in predictions.items():
+            for predictionID, res in prediction_dict.items():
+                # Ensure that prediction uid is in processed_uids
+                if int(uid) not in processed_uids:
+                    print("not processed ran")
+                    # TODO : handle? Toss this prediction?
                     continue
-            
-            # Check if the prediction already exists; update prediction if it does
-            c.execute('''
-                SELECT id, wager FROM predictions WHERE predictionID = ?
-            ''', (predictionID))
-            
-            existing_prediction = c.fetchone()
-            
-            if existing_prediction:
-                # TODO: fix this function; does not properly check if wager > 1000, updates wager in weird way
-                existing_id, existing_wager = existing_prediction
-                total_wager = calculate_total_wager(c, minerId, event_start_date, exclude_id=teamGameId)
-                
-                # Add the new wager and subtract the existing one
-                total_wager = total_wager - existing_wager + wager
-                
-                if total_wager > 1000:
-                    print(f"Error: Total wager for the date exceeds $1000.")
-                    continue
-                
-                # Update the existing prediction
+
+                # We need to pull some game data from the database to fill sport, league
+                print("processed ran")
+                hotkey = self.metagraph.hotkeys[int(uid)]
+                predictionID = res.predictionID
+                teamGameId = res.teamGameID
+                minerId = hotkey
+                predictionDate = res.predictionDate
+                predictedOutcome = res.predictedOutcome
+                wager = res.wager
+
+                # Query to get sport and league
+                query = "SELECT sport, league FROM game_data WHERE id = ?"
+                c.execute(query, (teamGameId,))
+                result = c.fetchone()
+
+                if result:
+                    sport, league = result
+                else:
+                    sport, league = None, None
+
+                # Log the prediction details
+                bt.logging.info(f"teamGameId: {teamGameId}, predictionID: {predictionID}, minerId: {minerId}, predictionDate: {predictionDate}, predictedOutcome: {predictedOutcome}, wager: {wager}, sport: {sport}, league: {league}")
+
                 c.execute('''
-                    UPDATE predictions
-                    SET predictionDate = ?, predictedOutcome = ?, wager = ?
-                    WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
-                ''', (predictionDate, predictedOutcome, wager, teamGameId, sport, minerId, league))
-            else:
-                total_wager = calculate_total_wager(c, minerId, event_start_date)
-                
-                # Add the new wager
-                total_wager += wager
-                
-                if total_wager > 1000:
-                    print(f"Error: Total wager for the date exceeds $1000.")
-                    continue
+                    SELECT eventStartDate FROM game_data WHERE id = ?
+                ''', (teamGameId,))
 
-                # Insert new prediction
+                row = c.fetchone()
+                if row:
+                    event_start_date = row[0]
+                    if current_time >= event_start_date:
+                        print(f"Prediction not inserted/updated: Game {teamGameId} has already started.")
+                        continue
+
+                # Check if the prediction already exists; update prediction if it does
                 c.execute('''
-                    INSERT INTO predictions (id, teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (str(uuid4()), teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager))
-        
-        # Commit changes, close the connection
+                	SELECT teamGameID, wager FROM predictions WHERE minerId = ?
+            	''', (predictionID,))
+                existing_prediction = c.fetchone()
+
+                if existing_prediction:
+                    # Calculate total wager excluding the current prediction
+                    existing_id, existing_wager = existing_prediction
+                    total_wager = self.calculate_total_wager(c, minerId, event_start_date, exclude_id=teamGameId)
+
+                    # Add the new wager and subtract the existing one
+                    total_wager = total_wager - existing_wager + wager
+
+                    if total_wager > 1000:
+                        print(f"Error: Total wager for the date exceeds $1000.")
+                        continue
+
+                    # Update the existing prediction
+                    c.execute('''
+                        UPDATE predictions
+                        SET predictionDate = ?, predictedOutcome = ?, wager = ?
+                        WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
+                    ''', (predictionDate, predictedOutcome, wager, teamGameId, sport, minerId, league))
+                else:
+                    total_wager = self.calculate_total_wager(c, minerId, event_start_date)
+
+                    # Add the new wager
+                    total_wager += wager
+
+                    if total_wager > 1000:
+                        print(f"Error: Total wager for the date exceeds $1000.")
+                        continue
+
+                    # Insert new prediction
+                    c.execute('''
+                        INSERT INTO predictions (id, teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (str(uuid4()), teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager))
+
         conn.commit()
         conn.close()
+
         return sqlite3.connect('validator.db')
 
     

@@ -199,20 +199,11 @@ def main(validator: BettensorValidator):
             # Process the responses
             # processed_uids = torch.nonzero(list_of_uids).squeeze()
             if responses and any(responses):
-                response_data = validator.process_prediction(
+                validator.process_prediction(
                     processed_uids=list_of_uids,
                     predictions=responses
                 )
 
-                for res in response_data:
-                    if validator.miner_responses:
-                        if res["hotkey"] in validator.miner_responses:
-                            validator.miner_responses[res["hotkey"]].append(res)
-                    else:
-                        validator.miner_responses[res["hotkey"]] = [res]
-                else:
-                    validator.miner_responses = {}
-                    validator.miner_responses[res["hotkey"]] = [res]
             current_block = validator.subtensor.block
             
             bt.logging.debug(f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}")
