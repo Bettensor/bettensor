@@ -643,9 +643,59 @@ class BettensorValidator(BaseNeuron):
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
     
-    def get_games():
-        pass # func to get game data
+    def update_game_outcome(self, game_id, outcome):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE game_data SET outcome = ?, active = 0 WHERE id = ?", (outcome, game_id))
+        conn.commit()
+        conn.close()
+
+    def get_recent_games(self):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        three_days_ago = datetime.now() - timedelta(hours=72)
+        three_days_ago_str = three_days_ago.isoformat()
+        cursor.execute("SELECT id, teamA, teamB, externalId FROM game_data WHERE eventStartDate >= ?", (three_days_ago_str,))
+        return cursor.fetchall()
+
+    def determine_winner(self, game_info):
+        game_id, teamA, teamB, externalId = game_info
+
+        url = "https://api-baseball.p.rapidapi.com/games"
+        headers = {
+            "x-rapidapi-host": "api-baseball.p.rapidapi.com",
+            "x-rapidapi-key": "b416b1c26dmsh6f20cd13ee1f7ccp11cc1djsnf64975aaacde"
+        }
+        querystring = {"id": str(externalId)}
+
+        response = requests.get(url, headers=headers, params=querystring)
+
+        if response.status_code == 200:
+            data = response.json()
+            game_response = data.get('response', [])[0]
+
+            home_team = game_response['teams']['home']['name']
+            away_team = game_response['teams']['away']['name']
+            home_score = game_response['scores']['home']['total']
+            away_score = game_response['scores']['away']['total']
+
+            if home_score is not None and away_score is not None:
+                if home_score > away_score:
+                    winner = teamA if teamA == home_team else teamB
+                elif away_score > home_score:
+                    winner = teamB if teamB == away_team else teamA
+                else:
+                    winner = "Tie"
+
+                self.update_game_outcome(game_id, winner)
+                bt.logging.info(f"Game ID: {game_id}, Winner: {winner}")
+
+    def update_game_results(self):
+        recent_games = self.get_recent_games()
+        for game_info in recent_games:
+            self.determine_winner(game_info)
+
 
     def set_weights(self):
-        bt.logging.debug(f"Setting weights for validator: This function needs to be implemented")
-         # func to set weights
+        bt.logging.debug(f"Setting weights for validator")
+        
