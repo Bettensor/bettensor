@@ -164,3 +164,8 @@ cython_debug/
 testing/
 
 bettensor/utils/games.db
+
+
+miner.db
+validator.db
+cli_errors.log

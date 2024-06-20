@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from bettensor.utils.miner_stats import MinerStatsHandler
 import bittensor as bt
 import json
 from typing import Tuple
@@ -9,6 +10,8 @@ import torch
 from copy import deepcopy
 import copy
 from datetime import datetime
+from bettensor.protocol import TeamGamePrediction
+import uuid
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -47,6 +50,7 @@ class BettensorValidator(BaseNeuron):
         self.load_validator_state = None
         self.data_entry = None
         self.uid = None
+        
     
     def apply_config(self, bt_classes) -> bool:
         """This method applies the configuration to specified bittensor classes"""
@@ -128,9 +132,12 @@ class BettensorValidator(BaseNeuron):
 
         # Get the unique identity (UID) from the network
         validator_uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)
+
+
         self.uid = validator_uid
         bt.logging.info(f"Validator is running with UID: {validator_uid}")
 
+        
         self.wallet = wallet
         self.subtensor = subtensor
         self.dendrite = dendrite
@@ -162,26 +169,30 @@ class BettensorValidator(BaseNeuron):
 
         self.target_group = 0
 
+        self.miner_stats = MinerStatsHandler()
+
         return True
 
     def _parse_args(self, parser):
         return parser.parse_args()
+    def calculate_total_wager(self, cursor, minerId, event_start_date, exclude_id=None):
+    	query = '''
+        	SELECT p.wager 
+        	FROM predictions p
+        	JOIN game_data g ON p.teamGameId = g.id
+        	WHERE p.minerId = ? AND DATE(g.eventStartDate) = DATE(?)
+   		'''
+    	params = (minerId, event_start_date)
 
-    def calculate_total_wager(c, minerId, event_start_date, exclude_id=None):
-        query = '''
-            SELECT wager FROM predictions WHERE minerId = ? AND DATE(eventStartDate) = DATE(?)
-        '''
-        params = (minerId, event_start_date)
-    
-        if exclude_id:
-            query += ' AND teamGameId != ?'
-            params += (exclude_id,)
+    	if exclude_id:
+        	query += ' AND p.teamGameId != ?'
+        	params += (exclude_id,)
 
-        c.execute(query, params)
-        wagers = c.fetchall()
-        total_wager = sum([w[0] for w in wagers])
-    
-        return total_wager
+    	cursor.execute(query, params)
+    	wagers = cursor.fetchall()
+    	total_wager = sum([w[0] for w in wagers])
+
+    	return total_wager
 
     def validator_validation(self, metagraph, wallet, subtensor) -> bool:
         """This method validates the validator has registered correctly"""
@@ -196,87 +207,104 @@ class BettensorValidator(BaseNeuron):
     def insert_or_update_predictions(self, processed_uids, predictions):
         """
         Updates database with new predictions
-        Accepts:
-            TeamGamePrediction object
+        Args:
+        processed_uids: list of uids that have been processed
+        predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
         """
+        bt.logging.info(f"predictions: {predictions}")
         conn = self.connect_db()
-        c = conn.cursor()
+        cursor = conn.cursor()  # Use cursor consistently
         current_time = datetime.now().isoformat()
 
-        for i, res in enumerate(predictions):
-            # TODO: nest another loop to iterate through all the predictions
-            hotkey = self.metagraph.hotkeys[processed_uids[i]]
-
-            pred_id = res["pred_id"]
-            teamGameId = res["teamGameId"]
-            sport = res["sport"]
-            minerId = hotkey
-            league = res["league"]
-            predictionDate = res["predictionDate"]
-            predictedOutcome = res["predictedOutcome"]
-            wager = res["wager"]
-
-            # Check if the game has already started; exclude prediction if it has
-            c.execute('''
-                SELECT eventStartDate FROM teamGame WHERE id = ? AND sport = ? AND league = ?
-            ''', (teamGameId, sport, league))
-            
-            row = c.fetchone()
-            if row:
-                event_start_date = row[0]
-                if current_time >= event_start_date:
-                    print(f"Prediction not inserted/updated: Game {teamGameId} has already started.")
-                    continue
-            
-            # Check if the prediction already exists; update prediction if it does
-            c.execute('''
-                SELECT id, wager FROM predictions WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
-            ''', (teamGameId, sport, minerId, league))
-            
-            existing_prediction = c.fetchone()
-            
-            if existing_prediction:
-                # TODO: fix this function; does not properly check if wager > 1000, updates wager in weird way
-                existing_id, existing_wager = existing_prediction
-                total_wager = calculate_total_wager(c, minerId, event_start_date, exclude_id=teamGameId)
+        for uid, prediction_dict in predictions.items():
+            for predictionID, res in prediction_dict.items():
+                print("uid:")
+                print(uid)
                 
-                # Add the new wager and subtract the existing one
-                total_wager = total_wager - existing_wager + wager
-                
-                if total_wager > 1000:
-                    print(f"Error: Total wager for the date exceeds $1000.")
+                # Ensure that prediction uid is in processed_uids 
+                if int(uid) not in processed_uids:
+                    print("not processed ran")
                     continue
                 
-                # Update the existing prediction
-                c.execute('''
-                    UPDATE predictions
-                    SET predictionDate = ?, predictedOutcome = ?, wager = ?
-                    WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
-                ''', (predictionDate, predictedOutcome, wager, teamGameId, sport, minerId, league))
-            else:
-                total_wager = calculate_total_wager(c, minerId, event_start_date)
-                
-                # Add the new wager
-                total_wager += wager
-                
-                if total_wager > 1000:
-                    print(f"Error: Total wager for the date exceeds $1000.")
-                    continue
+                # We need to pull some game data from the database to fill sport, league
+                hotkey = self.metagraph.hotkeys[int(uid)]
+                predictionID = res.predictionID
+                teamGameID = res.teamGameID
+                print(teamGameID)
+                minerId = hotkey
+                predictionDate = res.predictionDate
+                predictedOutcome = res.predictedOutcome
+                wager = res.wager
+                canOverwrite = True
 
-                # Insert new prediction
-                c.execute('''
-                    INSERT INTO predictions (id, teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (str(uuid4()), teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager))
-        
+                query = "SELECT sport, league, eventStartDate, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome FROM game_data WHERE id = ?"
+
+                # Execute the query
+                cursor.execute(query, (teamGameID,))
+                result = cursor.fetchone()
+
+                # Check if the result is found and return it
+                if result:
+                    sport, league, event_start_date, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome = result
+                else:
+                    sport, league, event_start_date, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome = None, None, None, None, None, None, None, None, None
+
+                cursor.execute('''
+                    SELECT eventStartDate FROM game_data WHERE id = ?
+                ''', (teamGameID,))
+                row = cursor.fetchone()
+                if row:
+                    event_start_date = row[0]
+                    if current_time >= event_start_date:
+                        print(f"Prediction not inserted/updated: Game {teamGameId} has already started.")
+                        continue
+
+                # Check if the prediction already exists; update prediction if it does
+                cursor.execute('''
+                    SELECT teamGameID, wager FROM predictions WHERE predictionID = ?
+                ''', (predictionID,))
+                existing_prediction = cursor.fetchone()
+
+                if existing_prediction:
+                    existing_id, existing_wager = existing_prediction
+                    total_wager = self.calculate_total_wager(cursor, minerId, event_start_date, exclude_id=teamGameID)
+
+                    # Add the new wager and subtract the existing one
+                    total_wager = total_wager - existing_wager + wager
+
+                    if total_wager > 1000:
+                        print(f"Error: Total wager for the date exceeds $1000.")
+                        continue
+
+                    # Update the existing prediction
+                    cursor.execute('''
+                        UPDATE predictions
+                        SET predictionDate = ?, predictedOutcome = ?, wager = ?
+                        WHERE teamGameID = ? AND minerID = ?
+                    ''', (predictionDate, predictedOutcome, wager, teamGameID, minerId))
+                else:
+                    total_wager = self.calculate_total_wager(cursor, minerId, event_start_date)
+
+                    # Add the new wager
+                    total_wager += wager
+
+                    if total_wager > 1000:
+                        print(f"Error: Total wager for the date exceeds $1000.")
+                        continue
+                    # Insert new prediction
+                    print(predictionID)
+                    print(teamGameID)
+                    cursor.execute('''
+                        INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, predictedOutcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, canOverwrite, outcome)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (predictionID, teamGameID, minerId, predictionDate, predictedOutcome,teamA, teamB,  wager, teamAodds, teamBodds, tieOdds, canOverwrite, outcome))
+
         # Commit changes, close the connection
         conn.commit()
-        conn.close()
-        return sqlite3.connect('predictions.db')
-
+        conn.close() 
     
     def connect_db(self):
-        return sqlite3.connect('predictions.db')
+        return sqlite3.connect('validator.db')
 
     def create_table(self):
         conn = self.connect_db()
@@ -285,14 +313,19 @@ class BettensorValidator(BaseNeuron):
         # Create table if it doesn't exist
         c.execute('''
         CREATE TABLE IF NOT EXISTS predictions (
-            id INTEGER PRIMARY KEY,
-            teamGameId INTEGER,
-            sport TEXT,
+            predictionID TEXT,
+            teamGameID TEXT,
             minerId TEXT,
-            league TEXT,
             predictionDate TEXT,
-            predictedOutcome STRING,
-            wager REAL
+            predictedOutcome TEXT,
+            teamA TEXT,
+            teamB TEXT,
+            wager REAL,
+            teamAodds REAL,
+            teamBodds REAL,
+            tieOdds REAL,
+            canOverwrite BOOLEAN,
+            outcome TEXT
         )
         ''')
     
@@ -304,10 +337,41 @@ class BettensorValidator(BaseNeuron):
     def process_prediction(self, processed_uids: torch.tensor, predictions:list) ->list:
         """
         Processes responses received by miners
-        """        
+
+        Args: 
+            processed_uids: list of uids that have been processed
+            predictions: list of deserialized synapses
+        """ 
+        
+        predictions_dict = {}
+
+        for synapse in predictions:
+            prediction_dict : TeamGamePrediction = synapse[1]
+            uid = synapse[2].neuron_uid
+            bt.logging.info(f"Processing prediction from miner: {uid}")
+            bt.logging.info(f"Prediction: {prediction_dict}")
+            bt.logging.info(f"Prediction type: {type(prediction_dict)}")
+            predictions_dict[uid] = prediction_dict       
 
         self.create_table()
-        self.insert_or_update_predictions(processed_uids, predictions)
+        self.insert_or_update_predictions(processed_uids, predictions_dict)
+
+    def add_new_miners(self):
+        '''
+        adds new miners to the database, if there are new hotkeys in the metagraph
+        '''
+        if self.hotkeys:
+            uids_with_stake = self.metagraph.total_stake >= 0.0
+            for i, hotkey in enumerate(self.metagraph.hotkeys):
+                if (hotkey not in self.hotkeys) and (i not in uids_with_stake):
+                    coldkey = self.metagraph.coldkeys[i]
+                    
+
+
+                    if self.miner_stats.init_miner_row(hotkey,coldkey,i):
+                        bt.logging.info(f"Added new miner to the database: {hotkey}")
+                    else:
+                        bt.logging.error(f"Failed to add new miner to the database: {hotkey}")
 
 
     def check_hotkeys(self):
@@ -491,7 +555,7 @@ class BettensorValidator(BaseNeuron):
 
         # Get UIDs with an IP address of 0.0.0.0
         invalid_uids = torch.tensor(
-            [
+           [
                 bool(value)
                 for value in [
                     ip != "0.0.0.0"
@@ -588,5 +652,119 @@ class BettensorValidator(BaseNeuron):
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
     
-    def get_games():
-        pass # func to get game data
+    def update_game_outcome(self, game_id, outcome):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE game_data SET outcome = ?, active = 0 WHERE id = ?", (outcome, game_id))
+        conn.commit()
+        conn.close()
+
+    def get_recent_games(self):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        three_days_ago = datetime.now() - timedelta(hours=72)
+        three_days_ago_str = three_days_ago.isoformat()
+        cursor.execute("SELECT id, teamA, teamB, externalId FROM game_data WHERE eventStartDate >= ? AND active = 1", (three_days_ago_str,))
+        return cursor.fetchall()
+
+    def determine_winner(self, game_info):
+        game_id, teamA, teamB, externalId = game_info
+
+        url = "https://api-baseball.p.rapidapi.com/games"
+        headers = {
+            "x-rapidapi-host": "api-baseball.p.rapidapi.com",
+            "x-rapidapi-key": "b416b1c26dmsh6f20cd13ee1f7ccp11cc1djsnf64975aaacde"
+        }
+        querystring = {"id": str(externalId)}
+
+        response = requests.get(url, headers=headers, params=querystring)
+
+        if response.status_code == 200:
+            data = response.json()
+            game_response = data.get('response', [])[0]
+
+            home_team = game_response['teams']['home']['name']
+            away_team = game_response['teams']['away']['name']
+            home_score = game_response['scores']['home']['total']
+            away_score = game_response['scores']['away']['total']
+
+            if home_score is not None and away_score is not None:
+                if home_score > away_score:
+                    winner = teamA if teamA == home_team else teamB
+                elif away_score > home_score:
+                    winner = teamB if teamB == away_team else teamA
+                else:
+                    winner = "Tie"
+
+                self.update_game_outcome(game_id, winner)
+
+    def update_recent_games(self):
+        recent_games = self.get_recent_games()
+        for game_info in recent_games:
+            self.determine_winner(game_info)
+
+
+
+
+
+    def set_weights(self):
+        # Initialize the earnings tensor
+        earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
+
+        # Connect to the SQLite database
+        conn = sqlite3.connect('validator.db')
+        cursor = conn.cursor()
+
+        # Fetch all the relevant data
+        query = "SELECT minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds FROM predictions"
+        cursor.execute(query)
+        rows = cursor.fetchall()
+
+        # Close the database connection
+        conn.close()
+
+        # Process the data
+        miner_id_to_index = {miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)}
+        
+        for row in rows:
+            miner_id = row[0]
+            predicted_outcome = row[1]
+            outcome = row[2]
+            teamA = row[3]
+            teamB = row[4]
+            wager = row[5]
+            teamAodds = row[6]
+            teamBodds = row[7]
+
+            if predicted_outcome == outcome:
+                if predicted_outcome == teamA:
+                    earned = wager * teamAodds
+                elif predicted_outcome == teamB:
+                    earned = wager * teamBodds
+                else:
+                    earned = 0  # In case there's some other outcome handling needed
+
+                if miner_id in miner_id_to_index:
+                    idx = miner_id_to_index[miner_id]
+                    earnings[idx] += earned
+
+        # Normalize the earnings tensor
+        weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
+
+        # Check stake and set weights
+        uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        stake = float(self.metagraph.S[uid])
+        if stake < 100.0:
+            bt.logging.error("Insufficient stake. Failed in setting weights.")
+        else:
+            result = self.subtensor.set_weights(
+                netuid=self.neuron_config.netuid,  # Subnet to set weights on.
+                wallet=self.wallet,  # Wallet to sign set weights using hotkey.
+                uids=self.metagraph.uids,  # Uids of the miners to set weights for.
+                weights=weights,  # Weights to set for the miners.
+                wait_for_inclusion=False,
+            )
+            if result:
+                bt.logging.success("Successfully set weights.")
+            else:
+                bt.logging.error("Failed to set weights.")

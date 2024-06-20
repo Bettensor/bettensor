@@ -21,25 +21,7 @@ import time
 import sys
 import os
 
-# Get the current file's directory
-current_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Get the parent directory
-parent_dir = os.path.dirname(current_dir)
-
-# Get the grandparent directory
-grandparent_dir = os.path.dirname(parent_dir)
-
-# Get the great grandparent directory
-great_grandparent_dir = os.path.dirname(grandparent_dir)
-
-# Add parent, grandparent, and great grandparent directories to sys.path
-sys.path.append(parent_dir)
-sys.path.append(grandparent_dir)
-sys.path.append(great_grandparent_dir)
-
-# Optional: Print sys.path to verify the directories have been added
-print(sys.path)
 from bettensor.protocol import GameData
 from bettensor.utils.get_baseball_games import BaseballData
 from bettensor.protocol import GameData, Metadata
@@ -60,16 +42,17 @@ from bettensor.base.validator import BaseValidatorNeuron
 from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor import protocol
 #from update_games import update_games
+from bettensor.utils.miner_stats import MinerStatsHandler
 from datetime import datetime
 
 def main(validator: BettensorValidator):
     # Get data and populate DB if it doesn't exist
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.normpath(os.path.join(script_dir, '../bettensor/utils/games.db'))
-    if not os.path.exists(db_path):
-        print(f"Database not found at path: {db_path}, creating and populating it.")
-        baseball_data = BaseballData(db_name=db_path)
-        baseball_data.get_baseball_data() 
+    baseball_data = BaseballData(db_name="validator.db")
+    baseball_data.get_baseball_data() 
+    # init miner stats
+    
+
+
     while True:
         try:
             # Periodically sync subtensor status and save the state file
@@ -98,7 +81,7 @@ def main(validator: BettensorValidator):
             all_axons = validator.metagraph.axons
             bt.logging.trace(f"All axons: {all_axons}")
 
-            # If there are more axons than scores, append the scores list
+            # If there are more axons than scores, append the scores list and add new miners to the database 
             if len(validator.metagraph.uids.tolist()) > len(validator.scores):
                 bt.logging.info(
                     f"Discovered new Axons, current scores: {validator.scores}"
@@ -116,61 +99,80 @@ def main(validator: BettensorValidator):
                     )
                 )
                 bt.logging.info(f"Updated scores, new scores: {validator.scores}")
+
+            # TODO: test this method
+            validator.add_new_miners()
+
+
+
             # Get list of UIDs to query
             (
                 uids_to_query,
                 list_of_uids,
-                blacklisted_uids,
+                blacklisted_uids,   
                 uids_not_to_query,
             ) = validator.get_uids_to_query(all_axons=all_axons)
             if not uids_to_query:
                 bt.logging.warning(f"UIDs to query is empty: {uids_to_query}")
 
             # Get data and populate DB
-            if validator.step % 200 == 0:
+            if validator.step % 20 == 0:
                 baseball_data = BaseballData()
                 baseball_data.get_baseball_data()
-            
+                validator.set_weights()
             # Broadcast query to valid Axons
             current_timestamp = datetime.now().isoformat()
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            db_path = os.path.join(script_dir, '../bettensor/utils/games.db')
-            print(f"Attempting to open database at: {db_path}")
-            if not os.path.exists(db_path):
-                            raise FileNotFoundError(f"Database file not found at path: {db_path}")
+            #metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
+            print(f"uids_to_query: {uids_to_query}")
+            # TODO: verify validators are not queries
             
-            metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
-
+            #need to make sure we have the subnet version and wallet 
+            #bt.logging.debug(f"Subnet version: {validator.subnet_version}, wallet: {validator.wallet} , uid: {validator.uid}")
+            
+            synapse = GameData.create(db_path="validator.db", wallet=validator.wallet, subnet_version=validator.subnet_version, neuron_uid=validator.uid,synapse_type="game_data")
+            bt.logging.info(f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}")
             responses = validator.dendrite.query(
-                uids_to_query,
-                GameData.create(db_path=db_path, metadata=metadata),
+                axons=uids_to_query,
+                synapse=synapse,
                 timeout=validator.timeout,
                 deserialize=True,
             )
-            print("responses: ")
-            print(responses)
+
+            #print("responses: ")
+            #print(len(responses))
+            #print('line after responses')
+
             # Process blacklisted UIDs (set scores to 0)
+            bt.logging.debug(f"blacklisted_uids: {blacklisted_uids}")
             for uid in blacklisted_uids:
-                bt.logging.debug(f'Setting score for blacklisted UID: {uid}. Old score: {validator.scores[uid]}')
-                validator.scores[uid] = (
+                if uid is not None:
+                    bt.logging.debug(f'Setting score for blacklisted UID: {uid}. Old score: {validator.scores[uid]}')
+                    validator.scores[uid] = (
                     validator.neuron_config.alpha * validator.scores[uid]
                     + (1 - validator.neuron_config.alpha) * 0.0
-                )
-                bt.logging.debug(f'Set score for blacklisted UID: {uid}. New score: {validator.scores[uid]}')
+                    )
+                    bt.logging.debug(f'Set score for blacklisted UID: {uid}. New score: {validator.scores[uid]}')
 
             # Process UIDs we did not query (set scores to 0)
+            bt.logging.debug(f"uids_not_to_query: {uids_not_to_query}")
             for uid in uids_not_to_query:
-                bt.logging.trace(
-                    f"Setting score for not queried UID: {uid}. Old score: {validator.scores[uid]}"
-                )
-                validator.scores[uid] = (
-                    validator.neuron_config.alpha * validator.scores[uid]
-                    + (1 - validator.neuron_config.alpha) * 0.0
-                )
-                bt.logging.trace(
-                    f"Set score for not queried UID: {uid}. New score: {validator.scores[uid]}"
-                )
-            if responses is None:
+                if uid is not None:
+                    bt.logging.trace(
+                        f"Setting score for not queried UID: {uid}. Old score: {validator.scores[uid]}"
+                    )
+
+                    validator_alpha_type = type(validator.neuron_config.alpha)
+                    validator_scores_type = type(validator.scores[uid])
+
+                    bt.logging.debug(f"validator_alpha_type: {validator_alpha_type}, validator_scores_type: {validator_scores_type}")
+                    validator.scores[uid] = (
+                        validator.neuron_config.alpha * validator.scores[uid]
+                        + (1 - validator.neuron_config.alpha) * 0.0
+                    )
+                    bt.logging.trace(
+                        f"Set score for not queried UID: {uid}. New score: {validator.scores[uid]}"
+                    )
+            if  not responses:
                 print("No responses received. Sleeping for 18 seconds.")
                 time.sleep(18)
             # Log the results for monitoring purposes.
@@ -196,21 +198,15 @@ def main(validator: BettensorValidator):
 
             # Process the responses
             # processed_uids = torch.nonzero(list_of_uids).squeeze()
-            response_data = validator.process_prediction(
-                processed_uids=list_of_uids,
-                predictions=responses
-            )
+            if responses and any(responses):
+                validator.process_prediction(
+                    processed_uids=list_of_uids,
+                    predictions=responses
+                )
 
-            for res in response_data:
-                if validator.miner_responses:
-                    if res["hotkey"] in validator.miner_responses:
-                        validator.miner_responses[res["hotkey"]].append(res)
-                    else:
-                        validator.miner_responses[res["hotkey"]] = [res]
-                else:
-                    validator.miner_responses = {}
-                    validator.miner_responses[res["hotkey"]] = [res]
+            current_block = validator.subtensor.block
             
+            bt.logging.debug(f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}")
 
             if current_block - validator.last_updated_block > 200:
                 # Periodically update the weights on the Bittensor blockchain.
@@ -221,7 +217,7 @@ def main(validator: BettensorValidator):
                 except TimeoutError as e:
                     bt.logging.error(f"Setting weights timed out: {e}")
                 # update local games database
-                update_games
+                #update_games()
 
             # End the current step and prepare for the next iteration.
             validator.step += 1
@@ -236,7 +232,11 @@ def main(validator: BettensorValidator):
 # The main function parses the configuration and runs the validator.
 if __name__ == "__main__":
     parser = ArgumentParser()
+    
+    parser.add_argument("--alpha", type=float, default=0.9, help="The alpha value for the validator.")
+    
     parser.add_argument("--netuid", type=int, default=34, help="The chain subnet uid.")
+
 
     parser.add_argument(
         "--max_targets",

@@ -81,7 +81,7 @@ def main(miner: BettensorMiner):
     # Activate the Miner on the network
     axon.start()
     bt.logging.info(f"Axon started on port: {miner.neuron_config.axon.port}")
-
+    bt.logging.info(f"Axon: {axon}")
     # Step 7: Keep the miner alive
     # This loop maintains the miner's operations until intentionally stopped.
     bt.logging.info(
@@ -94,37 +94,7 @@ def main(miner: BettensorMiner):
         try:
             # Below: Periodically update our knowledge of the network graph.
             if miner.step % 20 == 0:
-                # Periodically update the weights on the Bittensor blockchain.
-                current_block = miner.subtensor.block
-                if (
-                    current_block - miner.last_updated_block > 100
-                    and miner.miner_set_weights == True
-                ):
-                    weights = torch.Tensor([0.0] * len(miner.metagraph.uids))
-                    weights[miner.miner_uid] = 1.0
-
-                    bt.logging.warning(
-                        "DEPRECATION NOTICE: Miners do not need to set weights in this subnet. The capability to do so will be removed in a future release"
-                    )
-                    bt.logging.debug(
-                        f"Setting weights with the following parameters: netuid={miner.neuron_config.netuid}, wallet={miner.wallet}, uids={miner.metagraph.uids}, weights={weights}, version_key={miner.subnet_version}"
-                    )
-
-                    result = miner.subtensor.set_weights(
-                        netuid=miner.neuron_config.netuid,  # Subnet to set weights on.
-                        wallet=miner.wallet,  # Wallet to sign set weights using hotkey.
-                        uids=miner.metagraph.uids,  # Uids of the miners to set weights for.
-                        weights=weights,  # Weights to set for the miners.
-                        wait_for_inclusion=False,
-                        version_key=miner.subnet_version,
-                    )
-
-                    if result:
-                        bt.logging.success("Successfully set weights.")
-                    else:
-                        bt.logging.error("Failed to set weights.")
-
-                    miner.last_updated_block = miner.subtensor.block
+               
 
                 # if miner.step % 300 == 0:
                     # Check if the miners hotkey is on the remote blacklist
@@ -152,6 +122,7 @@ def main(miner: BettensorMiner):
                 )
 
                 bt.logging.info(log)
+                bt.logging.info(f"Miner UID: {miner.miner_uid}")
 
             miner.step += 1
             time.sleep(1)
@@ -179,6 +150,8 @@ if __name__ == "__main__":
         default="/var/log/bittensor",
         help="Provide the log directory",
     )
+
+    
 
     parser.add_argument(
         "--miner_set_weights",
