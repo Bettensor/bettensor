@@ -1,192 +1,142 @@
 [
     {
-        "home": "Chicago Cubs",
-        "away": "San Francisco Giants",
-        "game_id": 154313,
-        "date": "2024-06-18T00:05:00+00:00",
-        "odds": {
-            "average_home_odds": 1.79,
-            "average_away_odds": 2.05
-        }
-    },
-    {
         "home": "Texas Rangers",
         "away": "New York Mets",
-        "game_id": 154314,
-        "date": "2024-06-18T00:05:00+00:00",
+        "game_id": 154342,
+        "date": "2024-06-20T00:05:00+00:00",
         "odds": {
-            "average_home_odds": 1.82,
-            "average_away_odds": 2.02
-        }
-    },
-    {
-        "home": "Colorado Rockies",
-        "away": "Los Angeles Dodgers",
-        "game_id": 154315,
-        "date": "2024-06-18T00:40:00+00:00",
-        "odds": {
-            "average_home_odds": 2.38,
-            "average_away_odds": 1.61
-        }
-    },
-    {
-        "home": "Los Angeles Angels",
-        "away": "Milwaukee Brewers",
-        "game_id": 154316,
-        "date": "2024-06-18T01:38:00+00:00",
-        "odds": {
-            "average_home_odds": 2.11,
-            "average_away_odds": 1.76
-        }
-    },
-    {
-        "home": "Miami Marlins",
-        "away": "St.Louis Cardinals",
-        "game_id": 154318,
-        "date": "2024-06-18T22:10:00+00:00",
-        "odds": {
-            "average_home_odds": 2.18,
-            "average_away_odds": 1.72
-        }
-    },
-    {
-        "home": "Cleveland Guardians",
-        "away": "Seattle Mariners",
-        "game_id": 154317,
-        "date": "2024-06-18T22:40:00+00:00",
-        "odds": {
-            "average_home_odds": 1.74,
-            "average_away_odds": 2.13
-        }
-    },
-    {
-        "home": "Philadelphia Phillies",
-        "away": "San Diego Padres",
-        "game_id": 154319,
-        "date": "2024-06-18T22:40:00+00:00",
-        "odds": {
-            "average_home_odds": 1.69,
-            "average_away_odds": 2.22
-        }
-    },
-    {
-        "home": "Pittsburgh Pirates",
-        "away": "Cincinnati Reds",
-        "game_id": 154320,
-        "date": "2024-06-18T22:40:00+00:00",
-        "odds": {
-            "average_home_odds": 2.1,
-            "average_away_odds": 1.77
-        }
-    },
-    {
-        "home": "Washington Nationals",
-        "away": "Arizona Diamondbacks",
-        "game_id": 154321,
-        "date": "2024-06-18T22:45:00+00:00",
-        "odds": {
-            "average_home_odds": 1.81,
-            "average_away_odds": 2.04
-        }
-    },
-    {
-        "home": "New York Yankees",
-        "away": "Baltimore Orioles",
-        "game_id": 154322,
-        "date": "2024-06-18T23:05:00+00:00",
-        "odds": {
-            "average_home_odds": 1.71,
-            "average_away_odds": 2.19
-        }
-    },
-    {
-        "home": "Toronto Blue Jays",
-        "away": "Boston Red Sox",
-        "game_id": 154323,
-        "date": "2024-06-18T23:07:00+00:00",
-        "odds": {
-            "average_home_odds": 2.07,
-            "average_away_odds": 1.79
-        }
-    },
-    {
-        "home": "Atlanta Braves",
-        "away": "Detroit Tigers",
-        "game_id": 154324,
-        "date": "2024-06-18T23:20:00+00:00",
-        "odds": {
-            "average_home_odds": 1.6,
-            "average_away_odds": 2.39
-        }
-    },
-    {
-        "home": "Minnesota Twins",
-        "away": "Tampa Bay Rays",
-        "game_id": 154325,
-        "date": "2024-06-18T23:40:00+00:00",
-        "odds": {
-            "average_home_odds": 1.55,
-            "average_away_odds": 2.53
-        }
-    },
-    {
-        "home": "Chicago Cubs",
-        "away": "San Francisco Giants",
-        "game_id": 154326,
-        "date": "2024-06-19T00:05:00+00:00",
-        "odds": {
-            "average_home_odds": 1.9,
-            "average_away_odds": 1.91
-        }
-    },
-    {
-        "home": "Texas Rangers",
-        "away": "New York Mets",
-        "game_id": 154327,
-        "date": "2024-06-19T00:05:00+00:00",
-        "odds": {
-            "average_home_odds": 1.92,
+            "average_home_odds": 1.91,
             "average_away_odds": 1.92
         }
     },
     {
         "home": "Chicago White Sox",
         "away": "Houston Astros",
-        "game_id": 154328,
-        "date": "2024-06-19T00:10:00+00:00",
+        "game_id": 154343,
+        "date": "2024-06-20T00:10:00+00:00",
         "odds": {
-            "average_home_odds": 2.69,
-            "average_away_odds": 1.49
+            "average_home_odds": 1.97,
+            "average_away_odds": 1.86
         }
     },
     {
         "home": "Colorado Rockies",
         "away": "Los Angeles Dodgers",
-        "game_id": 154329,
-        "date": "2024-06-19T00:40:00+00:00",
+        "game_id": 154344,
+        "date": "2024-06-20T00:40:00+00:00",
         "odds": {
-            "average_home_odds": 2.53,
-            "average_away_odds": 1.55
+            "average_home_odds": 2.68,
+            "average_away_odds": 1.5
         }
     },
     {
         "home": "Los Angeles Angels",
         "away": "Milwaukee Brewers",
-        "game_id": 154330,
-        "date": "2024-06-19T01:38:00+00:00",
+        "game_id": 154345,
+        "date": "2024-06-20T01:38:00+00:00",
         "odds": {
-            "average_home_odds": 2.13,
-            "average_away_odds": 1.75
+            "average_home_odds": 2.59,
+            "average_away_odds": 1.52
         }
     },
     {
         "home": "Oakland Athletics",
         "away": "Kansas City Royals",
-        "game_id": 154331,
-        "date": "2024-06-19T01:40:00+00:00",
+        "game_id": 154346,
+        "date": "2024-06-20T01:40:00+00:00",
         "odds": {
-            "average_home_odds": 2.12,
-            "average_away_odds": 1.75
+            "average_home_odds": 2.59,
+            "average_away_odds": 1.52
+        }
+    },
+    {
+        "home": "Washington Nationals",
+        "away": "Arizona Diamondbacks",
+        "game_id": 154347,
+        "date": "2024-06-20T17:05:00+00:00",
+        "odds": {
+            "average_home_odds": 1.69,
+            "average_away_odds": 2.22
+        }
+    },
+    {
+        "home": "Minnesota Twins",
+        "away": "Tampa Bay Rays",
+        "game_id": 154348,
+        "date": "2024-06-20T17:10:00+00:00",
+        "odds": {
+            "average_home_odds": 1.71,
+            "average_away_odds": 2.18
+        }
+    },
+    {
+        "home": "Cleveland Guardians",
+        "away": "Seattle Mariners",
+        "game_id": 154352,
+        "date": "2024-06-20T17:10:00+00:00",
+        "odds": {
+            "average_home_odds": 1.78,
+            "average_away_odds": 2.08
+        }
+    },
+    {
+        "home": "Chicago White Sox",
+        "away": "Houston Astros",
+        "game_id": 154349,
+        "date": "2024-06-20T18:10:00+00:00",
+        "odds": {
+            "average_home_odds": 2.48,
+            "average_away_odds": 1.56
+        }
+    },
+    {
+        "home": "Colorado Rockies",
+        "away": "Los Angeles Dodgers",
+        "game_id": 154350,
+        "date": "2024-06-20T19:10:00+00:00",
+        "odds": {
+            "average_home_odds": 2.76,
+            "average_away_odds": 1.47
+        }
+    },
+    {
+        "home": "Oakland Athletics",
+        "away": "Kansas City Royals",
+        "game_id": 154351,
+        "date": "2024-06-20T19:37:00+00:00",
+        "odds": {
+            "average_home_odds": 2.33,
+            "average_away_odds": 1.63
+        }
+    },
+    {
+        "home": "New York Yankees",
+        "away": "Baltimore Orioles",
+        "game_id": 154353,
+        "date": "2024-06-20T20:05:00+00:00",
+        "odds": {
+            "average_home_odds": 1.61,
+            "average_away_odds": 2.38
+        }
+    },
+    {
+        "home": "St.Louis Cardinals",
+        "away": "San Francisco Giants",
+        "game_id": 154354,
+        "date": "2024-06-20T23:15:00+00:00",
+        "odds": {
+            "average_home_odds": 1.95,
+            "average_away_odds": 1.88
+        }
+    },
+    {
+        "home": "San Diego Padres",
+        "away": "Milwaukee Brewers",
+        "game_id": 154355,
+        "date": "2024-06-21T01:40:00+00:00",
+        "odds": {
+            "average_home_odds": 1.99,
+            "average_away_odds": 1.85
         }
     }
 ]

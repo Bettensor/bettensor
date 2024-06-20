@@ -44,6 +44,7 @@ class Application:
         self.predictions = get_predictions(self.cursor)
         self.unsubmitted_predictions = {}
         self.games = get_game_data(self.cursor)
+        self.active_games ={}
         self.miner_cash = miner_stats['miner_cash']
         self.current_view = MainMenu(self)  # Initialize current_view first
         root_container = self.current_view.box  # Use the box directly
@@ -645,9 +646,14 @@ def get_predictions(cursor):
         predictions[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
     return predictions
 
+
+    
+
+
+
 def get_game_data(cursor):
     game_data = {}
-    cursor.execute('SELECT * FROM games')
+    cursor.execute('SELECT * FROM games WHERE active = 0')
     columns = [column[0] for column in cursor.description]  # Get column names from the cursor description
     for row in cursor.fetchall():
         game_data[row[0]] = {columns[i]: row[i] for i in range(len(columns))}

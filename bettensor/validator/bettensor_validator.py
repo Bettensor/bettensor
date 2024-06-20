@@ -176,24 +176,24 @@ class BettensorValidator(BaseNeuron):
     def _parse_args(self, parser):
         return parser.parse_args()
     def calculate_total_wager(self, cursor, minerId, event_start_date, exclude_id=None):
-    	query = '''
+        query = '''
         	SELECT p.wager 
         	FROM predictions p
         	JOIN game_data g ON p.teamGameId = g.id
         	WHERE p.minerId = ? AND DATE(g.eventStartDate) = DATE(?)
    		'''
-    	params = (minerId, event_start_date)
+        params = (minerId, event_start_date)
 
-    	if exclude_id:
-        	query += ' AND p.teamGameId != ?'
-        	params += (exclude_id,)
+        if exclude_id:
+            query += ' AND p.teamGameId != ?'
+            params += (exclude_id,)
 
-    	cursor.execute(query, params)
-    	wagers = cursor.fetchall()
-    	total_wager = sum([w[0] for w in wagers])
+        cursor.execute(query, params)
+        wagers = cursor.fetchall()
+        total_wager = sum([w[0] for w in wagers])
 
-    	return total_wager
-
+        return total_wager
+    
     def validator_validation(self, metagraph, wallet, subtensor) -> bool:
         """This method validates the validator has registered correctly"""
         if wallet.hotkey.ss58_address not in metagraph.hotkeys:
@@ -216,7 +216,12 @@ class BettensorValidator(BaseNeuron):
         cursor = conn.cursor()  # Use cursor consistently
         current_time = datetime.now().isoformat()
 
+        
+
         for uid, prediction_dict in predictions.items():
+            if type(prediction_dict) is None:
+                bt.logging.warn("No predictions to process")
+                return
             for predictionID, res in prediction_dict.items():
                 print("uid:")
                 print(uid)
@@ -708,6 +713,10 @@ class BettensorValidator(BaseNeuron):
 
 
     def set_weights(self):
+
+        # ensure table exists
+        self.create_table()
+
         # Initialize the earnings tensor
         earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
 
