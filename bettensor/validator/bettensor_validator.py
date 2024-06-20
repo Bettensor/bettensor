@@ -230,6 +230,7 @@ class BettensorValidator(BaseNeuron):
                 hotkey = self.metagraph.hotkeys[int(uid)]
                 predictionID = res.predictionID
                 teamGameID = res.teamGameID
+                print(teamGameID)
                 minerId = hotkey
                 predictionDate = res.predictionDate
                 predictedOutcome = res.predictedOutcome
@@ -696,7 +697,6 @@ class BettensorValidator(BaseNeuron):
                     winner = "Tie"
 
                 self.update_game_outcome(game_id, winner)
-                bt.logging.info(f"Game ID: {game_id}, Winner: {winner}")
 
     def update_recent_games(self):
         recent_games = self.get_recent_games()
@@ -705,5 +705,58 @@ class BettensorValidator(BaseNeuron):
 
 
     def set_weights(self):
-        bt.logging.debug(f"Setting weights for validator")
-        
+        query = "SELECT minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds FROM predictions"
+        cursor.execute(query)
+        rows = cursor.fetchall()
+
+        # Close the database connection
+        conn.close()
+
+        # Process the data
+        miners_dict = {}
+
+        for row in rows:
+            miner_id = row[0]
+            predicted_outcome = row[1]
+            outcome = row[2]
+            teamA = row[3]
+            teamB = row[4]
+            wager = row[5]
+            teamAodds = row[6]
+            teamBodds = row[7]
+
+            if predicted_outcome == outcome:
+                if predicted_outcome == teamA:
+                    earned = wager * teamAodds
+                elif predicted_outcome == teamB:
+                    earned = wager * teamBodds
+                else:
+                    earned = 0  # In case there's some other outcome handling needed
+
+                if miner_id in miners_dict:
+                    miners_dict[miner_id] += earned
+                else:
+                    miners_dict[miner_id] = earned
+
+        # Convert the dictionary to a list ordered by minerId
+        sorted_earnings = [value for key, value in sorted(miners_dict.items())]
+        weights = torch.nn.functional.normalize(sorted_earnings, p=1.0, dim=0)
+
+        uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        stake = float(self.metagraph.S[uid])
+        if stake < 100.0:
+            bt.logging.error("Insufficient stake. Failed in setting weights.")
+        else:
+            result = self.subtensor.set_weights(
+                netuid=self.neuron_config.netuid,  # Subnet to set weights on.
+                wallet=self.wallet,  # Wallet to sign set weights using hotkey.
+                uids=self.metagraph.uids,  # Uids of the miners to set weights for.
+                weights=weights,  # Weights to set for the miners.
+                wait_for_inclusion=False,
+                version_key=self.subnet_version,
+            )
+            if result:
+                bt.logging.success("Successfully set weights.")
+            else:
+                bt.logging.error("Failed to set weights.")
+                
