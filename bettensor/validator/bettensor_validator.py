@@ -704,7 +704,18 @@ class BettensorValidator(BaseNeuron):
             self.determine_winner(game_info)
 
 
+
+
+
     def set_weights(self):
+        # Initialize the earnings tensor
+        earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
+
+        # Connect to the SQLite database
+        conn = sqlite3.connect('validator.db')
+        cursor = conn.cursor()
+
+        # Fetch all the relevant data
         query = "SELECT minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds FROM predictions"
         cursor.execute(query)
         rows = cursor.fetchall()
@@ -713,8 +724,8 @@ class BettensorValidator(BaseNeuron):
         conn.close()
 
         # Process the data
-        miners_dict = {}
-
+        miner_id_to_index = {miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)}
+        
         for row in rows:
             miner_id = row[0]
             predicted_outcome = row[1]
@@ -733,15 +744,14 @@ class BettensorValidator(BaseNeuron):
                 else:
                     earned = 0  # In case there's some other outcome handling needed
 
-                if miner_id in miners_dict:
-                    miners_dict[miner_id] += earned
-                else:
-                    miners_dict[miner_id] = earned
+                if miner_id in miner_id_to_index:
+                    idx = miner_id_to_index[miner_id]
+                    earnings[idx] += earned
 
-        # Convert the dictionary to a list ordered by minerId
-        sorted_earnings = [value for key, value in sorted(miners_dict.items())]
-        weights = torch.nn.functional.normalize(sorted_earnings, p=1.0, dim=0)
+        # Normalize the earnings tensor
+        weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
 
+        # Check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
         if stake < 100.0:
@@ -753,10 +763,8 @@ class BettensorValidator(BaseNeuron):
                 uids=self.metagraph.uids,  # Uids of the miners to set weights for.
                 weights=weights,  # Weights to set for the miners.
                 wait_for_inclusion=False,
-                version_key=self.subnet_version,
             )
             if result:
                 bt.logging.success("Successfully set weights.")
             else:
                 bt.logging.error("Failed to set weights.")
-                
