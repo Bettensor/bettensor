@@ -11,6 +11,7 @@ from copy import deepcopy
 import copy
 from datetime import datetime
 from bettensor.protocol import TeamGamePrediction
+import uuid
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -174,22 +175,24 @@ class BettensorValidator(BaseNeuron):
 
     def _parse_args(self, parser):
         return parser.parse_args()
+    def calculate_total_wager(self, cursor, minerId, event_start_date, exclude_id=None):
+    	query = '''
+        	SELECT p.wager 
+        	FROM predictions p
+        	JOIN game_data g ON p.teamGameId = g.id
+        	WHERE p.minerId = ? AND DATE(g.eventStartDate) = DATE(?)
+   		'''
+    	params = (minerId, event_start_date)
 
-    def calculate_total_wager(c, minerId, event_start_date, exclude_id=None):
-        query = '''
-            SELECT wager FROM predictions WHERE minerId = ? AND DATE(eventStartDate) = DATE(?)
-        '''
-        params = (minerId, event_start_date)
-    
-        if exclude_id:
-            query += ' AND teamGameId != ?'
-            params += (exclude_id,)
+    	if exclude_id:
+        	query += ' AND p.teamGameId != ?'
+        	params += (exclude_id,)
 
-        c.execute(query, params)
-        wagers = c.fetchall()
-        total_wager = sum([w[0] for w in wagers])
-    
-        return total_wager
+    	cursor.execute(query, params)
+    	wagers = cursor.fetchall()
+    	total_wager = sum([w[0] for w in wagers])
+
+    	return total_wager
 
     def validator_validation(self, metagraph, wallet, subtensor) -> bool:
         """This method validates the validator has registered correctly"""
@@ -209,48 +212,46 @@ class BettensorValidator(BaseNeuron):
         predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
         """
         bt.logging.info(f"predictions: {predictions}")
-        print("processed:")
-        print(processed_uids)
         conn = self.connect_db()
-        c = conn.cursor()
+        cursor = conn.cursor()  # Use cursor consistently
         current_time = datetime.now().isoformat()
 
         for uid, prediction_dict in predictions.items():
             for predictionID, res in prediction_dict.items():
-                # Ensure that prediction uid is in processed_uids
+                print("uid:")
+                print(uid)
+                
+                # Ensure that prediction uid is in processed_uids 
                 if int(uid) not in processed_uids:
                     print("not processed ran")
-                    # TODO : handle? Toss this prediction?
                     continue
-
+                
                 # We need to pull some game data from the database to fill sport, league
-                print("processed ran")
                 hotkey = self.metagraph.hotkeys[int(uid)]
                 predictionID = res.predictionID
-                teamGameId = res.teamGameID
+                teamGameID = res.teamGameID
                 minerId = hotkey
                 predictionDate = res.predictionDate
                 predictedOutcome = res.predictedOutcome
                 wager = res.wager
+                canOverwrite = True
 
-                # Query to get sport and league
-                query = "SELECT sport, league FROM game_data WHERE id = ?"
-                c.execute(query, (teamGameId,))
-                result = c.fetchone()
+                query = "SELECT sport, league, eventStartDate, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome FROM game_data WHERE id = ?"
 
+                # Execute the query
+                cursor.execute(query, (teamGameID,))
+                result = cursor.fetchone()
+
+                # Check if the result is found and return it
                 if result:
-                    sport, league = result
+                    sport, league, event_start_date, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome = result
                 else:
-                    sport, league = None, None
+                    sport, league, event_start_date, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome = None, None, None, None, None, None, None, None, None
 
-                # Log the prediction details
-                bt.logging.info(f"teamGameId: {teamGameId}, predictionID: {predictionID}, minerId: {minerId}, predictionDate: {predictionDate}, predictedOutcome: {predictedOutcome}, wager: {wager}, sport: {sport}, league: {league}")
-
-                c.execute('''
+                cursor.execute('''
                     SELECT eventStartDate FROM game_data WHERE id = ?
-                ''', (teamGameId,))
-
-                row = c.fetchone()
+                ''', (teamGameID,))
+                row = cursor.fetchone()
                 if row:
                     event_start_date = row[0]
                     if current_time >= event_start_date:
@@ -258,15 +259,14 @@ class BettensorValidator(BaseNeuron):
                         continue
 
                 # Check if the prediction already exists; update prediction if it does
-                c.execute('''
-                	SELECT teamGameID, wager FROM predictions WHERE minerId = ?
-            	''', (predictionID,))
-                existing_prediction = c.fetchone()
+                cursor.execute('''
+                    SELECT teamGameID, wager FROM predictions WHERE predictionID = ?
+                ''', (predictionID,))
+                existing_prediction = cursor.fetchone()
 
                 if existing_prediction:
-                    # Calculate total wager excluding the current prediction
                     existing_id, existing_wager = existing_prediction
-                    total_wager = self.calculate_total_wager(c, minerId, event_start_date, exclude_id=teamGameId)
+                    total_wager = self.calculate_total_wager(cursor, minerId, event_start_date, exclude_id=teamGameID)
 
                     # Add the new wager and subtract the existing one
                     total_wager = total_wager - existing_wager + wager
@@ -276,13 +276,13 @@ class BettensorValidator(BaseNeuron):
                         continue
 
                     # Update the existing prediction
-                    c.execute('''
+                    cursor.execute('''
                         UPDATE predictions
                         SET predictionDate = ?, predictedOutcome = ?, wager = ?
-                        WHERE teamGameId = ? AND sport = ? AND minerId = ? AND league = ?
-                    ''', (predictionDate, predictedOutcome, wager, teamGameId, sport, minerId, league))
+                        WHERE teamGameID = ? AND minerID = ?
+                    ''', (predictionDate, predictedOutcome, wager, teamGameID, minerId))
                 else:
-                    total_wager = self.calculate_total_wager(c, minerId, event_start_date)
+                    total_wager = self.calculate_total_wager(cursor, minerId, event_start_date)
 
                     # Add the new wager
                     total_wager += wager
@@ -290,18 +290,17 @@ class BettensorValidator(BaseNeuron):
                     if total_wager > 1000:
                         print(f"Error: Total wager for the date exceeds $1000.")
                         continue
-
                     # Insert new prediction
-                    c.execute('''
-                        INSERT INTO predictions (id, teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (str(uuid4()), teamGameId, sport, minerId, league, predictionDate, predictedOutcome, wager))
+                    print(predictionID)
+                    print(teamGameID)
+                    cursor.execute('''
+                        INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, predictedOutcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, canOverwrite, outcome)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (predictionID, teamGameID, minerId, predictionDate, predictedOutcome,teamA, teamB,  wager, teamAodds, teamBodds, tieOdds, canOverwrite, outcome))
 
+        # Commit changes, close the connection
         conn.commit()
-        conn.close()
-
-        return sqlite3.connect('validator.db')
-
+        conn.close() 
     
     def connect_db(self):
         return sqlite3.connect('validator.db')
@@ -313,8 +312,8 @@ class BettensorValidator(BaseNeuron):
         # Create table if it doesn't exist
         c.execute('''
         CREATE TABLE IF NOT EXISTS predictions (
-            predictionID INTEGER PRIMARY KEY,
-            teamGameID INTEGER,
+            predictionID TEXT,
+            teamGameID TEXT,
             minerId TEXT,
             predictionDate TEXT,
             predictedOutcome TEXT,
