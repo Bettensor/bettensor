@@ -116,10 +116,10 @@ def main(validator: BettensorValidator):
                 bt.logging.warning(f"UIDs to query is empty: {uids_to_query}")
 
             # Get data and populate DB
-            if validator.step % 200 == 0:
+            if validator.step % 20 == 0:
                 baseball_data = BaseballData()
                 baseball_data.get_baseball_data()
-            
+                validator.set_weights()
             # Broadcast query to valid Axons
             current_timestamp = datetime.now().isoformat()
             #metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
