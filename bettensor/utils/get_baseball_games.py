@@ -135,7 +135,10 @@ class BaseballData:
                     createDate = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
                     lastUpdateDate = createDate
                     eventStartDate = game['date']
-                    active = 0 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 0
+
+
+                    active = 0 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 1
+
                     outcome = "Unfinished"
                     tieOdds = 0
                     canTie = False
