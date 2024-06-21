@@ -660,7 +660,7 @@ class BettensorValidator(BaseNeuron):
     def update_game_outcome(self, game_id, outcome):
         conn = self.connect_db()
         cursor = conn.cursor()
-        cursor.execute("UPDATE game_data SET outcome = ?, active = 0 WHERE id = ?", (outcome, game_id))
+        cursor.execute("UPDATE game_data SET outcome = ?, active = 1 WHERE id = ?", (outcome, game_id))
         conn.commit()
         conn.close()
 
@@ -669,7 +669,7 @@ class BettensorValidator(BaseNeuron):
         cursor = conn.cursor()
         three_days_ago = datetime.now() - timedelta(hours=72)
         three_days_ago_str = three_days_ago.isoformat()
-        cursor.execute("SELECT id, teamA, teamB, externalId FROM game_data WHERE eventStartDate >= ? AND active = 1", (three_days_ago_str,))
+        cursor.execute("SELECT id, teamA, teamB, externalId FROM game_data WHERE eventStartDate >= ? AND active = 0", (three_days_ago_str,))
         return cursor.fetchall()
 
     def determine_winner(self, game_info):
