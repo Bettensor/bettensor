@@ -125,6 +125,7 @@ class BettensorMiner(BaseNeuron):
         except sqlite3.Error as e:
             bt.logging.error(f"Failed to initialize local database: {e}")
             raise Exception("Failed to initialize local database")
+        
     def get_cursor(self):
         try:
             db = sqlite3.connect(self.db_path)
@@ -337,6 +338,8 @@ class BettensorMiner(BaseNeuron):
         cursor.execute('SELECT gameID FROM games WHERE eventStartDate > ?', (current_time,))
         games = cursor.fetchall()
 
+        bt.logging.debug(f"Fetched {len(games)} games")
+
         # Log the fetched games
         #bt.logging.info(f"Fetched games: {games}")
 
@@ -377,9 +380,10 @@ class BettensorMiner(BaseNeuron):
 
     def add_game_data(self, game_data_dict):
         try:
-            bt.logging.info(f"add_game_data() | Adding game data to local database")
+            bt.logging.debug(f"add_game_data() | Adding game data to local database")
             db, cursor = self.get_cursor()
-
+            number_of_games = len(game_data_dict)
+            bt.logging.debug(f"add_game_data() | Number of games to add: {number_of_games}")
             # Check games table, add games that are not in the table
             for game_id, game_data in game_data_dict.items():
                 cursor.execute('SELECT * FROM games WHERE gameID = ?', (game_id,))
@@ -419,23 +423,20 @@ class BettensorMiner(BaseNeuron):
         cursor.execute('SELECT * FROM games')
         games = cursor.fetchall()
         for game in games:
+                bt.logging.debug(f"Current time: {datetime.datetime.now(datetime.timezone.utc)}")
+                bt.logging.debug(f"update_games_data() | Game: {game}")
                 if datetime.datetime.now(datetime.timezone.utc) > datetime.datetime.fromisoformat(game[10]):
                     cursor.execute('UPDATE games SET active = 1 WHERE gameID = ?', (game[0],))
+                    bt.logging.debug(f"update_games_data() | Game {game[0]} is now active")
                 if datetime.datetime.now(datetime.timezone.utc) > datetime.datetime.fromisoformat(game[10]) + datetime.timedelta(days=3):
                     cursor.execute('DELETE FROM games WHERE gameID = ?', (game[0],))
+                    bt.logging.debug(f"update_games_data() | Game {game[0]} is deleted from db")
+                if datetime.datetime.now(datetime.timezone.utc) < datetime.datetime.fromisoformat(game[10]):
+                    cursor.execute('UPDATE games SET active = 0 WHERE gameID = ?', (game[0],))
+                    bt.logging.debug(f"update_games_data() | Game {game[0]} is now inactive")
+                
                 db.commit()
-                db.close()
+            
 
 
-    def set_overwrite_predictions(self,db,cursor):
-        # get list of gameIDs for games that have started (active = 1)
-        games = []
-        cursor.execute('SELECT * FROM games WHERE active = 1')
-        for row in cursor.fetchall():
-            games.append(row[0])
-        # for each prediction, if the gameID is in the list of games, set canOverwrite to 0
-        cursor.execute('SELECT * FROM predictions')
-        for row in cursor.fetchall():
-            if row[1] in games:
-                    cursor.execute('UPDATE predictions SET canOverwrite = FALSE WHERE teamGameID = ?', (row[1],))
-        db.commit()
+    
