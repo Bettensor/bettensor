@@ -105,14 +105,13 @@ def send_predictions(predictions):
     bt.logging.debug(
         f"First prediction (for debugging): {json.dumps(transformed_data[0], indent=2)}"
     )
-
+    print(transformed_data)
     try:
         response = requests.post(
             url, data=json.dumps(transformed_data), headers=headers
         )
         bt.logging.info(f"Response status code: {response.status_code}")
         bt.logging.debug(f"Response content: {response.text}")
-
         return response.status_code
 
     except requests.exceptions.RequestException as e:
@@ -128,8 +127,8 @@ def fetch_and_send_predictions(db_path):
     :return: API response
     """
     predictions = fetch_predictions_from_db(db_path)
-    bt.logging.info(f"predictions from website_handler: {predictions}")
     if predictions:
+        bt.logging.debug("Sending predictions to the Bettensor website.")
         return send_predictions(predictions)
     else:
         print("No predictions found in the database.")

@@ -132,13 +132,23 @@ def main(validator: BettensorValidator):
                 bt.logging.warning(f"UIDs to query is empty: {uids_to_query}")
 
             # Get data and populate DB
-            if validator.step % 20 == 0:
+            if validator.step % 200 == 0:
                 baseball_games = sports_data.get_game_data(
-                    sport="baseball", league="1", season="2024"
-                )
+                        sport="baseball", league="1", season="2024"
+                        )
                 soccer_games = sports_data.get_game_data(
-                    sport="soccer", league="253", season="2024"
-                )
+                        sport="soccer", league="253", season="2024"
+                        ) # MLS
+                soccer_games = sports_data.get_game_data(
+                        sport="soccer", league="140", season="2024"
+                        ) # La Liga
+                soccer_games = sports_data.get_game_data(
+                        sport="soccer", league="78", season="2024"
+                        ) # Bundesliga
+                soccer_games = sports_data.get_game_data(
+                        sport="soccer", league="262", season="2024"
+                        ) # Liga MX
+
                 validator.set_weights()
             # Broadcast query to valid Axons
             current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
