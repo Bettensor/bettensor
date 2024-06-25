@@ -1,14 +1,14 @@
 
 <div align="center">
 
-# **BetTensor** 
+# **Bettensor** 
 </div>
 
 
 <details>
-<summary>What Is BetTensor?</summary>
+<summary>What Is Bettensor?</summary>
 
-BetTensor is a sports prediction subnet. The goal of BetTensor is to provide a platform for sports fans to predict the outcomes of their favorite sporting events, and ML/AI researchers to develop new models and strategies to benchmark against good, old fashioned human intelligence and intuition. Mining on this subnet is simple. In this Beta release, miners receive upcoming games and odds, submit predictions as a simulated wager, and are rewarded for correct predictions upon game conclusion. Compute requirements are minimal for those choosing the human intelligence method - all you need is to consistently submit predictions for upcoming games.
+Bettensor is a sports prediction subnet. The goal of Bettensor is to provide a platform for sports fans to predict the outcomes of their favorite sporting events, and ML/AI researchers to develop new models and strategies to benchmark against good, old fashioned human intelligence and intuition. Mining on this subnet is simple. In this Beta release, miners receive upcoming games and odds, submit predictions as a simulated wager, and are rewarded for correct predictions upon game conclusion. Compute requirements are minimal for those choosing the human intelligence method - all you need is to consistently submit predictions for upcoming games.
 
 
 
@@ -31,9 +31,10 @@ We also highly recommend using a virtual environment for setup, either through [
 
 The virtual environment should be initialized with Python 3.10.
 
-After setting up your virtual environment, install the requirements.
+After setting up your virtual environment, install the repo packages and requirements.
 
 ```bash
+pip install -e .
 pip install -r requirements.txt
 ```
 
@@ -74,7 +75,7 @@ After you have reached this point, instructions diverge based on whether you are
 <details>
 <summary>Guide for Validators</summary>
 
-After registering your wallet, validators will need to head over to this [games api](https://bettensor.com/games) to get an api key. 
+After registering your wallet, validators will need to head over to this [games api](https://rapidapi.com/search/Sports) to get an api key. Currently, we are using API-FOOTBALL and API-BASEBALL. Keep an eye on our discord for updates, as you will need to get new keys as new sports become available. 
 
 Once you have your api key, create a .env file in the top level directory and add the following:
 ```bash

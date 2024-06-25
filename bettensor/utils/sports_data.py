@@ -6,12 +6,13 @@ from datetime import datetime, timedelta, timezone
 from dateutil import parser
 import sqlite3
 import bittensor as bt
+import os
 
 
 class SportsData:
     def __init__(self, db_name="data/validator.db"):
         self.db_name = db_name
-        self.api_key = "b416b1c26dmsh6f20cd13ee1f7ccp11cc1djsnf64975aaacde"
+        self.api_key = os.getenv("API_KEY")
         self.api_hosts = {
             "baseball": "api-baseball.p.rapidapi.com",
             "soccer": "api-football-v1.p.rapidapi.com",
