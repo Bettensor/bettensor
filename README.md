@@ -42,7 +42,7 @@ Mining on this subnet is simple. In this Beta release, miners receive upcoming g
 
 To mine or validate on this subnet, we recommend starting with a cheap VPS instance running Ubuntu 22.04 (or 20.04, though this can take longer to set up dependencies). As with most Subnets, we also recommend running your own Lite Node. You can find a guide to running a Lite Node [here](https://docs.bittensor.com/subtensor-nodes/). 
 
->[!IMPORTANT]In this current Beta version, we require Bittensor v6.9.3.
+>[!NOTE]In this current Beta version, we require Bittensor v6.9.3.
 
 1. Clone the repository:
 ```bash
