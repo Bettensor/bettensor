@@ -221,7 +221,7 @@ class BettensorValidator(BaseNeuron):
         processed_uids: list of uids that have been processed
         predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
         """
-        bt.logging.info(f"predictions: {predictions}")
+        bt.logging.debug(f"predictions: {predictions}")
         conn = self.connect_db()
         cursor = conn.cursor()
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
@@ -243,7 +243,7 @@ class BettensorValidator(BaseNeuron):
                 # Check if the predictionID already exists
                 cursor.execute("SELECT COUNT(*) FROM predictions WHERE predictionID = ?", (predictionID,))
                 if cursor.fetchone()[0] > 0:
-                    bt.logging.info(f"Prediction {predictionID} already exists, skipping.")
+                    bt.logging.debug(f"Prediction {predictionID} already exists, skipping.")
                     continue
 
                 query = "SELECT sport, league, eventStartDate, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome FROM game_data WHERE externalId = ?"
@@ -251,7 +251,7 @@ class BettensorValidator(BaseNeuron):
                 result = cursor.fetchone()
 
                 if not result:
-                    bt.logging.warning(f"No game data found for teamGameID: {teamGameID}. Skipping this prediction.")
+                    bt.logging.debug(f"No game data found for teamGameID: {teamGameID}. Skipping this prediction.")
                     continue
 
                 sport, league, event_start_date, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome = result
@@ -264,12 +264,12 @@ class BettensorValidator(BaseNeuron):
                 elif predictedOutcome.lower() == "tie":
                     predictedOutcome = 2
                 else:
-                    bt.logging.warning(f"Invalid predictedOutcome: {predictedOutcome}. Skipping this prediction.")
+                    bt.logging.debug(f"Invalid predictedOutcome: {predictedOutcome}. Skipping this prediction.")
                     continue
 
                 # Check if the game has already started
                 if current_time >= event_start_date:
-                    bt.logging.info(f"Prediction not inserted: game {teamGameID} has already started.")
+                    bt.logging.debug(f"Prediction not inserted: game {teamGameID} has already started.")
                     continue
 
                 # Calculate total wager for the date
@@ -281,7 +281,7 @@ class BettensorValidator(BaseNeuron):
                 total_wager += wager
 
                 if total_wager > 1000:
-                    bt.logging.warning(f"Total wager for the date exceeds $1000. Skipping this prediction.")
+                    bt.logging.debug(f"Total wager for the date exceeds $1000. Skipping this prediction.")
                     continue
 
                 # Insert new prediction
@@ -350,9 +350,9 @@ class BettensorValidator(BaseNeuron):
 
                 if metadata and hasattr(metadata, "neuron_uid"):
                     uid = metadata.neuron_uid
-                    bt.logging.info(f"processing prediction from miner: {uid}")
-                    bt.logging.info(f"prediction: {prediction_dict}")
-                    bt.logging.info(f"prediction type: {type(prediction_dict)}")
+                    bt.logging.debug(f"processing prediction from miner: {uid}")
+                    bt.logging.debug(f"prediction: {prediction_dict}")
+                    bt.logging.debug(f"prediction type: {type(prediction_dict)}")
 
                     # ensure prediction_dict is not none before adding it to predictions_dict
                     if prediction_dict is not None:
