@@ -745,14 +745,15 @@ class BettensorValidator(BaseNeuron):
         cursor = conn.cursor()
 
         # get the current timestamp
-        now = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        
         # calculate the timestamp for 48 hours ago
         forty_eight_hours_ago = now - timedelta(hours=48)
 
         # fetch the relevant data from game_data for the last 48 hours
         cursor.execute(
-            "SELECT externalId, eventStartDate FROM game_data WHERE eventStartDate >= ?",
-            (forty_eight_hours_ago.strftime("%Y-%m-%d %H:%M:%S"),)
+            "SELECT externalId, eventStartDate FROM game_data WHERE eventStartDate BETWEEN ? AND ?",
+            (forty_eight_hours_ago.isoformat(), now.isoformat())
         )
         game_data_rows = cursor.fetchall()
 
@@ -778,7 +779,7 @@ class BettensorValidator(BaseNeuron):
             prediction_id, team_game_id, miner_id, predicted_outcome, outcome, team_a, team_b, wager, team_a_odds, team_b_odds = row
 
             if team_game_id in game_date_map:
-                event_date = datetime.strptime(game_date_map[team_game_id], "%Y-%m-%d %H:%M:%S")
+                event_date = datetime.fromisoformat(game_date_map[team_game_id])
                 if event_date >= forty_eight_hours_ago:
                     if miner_id not in miner_performance:
                         miner_performance[miner_id] = 0.0
