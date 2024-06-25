@@ -240,6 +240,12 @@ class BettensorValidator(BaseNeuron):
                 predictedOutcome = res.predictedOutcome
                 wager = res.wager
 
+                # Check if the predictionID already exists
+                cursor.execute("SELECT COUNT(*) FROM predictions WHERE predictionID = ?", (predictionID,))
+                if cursor.fetchone()[0] > 0:
+                    bt.logging.info(f"Prediction {predictionID} already exists, skipping.")
+                    continue
+
                 query = "SELECT sport, league, eventStartDate, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome FROM game_data WHERE externalId = ?"
                 cursor.execute(query, (teamGameID,))
                 result = cursor.fetchone()
@@ -267,7 +273,11 @@ class BettensorValidator(BaseNeuron):
                     continue
 
                 # Calculate total wager for the date
-                total_wager = self.calculate_total_wager(cursor, minerId, event_start_date)
+                cursor.execute("""
+                    SELECT SUM(wager) FROM predictions
+                    WHERE minerID = ? AND DATE(predictionDate) = DATE(?)
+                """, (minerId, predictionDate))
+                total_wager = cursor.fetchone()[0] or 0
                 total_wager += wager
 
                 if total_wager > 1000:

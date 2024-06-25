@@ -87,8 +87,10 @@ def main(validator: BettensorValidator):
                 pass
                 # Update local knowledge of blacklisted miner hotkeys
                 # validator.check_blacklisted_miner_hotkeys()
-            if validator.step % 50 == 0:
+            
+            if validator.step % 10 == 0:
                 result = fetch_and_send_predictions(db_path="data/validator.db")
+                bt.logging.trace(f"result status: {result}")
                 if result:
                     bt.logging.debug(
                         "Predictions fetched and sent successfully:", result
@@ -118,7 +120,6 @@ def main(validator: BettensorValidator):
                 )
                 bt.logging.info(f"Updated scores, new scores: {validator.scores}")
 
-            # TODO: test this method
             validator.add_new_miners()
 
             # Get list of UIDs to query
@@ -144,10 +145,6 @@ def main(validator: BettensorValidator):
             current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
             # metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
             print(f"uids_to_query: {uids_to_query}")
-            # TODO: verify validators are not queries
-
-            # need to make sure we have the subnet version and wallet
-            # bt.logging.debug(f"Subnet version: {validator.subnet_version}, wallet: {validator.wallet} , uid: {validator.uid}")
 
             synapse = GameData.create(
                 db_path=validator.db_path,
@@ -165,10 +162,6 @@ def main(validator: BettensorValidator):
                 timeout=validator.timeout,
                 deserialize=True,
             )
-
-            # print("responses: ")
-            # print(len(responses))
-            # print('line after responses')
 
             # Process blacklisted UIDs (set scores to 0)
             bt.logging.debug(f"blacklisted_uids: {blacklisted_uids}")
