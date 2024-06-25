@@ -37,9 +37,6 @@ from uuid import UUID
 from argparse import ArgumentParser
 import sqlite3
 
-# import base validator class which takes care of most of the boilerplate
-from bettensor.base.validator import BaseValidatorNeuron
-
 # need to import the right protocol(s) here
 from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor import protocol
@@ -48,7 +45,6 @@ from bettensor import protocol
 from bettensor.utils.miner_stats import MinerStatsHandler
 from datetime import datetime, timezone
 from bettensor.utils.website_handler import fetch_and_send_predictions
-
 
 def main(validator: BettensorValidator):
     sports_data = SportsData()

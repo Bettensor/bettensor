@@ -32,7 +32,7 @@ sys.path.append(parent_dir)
 sys.path.append(grandparent_dir)
 sys.path.append(great_grandparent_dir)
 from base.neuron import BaseNeuron
-
+from dotenv import load_dotenv
 
 class BettensorValidator(BaseNeuron):
     default_db_path = "data/validator.db"
@@ -61,6 +61,8 @@ class BettensorValidator(BaseNeuron):
         self.load_validator_state = None
         self.data_entry = None
         self.uid = None
+
+        load_dotenv()  # take environment variables from .env.
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""

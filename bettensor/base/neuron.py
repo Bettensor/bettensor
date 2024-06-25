@@ -25,9 +25,7 @@ from os import path, makedirs
 
 # Sync calls set weights and also resyncs the metagraph.
 from bettensor.utils.config import check_config, add_args, config
-from bettensor.utils.misc import ttl_get_block
 from bettensor import __spec_version__ as spec_version
-from bettensor.mock import MockSubtensor, MockMetagraph
 from bettensor import __version__ as version
 
 
