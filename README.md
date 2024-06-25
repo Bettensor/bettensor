@@ -42,7 +42,8 @@ Mining on this subnet is simple. In this Beta release, miners receive upcoming g
 
 To mine or validate on this subnet, we recommend starting with a cheap VPS instance running Ubuntu 22.04 (or 20.04, though this can take longer to set up dependencies). As with most Subnets, we also recommend running your own Lite Node. You can find a guide to running a Lite Node [here](https://docs.bittensor.com/subtensor-nodes/). 
 
->[!NOTE]In this current Beta version, we require Bittensor v6.9.3.
+>[!NOTE]
+>In this current Beta version, we require Bittensor v6.9.3.
 
 1. Clone the repository:
 ```bash
@@ -148,12 +149,13 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 - Losses don't count against the earnings balance. Only wins affect it.
 - Validators score miners on a rolling 2-day period of earnings. Reward is linearly proportional to earnings.
 
-With this design, we heavily incentivize correct predictions. Danger of deregistration is high with just one bad day of predictions. Potential of earning high rewards is there if you know something other people don't.
+With this design, we heavily incentivize correct predictions. Danger of deregistration is high with just one bad day of predictions. Potential of earning high rewards is there too, if you know something other people don't.
 
 
 ## Details for Current Release Version (v0.0.1, Beta)
 
->[!CAUTION]This is a Beta release of BetTensor. We expect instability and frequent minor updates. Please contact us on discord if you have any issues or suggestions.
+>[!CAUTION]
+>This is a Beta release of BetTensor. We expect instability and frequent minor updates. Please contact us on discord if you have any issues or suggestions.
 
 - Model-based predictions are not integrated in this version. 
 - Currently supported sports: MLB, MLS
@@ -169,7 +171,7 @@ This repository is licensed under the MIT License.
 
 ```text
 The MIT License (MIT)
-Copyright © 2024 Bettensor (geardici , oneandahalfcats , honeybadgerhavoc)
+Copyright © 2024 Bettensor (oneandahalfcats, geardici, honeybadgerhavoc)
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the "Software"), to deal in the Software without restriction, including without limitation
