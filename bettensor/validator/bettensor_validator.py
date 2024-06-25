@@ -213,9 +213,9 @@ class BettensorValidator(BaseNeuron):
 
         return True
 
-    def insert_or_update_predictions(self, processed_uids, predictions):
+    def insert_predictions(self, processed_uids, predictions):
         """
-        updates database with new predictions
+        Inserts new predictions into the database
 
         Args:
         processed_uids: list of uids that have been processed
@@ -223,152 +223,64 @@ class BettensorValidator(BaseNeuron):
         """
         bt.logging.info(f"predictions: {predictions}")
         conn = self.connect_db()
-        cursor = conn.cursor()  # use cursor consistently
+        cursor = conn.cursor()
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
 
         for uid, prediction_dict in predictions.items():
             for predictionID, res in prediction_dict.items():
-                print("uid:")
-                print(uid)
-
-                # ensure that prediction uid is in processed_uids
                 if int(uid) not in processed_uids:
-                    print("not processed ran")
+                    bt.logging.info(f"UID {uid} not processed, skipping")
                     continue
 
-                # we need to pull some game data from the database to fill sport, league
                 hotkey = self.metagraph.hotkeys[int(uid)]
                 predictionID = res.predictionID
                 teamGameID = res.teamGameID
-                print(teamGameID)
                 minerId = hotkey
                 predictionDate = res.predictionDate
                 predictedOutcome = res.predictedOutcome
                 wager = res.wager
-                canOverwrite = True
 
                 query = "SELECT sport, league, eventStartDate, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome FROM game_data WHERE externalId = ?"
-
-                # execute the query
                 cursor.execute(query, (teamGameID,))
                 result = cursor.fetchone()
 
-                # check if the result is found and return it
-                if result:
-                    (
-                        sport,
-                        league,
-                        event_start_date,
-                        teamA,
-                        teamB,
-                        teamAodds,
-                        teamBodds,
-                        tieOdds,
-                        outcome,
-                    ) = result
-                    # Convert predictedOutcome to numeric value
-                    if predictedOutcome == teamA:
-                        predictedOutcome = 0
-                    elif predictedOutcome == teamB:
-                        predictedOutcome = 1
-                    elif predictedOutcome.lower() == "tie":
-                        predictedOutcome = 2
+                if not result:
+                    bt.logging.warning(f"No game data found for teamGameID: {teamGameID}. Skipping this prediction.")
+                    continue
+
+                sport, league, event_start_date, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome = result
+
+                # Convert predictedOutcome to numeric value
+                if predictedOutcome == teamA:
+                    predictedOutcome = 0
+                elif predictedOutcome == teamB:
+                    predictedOutcome = 1
+                elif predictedOutcome.lower() == "tie":
+                    predictedOutcome = 2
                 else:
-                    (
-                        sport,
-                        league,
-                        event_start_date,
-                        teamA,
-                        teamB,
-                        teamAodds,
-                        teamBodds,
-                        tieOdds,
-                        outcome,
-                    ) = (None, None, None, None, None, None, None, None, None)
+                    bt.logging.warning(f"Invalid predictedOutcome: {predictedOutcome}. Skipping this prediction.")
+                    continue
 
-                cursor.execute(
-                    """
-                    SELECT eventStartDate FROM game_data WHERE externalId = ?
-                """,
-                    (teamGameID,),
-                )
-                row = cursor.fetchone()
-                if row:
-                    event_start_date = row[0]
-                    if current_time >= event_start_date:
-                        print(
-                            f"prediction not inserted/updated: game {teamGameId} has already started."
-                        )
-                        continue
+                # Check if the game has already started
+                if current_time >= event_start_date:
+                    bt.logging.info(f"Prediction not inserted: game {teamGameID} has already started.")
+                    continue
 
-                # check if the prediction already exists; update prediction if it does
-                cursor.execute(
-                    """
-                    SELECT teamGameID, wager FROM predictions WHERE predictionID = ?
-                """,
-                    (predictionID,),
-                )
-                existing_prediction = cursor.fetchone()
+                # Calculate total wager for the date
+                total_wager = self.calculate_total_wager(cursor, minerId, event_start_date)
+                total_wager += wager
 
-                if existing_prediction:
-                    existing_id, existing_wager = existing_prediction
-                    total_wager = self.calculate_total_wager(
-                        cursor, minerId, event_start_date, exclude_id=teamGameID
-                    )
+                if total_wager > 1000:
+                    bt.logging.warning(f"Total wager for the date exceeds $1000. Skipping this prediction.")
+                    continue
 
-                    # add the new wager and subtract the existing one
-                    total_wager = total_wager - existing_wager + wager
+                # Insert new prediction
+                cursor.execute("""
+                    INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, predictedOutcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, canOverwrite, outcome)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (predictionID, teamGameID, minerId, predictionDate, predictedOutcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, False, outcome))
 
-                    if total_wager > 1000:
-                        print(f"error: total wager for the date exceeds $1000.")
-                        continue
-
-                    # update the existing prediction
-                    cursor.execute(
-                        """
-                        UPDATE predictions
-                        SET predictionDate = ?, predictedOutcome = ?, wager = ?
-                        WHERE teamGameID = ? AND minerID = ?
-                    """,
-                        (predictionDate, predictedOutcome, wager, teamGameID, minerId),
-                    )
-                else:
-                    total_wager = self.calculate_total_wager(
-                        cursor, minerId, event_start_date
-                    )
-
-                    # add the new wager
-                    total_wager += wager
-
-                    if total_wager > 1000:
-                        print(f"error: total wager for the date exceeds $1000.")
-                        continue
-                    # insert new prediction
-                    print(predictionID)
-                    print(teamGameID)
-                    cursor.execute(
-                        """
-                        INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, predictedOutcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, canOverwrite, outcome)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        (
-                            predictionID,
-                            teamGameID,
-                            minerId,
-                            predictionDate,
-                            predictedOutcome,
-                            teamA,
-                            teamB,
-                            wager,
-                            teamAodds,
-                            teamBodds,
-                            tieOdds,
-                            canOverwrite,
-                            outcome,
-                        ),
-                    )
-
-        # commit changes, close the connection
+        # Commit changes and close the connection
         conn.commit()
         conn.close()
 
@@ -449,7 +361,7 @@ class BettensorValidator(BaseNeuron):
                 )
 
         self.create_table()
-        self.insert_or_update_predictions(processed_uids, predictions_dict)
+        self.insert_predictions(processed_uids, predictions_dict)
 
     def add_new_miners(self):
         """
