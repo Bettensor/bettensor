@@ -44,11 +44,12 @@ def fetch_predictions_from_db(db_path):
             "tieOdds",
             "canOverwrite",
             "outcome",
+            "sent_to_site"
         ]
         if col in available_columns
     ]
 
-    query = f"SELECT {', '.join(query_columns)} FROM predictions"
+    query = f"SELECT {', '.join(query_columns)} FROM predictions WHERE sent_to_site = 0"
     print("Executing query:", query)
 
     try:
@@ -67,8 +68,24 @@ def fetch_predictions_from_db(db_path):
     finally:
         conn.close()
 
+def update_sent_status(db_path, prediction_ids):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.executemany(
+            "UPDATE predictions SET sent_to_site = 1 WHERE predictionID = ?",
+            [(pid,) for pid in prediction_ids]
+        )
+        conn.commit()
+        print(f"Updated sent_to_site status for {len(prediction_ids)} predictions")
+    except sqlite3.Error as e:
+        print(f"Error updating sent_to_site status: {e}")
+    finally:
+        conn.close()	
 
-def send_predictions(predictions):
+
+def send_predictions(predictions, db_path):
     """
     Send predictions to the Bettensor API.
 
@@ -110,6 +127,8 @@ def send_predictions(predictions):
         response = requests.post(
             url, data=json.dumps(transformed_data), headers=headers
         )
+        if response.status_code == 200 or response.status_code == 201:
+            update_sent_status(db_path, [p['predictionID'] for p in predictions])
         bt.logging.info(f"Response status code: {response.status_code}")
         bt.logging.debug(f"Response content: {response.text}")
         return response.status_code
@@ -129,7 +148,7 @@ def fetch_and_send_predictions(db_path):
     predictions = fetch_predictions_from_db(db_path)
     if predictions:
         bt.logging.debug("Sending predictions to the Bettensor website.")
-        return send_predictions(predictions)
+        return send_predictions(predictions, db_path)
     else:
         print("No predictions found in the database.")
         return None

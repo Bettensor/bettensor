@@ -319,7 +319,8 @@ class BettensorValidator(BaseNeuron):
             teamBodds REAL,
             tieOdds REAL,
             canOverwrite BOOLEAN,
-            outcome TEXT
+            outcome TEXT,
+            sent_to_site INTEGER DEFAULT 0
         )
         """
         )
