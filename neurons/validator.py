@@ -88,7 +88,7 @@ def main(validator: BettensorValidator):
                 # Update local knowledge of blacklisted miner hotkeys
                 # validator.check_blacklisted_miner_hotkeys()
             
-            if validator.step % 10 == 0:
+            if validator.step % 150 == 0:
                 result = fetch_and_send_predictions(db_path="data/validator.db")
                 bt.logging.trace(f"result status: {result}")
                 if result:
@@ -154,7 +154,6 @@ def main(validator: BettensorValidator):
             # Broadcast query to valid Axons
             current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
             # metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
-            print(f"uids_to_query: {uids_to_query}")
 
             synapse = GameData.create(
                 db_path=validator.db_path,
@@ -163,7 +162,7 @@ def main(validator: BettensorValidator):
                 neuron_uid=validator.uid,
                 synapse_type="game_data",
             )
-            bt.logging.info(
+            bt.logging.debug(
                 f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}"
             )
             responses = validator.dendrite.query(
@@ -212,29 +211,9 @@ def main(validator: BettensorValidator):
             if not responses:
                 print("No responses received. Sleeping for 18 seconds.")
                 time.sleep(18)
-            # Log the results for monitoring purposes.
-            # elif all(item.output is None for item in responses):
-            #    bt.logging.info("Received empty response from all miners")
-            #    bt.logging.debug("Sleeping for: 36 seconds")
-            #    time.sleep(18)
-            # If we receive empty responses from all axons, we can just set the scores to none for all the uids we queried
-            #    for uid in list_of_uids:
-            #        bt.logging.trace(
-            #            f"Setting score for empty response from UID: {uid}. Old score: {validator.scores[uid]}"
-            #        )
-            #        validator.scores[uid] = (
-            #            validator.neuron_config.alpha * validator.scores[uid]
-            #            + (1 - validator.neuron_config.alpha) * 0.0
-            #        )
-            #        bt.logging.trace(
-            #            f"Set score for empty response from UID: {uid}. New score: {validator.scores[uid]}"
-            #        )
-            #    continue
 
             bt.logging.trace(f"Received responses: {responses}")
-
             # Process the responses
-            # processed_uids = torch.nonzero(list_of_uids).squeeze()
             if responses and any(responses):
                 validator.process_prediction(
                     processed_uids=list_of_uids, predictions=responses
@@ -254,8 +233,6 @@ def main(validator: BettensorValidator):
                     validator.last_updated_block = validator.subtensor.block
                 except TimeoutError as e:
                     bt.logging.error(f"Setting weights timed out: {e}")
-                # update local games database
-                # update_games()
 
             # End the current step and prepare for the next iteration.
             validator.step += 1

@@ -221,7 +221,7 @@ class BettensorValidator(BaseNeuron):
         processed_uids: list of uids that have been processed
         predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
         """
-        bt.logging.info(f"predictions: {predictions}")
+        bt.logging.debug(f"predictions: {predictions}")
         conn = self.connect_db()
         cursor = conn.cursor()
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
@@ -243,7 +243,7 @@ class BettensorValidator(BaseNeuron):
                 # Check if the predictionID already exists
                 cursor.execute("SELECT COUNT(*) FROM predictions WHERE predictionID = ?", (predictionID,))
                 if cursor.fetchone()[0] > 0:
-                    bt.logging.info(f"Prediction {predictionID} already exists, skipping.")
+                    bt.logging.debug(f"Prediction {predictionID} already exists, skipping.")
                     continue
 
                 query = "SELECT sport, league, eventStartDate, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome FROM game_data WHERE externalId = ?"
@@ -251,7 +251,7 @@ class BettensorValidator(BaseNeuron):
                 result = cursor.fetchone()
 
                 if not result:
-                    bt.logging.warning(f"No game data found for teamGameID: {teamGameID}. Skipping this prediction.")
+                    bt.logging.debug(f"No game data found for teamGameID: {teamGameID}. Skipping this prediction.")
                     continue
 
                 sport, league, event_start_date, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome = result
@@ -264,12 +264,12 @@ class BettensorValidator(BaseNeuron):
                 elif predictedOutcome.lower() == "tie":
                     predictedOutcome = 2
                 else:
-                    bt.logging.warning(f"Invalid predictedOutcome: {predictedOutcome}. Skipping this prediction.")
+                    bt.logging.debug(f"Invalid predictedOutcome: {predictedOutcome}. Skipping this prediction.")
                     continue
 
                 # Check if the game has already started
                 if current_time >= event_start_date:
-                    bt.logging.info(f"Prediction not inserted: game {teamGameID} has already started.")
+                    bt.logging.debug(f"Prediction not inserted: game {teamGameID} has already started.")
                     continue
 
                 # Calculate total wager for the date
@@ -281,7 +281,7 @@ class BettensorValidator(BaseNeuron):
                 total_wager += wager
 
                 if total_wager > 1000:
-                    bt.logging.warning(f"Total wager for the date exceeds $1000. Skipping this prediction.")
+                    bt.logging.debug(f"Total wager for the date exceeds $1000. Skipping this prediction.")
                     continue
 
                 # Insert new prediction
@@ -350,9 +350,9 @@ class BettensorValidator(BaseNeuron):
 
                 if metadata and hasattr(metadata, "neuron_uid"):
                     uid = metadata.neuron_uid
-                    bt.logging.info(f"processing prediction from miner: {uid}")
-                    bt.logging.info(f"prediction: {prediction_dict}")
-                    bt.logging.info(f"prediction type: {type(prediction_dict)}")
+                    bt.logging.debug(f"processing prediction from miner: {uid}")
+                    bt.logging.debug(f"prediction: {prediction_dict}")
+                    bt.logging.debug(f"prediction type: {type(prediction_dict)}")
 
                     # ensure prediction_dict is not none before adding it to predictions_dict
                     if prediction_dict is not None:
@@ -736,7 +736,7 @@ class BettensorValidator(BaseNeuron):
             self.determine_winner(game_info)
 
     def set_weights(self):
-        """sets the weights for the miners based on their performance"""
+        """sets the weights for the miners based on their performance in the last 48 hours"""
         # initialize the earnings tensor
         earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
 
@@ -744,17 +744,16 @@ class BettensorValidator(BaseNeuron):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # get the current date
-        today = datetime.today().date()
-        # calculate the dates for the last three days
-        last_three_days = [today - timedelta(days=i) for i in range(3)]
-        # convert dates to strings for sql query
-        last_three_days_str = [date.strftime("%Y-%m-%d") for date in last_three_days]
+        # get the current timestamp
+        now = datetime.now(timezone.utc)
+        
+        # calculate the timestamp for 48 hours ago
+        forty_eight_hours_ago = now - timedelta(hours=48)
 
-        # fetch the relevant data from game_data for the last three days
+        # fetch the relevant data from game_data for the last 48 hours
         cursor.execute(
-            "SELECT externalId, eventStartDate FROM game_data WHERE eventStartDate IN (?, ?, ?)",
-            last_three_days_str,
+            "SELECT externalId, eventStartDate FROM game_data WHERE eventStartDate BETWEEN ? AND ?",
+            (forty_eight_hours_ago.isoformat(), now.isoformat())
         )
         game_data_rows = cursor.fetchall()
 
@@ -772,33 +771,18 @@ class BettensorValidator(BaseNeuron):
 
         # process the data
         miner_performance = {}
-        daily_wagers = {
-            miner_id: {date: 0.0 for date in last_three_days_str}
-            for miner_id in self.metagraph.hotkeys
-        }
         miner_id_to_index = {
             miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)
         }
 
         for row in prediction_rows:
-            prediction_id = row[0]
-            team_game_id = row[1]
-            miner_id = row[2]
-            predicted_outcome = row[3]
-            outcome = row[4]
-            team_a = row[5]
-            team_b = row[6]
-            wager = row[7]
-            team_a_odds = row[8]
-            team_b_odds = row[9]
+            prediction_id, team_game_id, miner_id, predicted_outcome, outcome, team_a, team_b, wager, team_a_odds, team_b_odds = row
 
             if team_game_id in game_date_map:
-                event_date = game_date_map[team_game_id]
-                if event_date in last_three_days_str:
+                event_date = datetime.fromisoformat(game_date_map[team_game_id])
+                if event_date >= forty_eight_hours_ago:
                     if miner_id not in miner_performance:
                         miner_performance[miner_id] = 0.0
-
-                    daily_wagers[miner_id][event_date] += wager
 
                     if predicted_outcome == outcome:
                         if predicted_outcome == team_a:
@@ -806,29 +790,14 @@ class BettensorValidator(BaseNeuron):
                         elif predicted_outcome == team_b:
                             earned = wager * team_b_odds
                         else:
-                            earned = (
-                                0  # in case there's some other outcome handling needed
-                            )
-                    else:
-                        earned = 0  # if the prediction was incorrect
+                            earned = 0  # in case there's some other outcome handling needed
+                        miner_performance[miner_id] += earned
 
-                    miner_performance[miner_id] += earned
-
-        # apply the penalty for not wagering at least $500 per day
-        for miner_id in miner_performance.keys():
-            total_penalty = 0.0
-            for date in last_three_days_str:
-                daily_wager = daily_wagers[miner_id][date]
-                if daily_wager < 500:
-                    total_penalty += 500 - daily_wager
-
-            miner_performance[miner_id] -= total_penalty
-
-        # sum performance over the last three days and update the earnings tensor
+        # update the earnings tensor
         for miner_id, total_earned in miner_performance.items():
             if miner_id in miner_id_to_index:
                 idx = miner_id_to_index[miner_id]
-                earnings[idx] += total_earned
+                earnings[idx] = total_earned
 
         # normalize the earnings tensor
         weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
