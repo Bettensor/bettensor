@@ -12,7 +12,7 @@ import os
 class SportsData:
     def __init__(self, db_name="data/validator.db"):
         self.db_name = db_name
-        self.api_key = os.getenv("RAPID_API_KEY")
+        self.rapid_api_key = os.getenv("RAPID_API_KEY")
         self.api_hosts = {
             "baseball": "api-baseball.p.rapidapi.com",
             "soccer": "api-football-v1.p.rapidapi.com",
@@ -114,7 +114,7 @@ class SportsData:
                 querystring = {"league": league, "season": season, "date": date_str}
 
             headers = {
-                "X-RapidAPI-Key": self.api_key,
+                "X-RapidAPI-Key": self.rapid_api_key,
                 "X-RapidAPI-Host": self.api_hosts[sport],
             }
 
@@ -235,7 +235,7 @@ class SportsData:
             querystring = {"game": game_id}
 
         headers = {
-            "X-RapidAPI-Key": self.api_key,
+            "X-RapidAPI-Key": self.rapid_api_key,
             "X-RapidAPI-Host": self.api_hosts[sport],
         }
 

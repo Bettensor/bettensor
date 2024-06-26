@@ -16,6 +16,8 @@ from pathlib import Path
 from os import path, rename
 import requests
 import time
+from dotenv import load_dotenv
+import os
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -38,7 +40,6 @@ from dotenv import load_dotenv
 
 class BettensorValidator(BaseNeuron):
     default_db_path = "data/validator.db"
-
     def __init__(self, parser: ArgumentParser):
         super().__init__(parser=parser, profile="validator")
         parser.add_argument(
@@ -65,6 +66,7 @@ class BettensorValidator(BaseNeuron):
         self.uid = None
 
         load_dotenv()  # take environment variables from .env.
+        self.rapid_api_key = os.getenv('RAPID_API_KEY')
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -686,12 +688,12 @@ class BettensorValidator(BaseNeuron):
                 (numeric_outcome, game_id),
             )
             if cursor.rowcount == 0:
-                bt.logging.warning(f"No game updated for externalId {game_id}")
+                bt.logging.trace(f"No game updated for externalId {game_id}")
             else:
-                bt.logging.info(f"Updated game {game_id} with outcome: {numeric_outcome}")
+                bt.logging.trace(f"Updated game {game_id} with outcome: {numeric_outcome}")
             conn.commit()
         except Exception as e:
-            bt.logging.error(f"Error updating game outcome: {e}")
+            bt.logging.trace(f"Error updating game outcome: {e}")
             conn.rollback()
         finally:
             conn.close()
@@ -714,7 +716,7 @@ class BettensorValidator(BaseNeuron):
         url = "https://api-baseball.p.rapidapi.com/games"
         headers = {
             "x-rapidapi-host": "api-baseball.p.rapidapi.com",
-            "x-rapidapi-key": "e0ebc482b7msh09b5236e2a6ceefp1de8d2jsnd100751b9daa",
+            "x-rapidapi-key": self.rapid_api_key,
         }
         querystring = {"id": str(externalId)}
 
@@ -725,14 +727,14 @@ class BettensorValidator(BaseNeuron):
             game_responses = data.get("response", [])
             
             if not game_responses:
-                bt.logging.warning(f"No game data found for externalId {externalId}")
+                bt.logging.trace(f"No game data found for externalId {externalId}")
                 return
 
             game_response = game_responses[0]
 
             status = game_response["status"]["long"]
             if status != "Finished":
-                bt.logging.info(f"Game {externalId} is not finished yet. Current status: {status}")
+                bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
                 return
 
             home_team = game_response["teams"]["home"]["name"]
@@ -747,8 +749,8 @@ class BettensorValidator(BaseNeuron):
             else:
                 numeric_outcome = 2
 
-            bt.logging.info(f"Game {externalId} result: {home_team} {home_score} - {away_score} {away_team}")
-            bt.logging.info(f"Numeric outcome: {numeric_outcome}")
+            bt.logging.trace(f"Game {externalId} result: {home_team} {home_score} - {away_score} {away_team}")
+            bt.logging.trace(f"Numeric outcome: {numeric_outcome}")
 
             self.update_game_outcome(externalId, numeric_outcome)
         else:

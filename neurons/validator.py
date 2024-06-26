@@ -36,6 +36,8 @@ import bettensor
 from uuid import UUID
 from argparse import ArgumentParser
 import sqlite3
+from dotenv import load_dotenv
+import os
 
 # need to import the right protocol(s) here
 from bettensor.validator.bettensor_validator import BettensorValidator
@@ -47,6 +49,10 @@ from datetime import datetime, timezone
 from bettensor.utils.website_handler import fetch_and_send_predictions
 
 def main(validator: BettensorValidator):
+    # load rapid API key
+    load_dotenv()
+    rapid_api_key = os.getenv('RAPID_API_KEY')
+
     sports_data = SportsData()
     baseball_games = sports_data.get_game_data(
         sport="baseball", league="1", season="2024"
