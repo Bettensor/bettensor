@@ -8,6 +8,9 @@ from bettensor.protocol import MinerStats
 import threading
 import pytz
 
+import datetime
+import pytz
+
 class MinerStatsHandler:
     """
     This class is used to store miner stats and perform calculations on the data. It is instantiated for each validator and miner.
@@ -180,9 +183,7 @@ class MinerStatsHandler:
 
         c.execute(
             """
-        UPDATE miner_stats WHERE miner_hotkey = ?
-                  
-        SET 
+        UPDATE miner_stats SET 
         miner_uid = ?,
         miner_rank = ?,
         miner_cash = ?,
@@ -195,6 +196,7 @@ class MinerStatsHandler:
         miner_lifetime_losses = ?,
         miner_win_loss_ratio = ?,
         miner_status = ?
+        WHERE miner_hotkey = ?
         """,
             (
                 miner_uid,
@@ -209,6 +211,7 @@ class MinerStatsHandler:
                 miner_lifetime_losses,
                 miner_win_loss_ratio,
                 miner_status,
+                miner_hotkey,
             ),
         )
         conn.commit()
