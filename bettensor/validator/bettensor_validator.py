@@ -14,6 +14,8 @@ from bettensor.protocol import TeamGamePrediction
 import uuid
 from pathlib import Path
 from os import path, rename
+import requests
+import time
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -293,6 +295,7 @@ class BettensorValidator(BaseNeuron):
         # Commit changes and close the connection
         conn.commit()
         conn.close()
+
 
     def connect_db(self):
         """connects to the sqlite database"""
@@ -673,28 +676,34 @@ class BettensorValidator(BaseNeuron):
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
-    def update_game_outcome(self, game_id, outcome):
+    def update_game_outcome(self, game_id, numeric_outcome):
         """updates the outcome of a game in the database"""
         conn = self.connect_db()
         cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE game_data SET outcome = ?, active = 1 WHERE id = ?",
-            (outcome, game_id),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            cursor.execute(
+                "UPDATE game_data SET outcome = ?, active = 0 WHERE externalId = ?",
+                (numeric_outcome, game_id),
+            )
+            if cursor.rowcount == 0:
+                bt.logging.warning(f"No game updated for externalId {game_id}")
+            else:
+                bt.logging.info(f"Updated game {game_id} with outcome: {numeric_outcome}")
+            conn.commit()
+        except Exception as e:
+            bt.logging.error(f"Error updating game outcome: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
 
     def get_recent_games(self):
         """retrieves recent games from the database"""
         conn = self.connect_db()
         cursor = conn.cursor()
-        three_days_ago = datetime.utcnow().replace(
-            tzinfo=timezone.utc
-        ).isoformat() - timedelta(hours=72)
-        three_days_ago_str = three_days_ago.isoformat()
+        two_days_ago = (datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(hours=48)).isoformat()
         cursor.execute(
-            "SELECT id, teamA, teamB, externalId FROM game_data WHERE eventStartDate >= ? AND active = 0",
-            (three_days_ago_str,),
+            "SELECT id, teamA, teamB, externalId FROM game_data WHERE eventStartDate >= ? AND outcome = 'Unfinished'",
+            (two_days_ago,),
         )
         return cursor.fetchall()
 
@@ -705,7 +714,7 @@ class BettensorValidator(BaseNeuron):
         url = "https://api-baseball.p.rapidapi.com/games"
         headers = {
             "x-rapidapi-host": "api-baseball.p.rapidapi.com",
-            "x-rapidapi-key": "b416b1c26dmsh6f20cd13ee1f7ccp11cc1djsnf64975aaacde",
+            "x-rapidapi-key": "e0ebc482b7msh09b5236e2a6ceefp1de8d2jsnd100751b9daa",
         }
         querystring = {"id": str(externalId)}
 
@@ -713,28 +722,103 @@ class BettensorValidator(BaseNeuron):
 
         if response.status_code == 200:
             data = response.json()
-            game_response = data.get("response", [])[0]
+            game_responses = data.get("response", [])
+            
+            if not game_responses:
+                bt.logging.warning(f"No game data found for externalId {externalId}")
+                return
+
+            game_response = game_responses[0]
+
+            status = game_response["status"]["long"]
+            if status != "Finished":
+                bt.logging.info(f"Game {externalId} is not finished yet. Current status: {status}")
+                return
 
             home_team = game_response["teams"]["home"]["name"]
             away_team = game_response["teams"]["away"]["name"]
             home_score = game_response["scores"]["home"]["total"]
             away_score = game_response["scores"]["away"]["total"]
 
-            if home_score is not None and away_score is not None:
-                if home_score > away_score:
-                    winner = teamA if teamA == home_team else teamB
-                elif away_score > home_score:
-                    winner = teamB if teamB == away_team else teamA
-                else:
-                    winner = "tie"
+            if home_score > away_score:
+                numeric_outcome = 0
+            elif away_score > home_score:
+                numeric_outcome = 1
+            else:
+                numeric_outcome = 2
 
-                self.update_game_outcome(game_id, winner)
+            bt.logging.info(f"Game {externalId} result: {home_team} {home_score} - {away_score} {away_team}")
+            bt.logging.info(f"Numeric outcome: {numeric_outcome}")
+
+            self.update_game_outcome(externalId, numeric_outcome)
+        else:
+            bt.logging.error(f"Failed to fetch game data for {externalId}. Status code: {response.status_code}")
+
+        # Log the entire response for debugging
+        bt.logging.debug(f"API response for game {externalId}: {response.text}")
 
     def update_recent_games(self):
-        """updates the outcomes of recent games"""
+        """Updates the outcomes of recent games and corresponding predictions"""
         recent_games = self.get_recent_games()
+        
         for game_info in recent_games:
+            game_id, teamA, teamB, externalId = game_info
+
             self.determine_winner(game_info)
+
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    conn = self.connect_db()
+                    cursor = conn.cursor()
+                    
+                    try:
+                        # Fetch the updated outcome from game_data
+                        cursor.execute("SELECT outcome FROM game_data WHERE externalId = ?", (externalId,))
+                        result = cursor.fetchone()
+                        
+                        if result is None:
+                            bt.logging.warning(f"No game found with externalId {externalId}")
+                            break
+                        
+                        new_outcome = result[0]
+
+                        if new_outcome == 'Unfinished':
+                            bt.logging.info(f"Game {externalId} is still unfinished")
+                            break
+
+                        # Update predictions table where outcome is 'Unfinished' and matches teamGameID
+                        cursor.execute("""
+                            UPDATE predictions
+                            SET outcome = ?
+                            WHERE teamGameID = ? AND outcome = 'Unfinished'
+                        """, (new_outcome, externalId))
+
+                        conn.commit()
+                        bt.logging.info(f"Updated predictions for game {externalId} with outcome {new_outcome}")
+                        break  # If successful, break the retry loop
+                    
+                    except sqlite3.OperationalError as e:
+                        if "database is locked" in str(e) and attempt < max_retries - 1:
+                            bt.logging.warning(f"Database locked, retrying in 1 second... (Attempt {attempt + 1})")
+                            time.sleep(1)
+                        else:
+                            bt.logging.error(f"Error updating predictions for game {externalId}: {e}")
+                            break
+                    except Exception as e:
+                        bt.logging.error(f"Error updating predictions for game {externalId}: {e}")
+                        break
+                    finally:
+                        conn.close()
+                
+                except Exception as e:
+                    bt.logging.error(f"Error connecting to database: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                    else:
+                        break
+
+        bt.logging.info("Recent games and predictions update process completed")
 
     def set_weights(self):
         """sets the weights for the miners based on their performance in the last 48 hours"""
@@ -763,7 +847,7 @@ class BettensorValidator(BaseNeuron):
 
         # fetch all the relevant data from predictions
         cursor.execute(
-            "SELECT predictionID, teamGameID, minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds FROM predictions"
+            "SELECT predictionID, teamGameID, minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds FROM predictions"
         )
         prediction_rows = cursor.fetchall()
 
@@ -777,7 +861,7 @@ class BettensorValidator(BaseNeuron):
         }
 
         for row in prediction_rows:
-            prediction_id, team_game_id, miner_id, predicted_outcome, outcome, team_a, team_b, wager, team_a_odds, team_b_odds = row
+            prediction_id, team_game_id, miner_id, predicted_outcome, outcome, team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds = row
 
             if team_game_id in game_date_map:
                 event_date = datetime.fromisoformat(game_date_map[team_game_id])
@@ -786,13 +870,17 @@ class BettensorValidator(BaseNeuron):
                         miner_performance[miner_id] = 0.0
 
                     if predicted_outcome == outcome:
-                        if predicted_outcome == team_a:
+                        if predicted_outcome == '0':
                             earned = wager * team_a_odds
-                        elif predicted_outcome == team_b:
+                        elif predicted_outcome == '1':
                             earned = wager * team_b_odds
+                        elif predicted_outcome == 'Tie':
+                            earned = wager * tie_odds
                         else:
                             earned = 0  # in case there's some other outcome handling needed
                         miner_performance[miner_id] += earned
+                    bt.logging.info("miner performance")
+                    bt.logging.info(miner_performance)
 
         # update the earnings tensor
         for miner_id, total_earned in miner_performance.items():
@@ -806,7 +894,7 @@ class BettensorValidator(BaseNeuron):
         # check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
-        if stake < 0.0:
+        if stake < 100.0:
             bt.logging.error("insufficient stake. failed in setting weights.")
         else:
             result = self.subtensor.set_weights(
@@ -816,6 +904,7 @@ class BettensorValidator(BaseNeuron):
                 weights=weights,  # weights to set for the miners
                 wait_for_inclusion=False,
             )
+            bt.logging.info(f"printing weights: {weights}")
             if result:
                 bt.logging.success("successfully set weights.")
             else:
