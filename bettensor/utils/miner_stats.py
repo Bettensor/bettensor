@@ -5,7 +5,8 @@ import bittensor as bt
 import time
 from datetime import datetime, timedelta
 from bettensor.protocol import MinerStats
-
+import threading
+import pytz
 
 class MinerStatsHandler:
     """
@@ -18,6 +19,10 @@ class MinerStatsHandler:
         self.profile = profile
         self.conn = self.connect_to_db(self.db_path)
         self.create_table(self.conn)
+
+        # Start the run method in a separate thread
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
 
     def connect_to_db(self, db_path):
         """
@@ -68,19 +73,19 @@ class MinerStatsHandler:
         )
         conn.commit()
 
-    def reset_daily_cash(self, conn):
+    def reset_daily_cash(self):
         """
         This method resets the daily cash of every miner to 1000, executed at 00:00 UTC
         """
-        c = conn.cursor()
-        c.execute(
+        with self.connect_to_db(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+            UPDATE miner_stats
+            SET miner_cash = 1000
             """
-        UPDATE miner_stats
-        SET miner_cash = 1000
-        """
-        )
-        conn.commit()
-        conn.close()
+            )
+            conn.commit()
         bt.logging.info("Daily cash reset for all miners")
 
         # TODO: trigger miner_stats update query
@@ -226,11 +231,29 @@ class MinerStatsHandler:
 
         return MinerStats.create(row)
 
-    def run(self):
-        """
-        This method runs the miner stats loop, responsible for all updates and calculations.
-        """
+    def stop(self):
+        # Set a flag to stop the run loop
+        self.running = False
+        # Wait for the thread to finish
+        self.thread.join()
 
-        schedule.every().day.at("00:00").do(self.reset_daily_cash)
-        while True:
-            time.sleep(1)
+    def run(self):
+        self.running = True
+        
+        # Calculate time until next UTC midnight
+        def time_until_utc_midnight():
+            now = datetime.datetime.now(pytz.utc)
+            tomorrow = now.date() + datetime.timedelta(days=1)
+            midnight = datetime.datetime.combine(tomorrow, datetime.time.min)
+            return (midnight - now).total_seconds()
+        schedule.every(time_until_utc_midnight()).seconds.do(self.reset_daily_cash)
+        # For testing: run every minute instead of daily (if you think you're gonna be sneaky and reset this here, we check it on validator side`:) `)
+        #schedule.every(1).minutes.do(self.reset_daily_cash)
+        
+        while self.running:
+            schedule.run_pending()
+            time.sleep(10)  # Check more frequently for testing
+
+            # Reschedule for the next UTC midnight after each run
+            if not schedule.jobs:
+                schedule.every(time_until_utc_midnight()).seconds.do(self.reset_daily_cash)

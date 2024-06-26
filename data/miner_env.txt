@@ -1,0 +1,1 @@
+UID=0, DB_PATH=./data/miner.db, HOTKEY=5DbyhRS8tJhmGGaFc7E9knDNWFzKiaM99SwefocSg5YX2c29

@@ -169,3 +169,4 @@ bettensor/utils/games.db
 miner.db
 validator.db
 cli_errors.loggames_data.json
+.env
