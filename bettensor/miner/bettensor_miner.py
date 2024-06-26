@@ -384,9 +384,9 @@ class BettensorMiner(BaseNeuron):
         bt.logging.info(f"Processing predictions")
         prediction_dict = {}
         for game in games:
-            bt.logging.info(f" Processing Predictions: Game: {game}")
+            bt.logging.debug(f" Processing Predictions: Game: {game}")
             external_game_id = game[0]
-            bt.logging.info(f"Processing Predictions: Game ID: {external_game_id}")
+            bt.logging.debug(f"Processing Predictions: Game ID: {external_game_id}")
             # Fetch predictions for the game
             cursor.execute(
                 "SELECT * FROM predictions WHERE teamGameID = ?", (external_game_id,)
