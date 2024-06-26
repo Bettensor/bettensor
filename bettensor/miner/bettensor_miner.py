@@ -81,9 +81,9 @@ class BettensorMiner(BaseNeuron):
         os.environ["HOTKEY"] = self.wallet.hotkey.ss58_address
         os.environ["UID"] = str(self.miner_uid)
 
-        with open("data/miner_env.txt", "w") as f:
+        with open("data/miner_env.txt", "a") as f:
             f.write(
-                f"UID={self.miner_uid}, DB_PATH={self.db_path}, HOTKEY={self.wallet.hotkey.ss58_address}"
+                f"UID={self.miner_uid}, DB_PATH={self.db_path}, HOTKEY={self.wallet.hotkey.ss58_address}\n"
             )
 
         # Initialize local sqlite
