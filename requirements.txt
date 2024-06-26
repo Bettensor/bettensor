@@ -88,6 +88,7 @@ python-dotenv==1.0.1
 python-Levenshtein==0.25.1
 python-statemachine==2.1.2
 PyYAML==6.0.1
+pytz==2024.1
 rapidfuzz==3.9.3
 requests==2.32.3
 resolvelib==0.8.1
