@@ -55,26 +55,20 @@ class Application:
             self.miner_uid = args.uid
             with open("data/miner_env.txt", "r") as f:
                 for line in f:
-                    if f"UID={self.miner_uid}" in line:
-                        self.miner_hotkey = (
-                            line.split(",")[2].strip().split("=")[1].strip()
-                        )
-                        self.db_path = line.split(",")[3].strip().split("=")[1].strip()
-
+                    parts = line.strip().split(", ")
+                    if f"UID={self.miner_uid}" in parts[0]:
+                        self.miner_uid = parts[0].split("=")[1]
+                        self.db_path = parts[1].split("=")[1]
+                        self.miner_hotkey = parts[2].split("=")[1]
+                        break
         else:
             print("No UID specified, choosing first miner in list")
             with open("data/miner_env.txt", "r") as f:
-                for line in f:
-                    if "UID=" in line:
-                        self.miner_uid = (
-                            line.split(",")[0].strip().split("=")[1].strip()
-                        )
-                        self.db_path = line.split(",")[1].strip().split("=")[1].strip()
-                        self.miner_hotkey = (
-                            line.split(",")[2].strip().split("=")[1].strip()
-                        )
-                        break
-        # test if file read worked
+                line = f.readline().strip()
+                parts = line.split(", ")
+                self.miner_uid = parts[0].split("=")[1]
+                self.db_path = parts[1].split("=")[1]
+                self.miner_hotkey = parts[2].split("=")[1]
 
         print(
             f"Miner UID: {self.miner_uid}, Miner Hotkey: {self.miner_hotkey}, DB Path: {self.db_path}"
@@ -811,7 +805,7 @@ def get_miner_stats(cursor, uid=None):
     logging.info(f"Getting miner stats for uid: {uid}")
 
     if uid is not None:
-        cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = ?", str(uid))
+        cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = ?", (str(uid),))
         columns = [
             column[0] for column in cursor.description
         ]  # Get column names from the cursor description
