@@ -81,14 +81,16 @@ class BettensorMiner(BaseNeuron):
         os.environ["HOTKEY"] = self.wallet.hotkey.ss58_address
         os.environ["UID"] = str(self.miner_uid)
 
+        # Initialize local sqlite
+        self.ensure_db_directory_exists(self.db_path)
+        self.initialize_database()
+
         with open("data/miner_env.txt", "a") as f:
             f.write(
                 f"UID={self.miner_uid}, DB_PATH={self.db_path}, HOTKEY={self.wallet.hotkey.ss58_address}\n"
             )
 
-        # Initialize local sqlite
-        self.ensure_db_directory_exists(self.db_path)
-        self.initialize_database()
+        
 
         # Initialize Miner Stats
         self.stats = MinerStatsHandler(db_path=self.db_path, profile="miner")
