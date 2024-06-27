@@ -890,7 +890,7 @@ class BettensorValidator(BaseNeuron):
         # check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
-        if stake < 0.0:
+        if stake < 1000.0:
             bt.logging.error("insufficient stake. failed in setting weights.")
         else:
             result = self.subtensor.set_weights(
