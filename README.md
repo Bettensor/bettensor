@@ -101,12 +101,15 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
    RAPID_API_KEY=<YOUR_API_KEY>
    ```
 
-3. Edit the `validator.sh` file, uncommenting the appropriate network and replacing wallet details.
+3. Edit the `validator.sh` file, replacing NEURON_ARGS with the appropriate network and wallet details.
+   - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
 
 4. Start the validator:
    ```bash
    pm2 start validator.sh --name validator --interpreter bash
    ```
+   >[!NOTE]
+   > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the command. (not recommended)
 
 5. Check logs for Success:
    ```bash
@@ -120,12 +123,16 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 
 ## Guide for Miners
 
-1. Edit the `miner.sh` file, uncommenting the appropriate network and replacing wallet details.
+1. Edit the `miner.sh` file, replacing NEURON_ARGS with the appropriate network and wallet details.
+   - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
+   
 
 2. Start the miner:
    ```bash
-   pm2 start miner.sh --name miner --interpreter bash
+   pm2 start miner.sh --name miner
    ```
+   >[!NOTE]
+   > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the command. (not recommended for "manual" miners)
 
 3. Check logs for Success and wait for some game data:
    ```bash

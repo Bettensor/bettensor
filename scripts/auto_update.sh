@@ -1,8 +1,16 @@
 #!/bin/bash
 
-# Auto-update script
+SCRIPT_NAME=$1
+DISABLE_AUTO_UPDATE=$2
+
+if [ "$DISABLE_AUTO_UPDATE" = "true" ]; then
+    echo "Auto-update is disabled. Running $SCRIPT_NAME without updates."
+    exec $SCRIPT_NAME
+    exit 0
+fi
+
 current_branch=$(git rev-parse --abbrev-ref HEAD)
-echo "Auto-update checking enabled on branch: $current_branch"
+echo "Auto-update enabled on branch: $current_branch"
 
 while true; do
     git fetch
@@ -12,15 +20,13 @@ while true; do
     if [[ $local_hash != $remote_hash ]]; then
         echo "New updates detected. Pulling changes..."
         git pull origin $current_branch
-        git checkout $current_branch
         echo "Reinstalling dependencies..."
-        pip install -e .[validator]
-
-        echo "Restarting PM2 process..."
-        pm2 restart $INSTANCE
-        echo "PM2 process $INSTANCE has been restarted."
+        pip install -e .
+        echo "Restarting process..."
+        exec $SCRIPT_NAME
+        exit 0
     else
         echo "No updates found. Checking again in 10 minutes..."
     fi
-    sleep 600  # Check every 10 minutes
+    sleep 600
 done
