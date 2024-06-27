@@ -3,6 +3,8 @@
 SCRIPT_NAME=$1
 DISABLE_AUTO_UPDATE=$2
 
+echo "Starting auto_update.sh with SCRIPT_NAME=$SCRIPT_NAME and DISABLE_AUTO_UPDATE=$DISABLE_AUTO_UPDATE"
+
 if [ "$DISABLE_AUTO_UPDATE" = "true" ]; then
     echo "Auto-update is disabled. Running $SCRIPT_NAME without updates."
     exec $SCRIPT_NAME
@@ -13,9 +15,13 @@ current_branch=$(git rev-parse --abbrev-ref HEAD)
 echo "Auto-update enabled on branch: $current_branch"
 
 while true; do
+    echo "Fetching updates..."
     git fetch
     local_hash=$(git rev-parse HEAD)
     remote_hash=$(git rev-parse origin/$current_branch)
+
+    echo "Local hash: $local_hash"
+    echo "Remote hash: $remote_hash"
 
     if [[ $local_hash != $remote_hash ]]; then
         echo "New updates detected. Pulling changes..."

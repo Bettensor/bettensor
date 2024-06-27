@@ -1,10 +1,12 @@
 #!/bin/bash
 
+echo "Starting miner.sh"
+
 # Make auto_update.sh executable
 chmod +x scripts/auto_update.sh
 
 # Default neuron arguments
-NEURON_ARGS="--netuid 181 --subtensor.network test  --wallet.name miner-local --wallet.hotkey default --logging.debug --logging.trace --axon.port 12345 --validator_min_stake 0"
+NEURON_ARGS="--netuid 181 --subtensor.network test --wallet.name miner-local --wallet.hotkey default --logging.debug --logging.trace --axon.port 12345 --validator_min_stake 0"
 
 # Parse arguments
 DISABLE_AUTO_UPDATE=false
@@ -24,16 +26,21 @@ do
     esac
 done
 
+echo "DISABLE_AUTO_UPDATE=$DISABLE_AUTO_UPDATE"
+
 # If auto-update is not disabled, run the auto_update.sh script in the background
 if [ "$DISABLE_AUTO_UPDATE" = false ]; then
-    scripts/auto_update.sh "$0" false &
+    echo "Starting auto_update.sh in the background"
+    setsid scripts/auto_update.sh "$0" false &
     AUTO_UPDATE_PID=$!
 fi
 
 # The actual miner command
+echo "Starting miner with arguments: $NEURON_ARGS"
 python neurons/miner.py $NEURON_ARGS
 
 # If auto-update is running, kill it when the main process exits
 if [ "$DISABLE_AUTO_UPDATE" = false ]; then
+    echo "Killing auto_update.sh with PID $AUTO_UPDATE_PID"
     kill $AUTO_UPDATE_PID
 fi
