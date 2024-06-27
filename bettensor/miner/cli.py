@@ -80,6 +80,31 @@ class Application:
         self.predictions = get_predictions(self.cursor)
         self.games = get_game_data(self.cursor)
         self.miner_stats = get_miner_stats(self.cursor, self.miner_uid)
+        
+        if self.miner_stats is None:
+            print(f"No miner stats found for UID: {self.miner_uid}. Initializing with default values.")
+            self.miner_stats = {
+                "miner_uid": self.miner_uid,
+                "miner_hotkey": self.miner_hotkey,
+                "miner_cash": 1000,  # Default starting cash
+                "miner_status": "active",
+                "miner_last_prediction_date": None,
+                "miner_lifetime_earnings": 0,
+                "miner_lifetime_wager": 0,
+                "miner_lifetime_predictions": 0,
+                "miner_lifetime_wins": 0,
+                "miner_lifetime_losses": 0,
+                "miner_win_loss_ratio": 0,
+                "miner_rank": 0,
+                "miner_current_incentive": 0,
+            }
+            # Insert these default stats into the database
+            columns = ", ".join(self.miner_stats.keys())
+            placeholders = ", ".join("?" * len(self.miner_stats))
+            values = tuple(self.miner_stats.values())
+            self.cursor.execute(f"INSERT INTO miner_stats ({columns}) VALUES ({placeholders})", values)
+            self.db.commit()
+
         self.active_games = {}
         self.unsubmitted_predictions = {}
         self.miner_cash = self.miner_stats["miner_cash"]
@@ -808,16 +833,16 @@ def get_miner_stats(cursor, uid=None):
 
     if uid is not None:
         cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = ?", (str(uid),))
-        columns = [
-            column[0] for column in cursor.description
-        ]  # Get column names from the cursor description
+        columns = [column[0] for column in cursor.description]
         row = cursor.fetchone()
+        if row is None:
+            logging.warning(f"No miner stats found for uid: {uid}")
+            return None
         miner_stats = {columns[i]: row[i] for i in range(len(columns))}
         logging.info(f"Miner stats: {miner_stats}")
         return miner_stats
-
     else:
-        logging.error("No UID or hotkey specified")
+        logging.error("No UID specified")
         return None
 
 
