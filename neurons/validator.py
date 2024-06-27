@@ -251,7 +251,7 @@ def main(validator: BettensorValidator):
             bt.logging.debug("Sleeping for: 18 seconds")
             time.sleep(18)
 
-            bt.logging.warning(f"TESTING AUTO UPDATE!!")
+            #bt.logging.warning(f"TESTING AUTO UPDATE!!")
 
         except TimeoutError as e:
             bt.logging.debug("Validator timed out")

@@ -169,5 +169,8 @@ bettensor/utils/games.db
 data/miner_env.txt
 miner.db
 validator.db
-cli_errors.loggames_data.json
+cli_errors.log
+games_data.json
 .env
+miner.sh
+validator.sh

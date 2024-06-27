@@ -395,15 +395,15 @@ class BettensorMiner(BaseNeuron):
         bt.logging.info(f"Processing predictions")
         prediction_dict = {}
         for game in games:
-            bt.logging.debug(f" Processing Predictions: Game: {game}")
+            bt.logging.trace(f" Processing Predictions: Game: {game}")
             external_game_id = game[0]
-            bt.logging.debug(f"Processing Predictions: Game ID: {external_game_id}")
+            bt.logging.trace(f"Processing Predictions: Game ID: {external_game_id}")
             # Fetch predictions for the game
             cursor.execute(
                 "SELECT * FROM predictions WHERE teamGameID = ?", (external_game_id,)
             )
             predictions = cursor.fetchall()
-            bt.logging.info(f"Predictions: {predictions}")
+            bt.logging.trace(f"Predictions: {predictions}")
 
             # Add predictions to prediction_dict
             for prediction in predictions:
@@ -424,7 +424,7 @@ class BettensorMiner(BaseNeuron):
                 )
                 prediction_dict[prediction[0]] = single_prediction
 
-        bt.logging.info(f"prediction_dict: {prediction_dict}")
+        bt.logging.trace(f"prediction_dict: {prediction_dict}")
         synapse.prediction_dict = prediction_dict
         synapse.gamedata_dict = None
         synapse.metadata = Metadata.create(
@@ -512,22 +512,22 @@ class BettensorMiner(BaseNeuron):
         cursor.execute("SELECT * FROM games")
         games = cursor.fetchall()
         for game in games:
-            bt.logging.debug(
+            bt.logging.trace(
                 f"Current time: {datetime.datetime.now(datetime.timezone.utc)}"
             )
-            bt.logging.debug(f"update_games_data() | Game: {game}")
+            bt.logging.trace(f"update_games_data() | Game: {game}")
             if datetime.datetime.now(
                 datetime.timezone.utc
             ) > datetime.datetime.fromisoformat(game[10]):
                 cursor.execute(
                     "UPDATE games SET active = 1 WHERE gameID = ?", (game[0],)
                 )
-                bt.logging.debug(f"update_games_data() | Game {game[0]} is now active")
+                bt.logging.trace(f"update_games_data() | Game {game[0]} is now active")
             if datetime.datetime.now(
                 datetime.timezone.utc
             ) > datetime.datetime.fromisoformat(game[10]) + datetime.timedelta(days=3):
                 cursor.execute("DELETE FROM games WHERE gameID = ?", (game[0],))
-                bt.logging.debug(
+                bt.logging.trace(
                     f"update_games_data() | Game {game[0]} is deleted from db"
                 )
             if datetime.datetime.now(
@@ -551,7 +551,7 @@ class BettensorMiner(BaseNeuron):
         return False
 
     def remove_duplicate_games(self):
-        bt.logging.info("Removing duplicate games from the database")
+        bt.logging.trace("Removing duplicate games from the database")
         db, cursor = self.get_cursor()
         try:
             # Find duplicate games
