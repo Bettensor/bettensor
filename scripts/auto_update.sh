@@ -28,8 +28,8 @@ while true; do
         git pull origin $current_branch
         echo "Reinstalling dependencies..."
         pip install -e .
-        echo "Restarting process..."
-        exec $SCRIPT_NAME
+        echo "Restarting PM2 process..."
+        pm2 restart $SCRIPT_NAME
         exit 0
     else
         echo "No updates found. Checking again in 2 minutes..."

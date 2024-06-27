@@ -106,10 +106,11 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 
 4. Start the validator:
    ```bash
-   pm2 start validator.sh --name validator 
+   pm2 start validator.sh  
    ```
    >[!NOTE]
    > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the pm2 command. (not recommended)
+   > you should NOT use the pm2 --name flag anymore, this will prevent auto updates from working.
 
 5. Check logs for Success:
    ```bash
@@ -129,10 +130,12 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 
 2. Start the miner:
    ```bash
-   pm2 start miner.sh --name miner
+   pm2 start miner.sh 
    ```
    >[!NOTE]
    > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the pm2 command. (not recommended for "manual" miners)
+   > Additionally, if you are running multiple miners, you'll need to have multiple copies of the `miner.sh` file, each with a unique name, (like miner1,miner2,etc) and run each one with `pm2 start <script-name>`.
+   >You should NOT use the name flag anymore, this will prevent auto updates from working.
 
 3. Check logs for Success and wait for some game data:
    ```bash
