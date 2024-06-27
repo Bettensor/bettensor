@@ -101,34 +101,46 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
    RAPID_API_KEY=<YOUR_API_KEY>
    ```
 
-3. Create a new file `validator.sh` in the top-level directory. Copy the contents of `template-scripts/validator.sh.template` to this file. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
+3. Create a new file `validator.sh` in the top-level directory. Copy the contents of `template-scripts/validator.sh.template` to this file. 
+   ```bash
+   cp template-scripts/validator.sh.template validator.sh
+   ```
+
+
+4. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
    - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
 
-4. Start the validator:
+5. Start the validator:
    ```bash
    pm2 start validator.sh  
    ```
    >[!NOTE]
-   > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the pm2 command. (not recommended)
-   > you should NOT use the pm2 --name flag anymore, this will prevent auto updates from working.
+   > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the pm2 command. (not recommended).
+   >
+   >Additionally, you should NOT use the pm2 --name flag anymore, this will prevent auto updates from working.
 
-5. Check logs for Success:
+6. Check logs for Success:
    ```bash
    pm2 logs validator
    ```
->[!NOTE]
-> We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
+   >[!NOTE]
+   > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
 
 
 
 
 ## Guide for Miners
 
-1. Create a new file `miner.sh` in the top-level directory. Copy the contents of `template-scripts/miner.sh.template` to this file. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
+1. Create a new file `miner.sh` in the top-level directory. Copy the contents of `template-scripts/miner.sh.template` to this file. 
+   ```bash
+   cp template-scripts/miner.sh.template miner.sh
+   ```
+
+2. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
    - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
    
 
-2. Start the miner:
+3. Start the miner:
    ```bash
    pm2 start miner.sh 
    ```
@@ -137,22 +149,22 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
    > Additionally, if you are running multiple miners, you'll need to have multiple copies of the `miner.sh` file, each with a unique name, (like miner1,miner2,etc) and run each one with `pm2 start <script-name>`.
    >You should NOT use the name flag anymore, this will prevent auto updates from working.
 
-3. Check logs for Success and wait for some game data:
+4. Check logs for Success and wait for some game data:
    ```bash
    pm2 logs miner
    ```
 
-4. Submit predictions with our Beta User Interface:
+5. Submit predictions with our Beta User Interface:
    ```bash
    python bettensor/miner/cli.py
    ```
-5. If you're running more than one miner, you can specify with the `--uid` flag. (this is your network UID for the miner). You can reference `./data/miner_env.txt` to find your NETUIDs
+6. If you're running more than one miner, you can specify with the `--uid` flag. (this is your network UID for the miner). You can reference `./data/miner_env.txt` to find your NETUIDs
     ```bash
     python bettensor/miner/cli.py --uid <UID>
     ```
 
->[!NOTE]
-> We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
+   >[!NOTE]
+   > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
 
 
 ## Incentive Mechanism and Scoring
