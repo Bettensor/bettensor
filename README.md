@@ -101,7 +101,7 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
    RAPID_API_KEY=<YOUR_API_KEY>
    ```
 
-3. Create a new file `validator.sh` in the top-level directory. Copy the contents of `template-scripts/validator.sh` to this file. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
+3. Create a new file `validator.sh` in the top-level directory. Copy the contents of `template-scripts/validator.sh.template` to this file. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
    - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
 
 4. Start the validator:
@@ -124,7 +124,7 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 
 ## Guide for Miners
 
-1. Create a new file `miner.sh` in the top-level directory. Copy the contents of `template-scripts/miner.sh` to this file. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
+1. Create a new file `miner.sh` in the top-level directory. Copy the contents of `template-scripts/miner.sh.template` to this file. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
    - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
    
 
