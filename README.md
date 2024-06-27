@@ -50,33 +50,38 @@ To mine or validate on this subnet, we recommend starting with a cheap VPS insta
    git clone https://github.com/bettensor/bettensor.git
 ```
 
-3. Update apt-get:
+2. Update apt-get:
 ```bash
 sudo apt-get update
 ```
 
-3. Set up a virtual environment (Python 3.10 recommended):
+3. Install python3.10-venv:
+```bash
+sudo apt-get install python3.10-venv
+```
+
+4. Set up a virtual environment (Python 3.10 recommended):
 ```bash
    python3.10 -m venv venv
    source venv/bin/activate
 ```
 
-4. Install dependencies:
+5. Install dependencies:
 ```bash
    cd bettensor
    pip install -e .
    pip install -r requirements.txt
 ```
 
-5. Install pm2 (recommended for process management):
+6. Install pm2 (recommended for process management):
 ```bash
 sudo apt-get install -y npm jq
 sudo npm install -g pm2
 ```
 
-6. Set up a Bittensor wallet (guide [here](https://docs.bittensor.com/getting-started/wallets)).
+7. Set up a Bittensor wallet (guide [here](https://docs.bittensor.com/getting-started/wallets)).
 
-7. Register on the subnet:
+8. Register on the subnet:
 
 - Mainnet `(NETUID 30)`:
 
