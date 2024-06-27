@@ -4,7 +4,7 @@
 chmod +x scripts/auto_update.sh
 
 # Default neuron arguments
-NEURON_ARGS="--netuid 1 --subtensor.network local --subtensor.chain_endpoint ws://127.0.0.1:9946 --wallet.name miner-local --wallet.hotkey default --logging.debug --logging.trace --axon.port 12345 --validator_min_stake 10"
+NEURON_ARGS="--netuid 181 --subtensor.network test  --wallet.name miner-local --wallet.hotkey default --logging.debug --logging.trace --axon.port 12345 --validator_min_stake 0"
 
 # Parse arguments
 DISABLE_AUTO_UPDATE=false

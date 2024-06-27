@@ -250,6 +250,9 @@ def main(validator: BettensorValidator):
             # Sleep for a duration equivalent to the block time (i.e., time between successive blocks).
             bt.logging.debug("Sleeping for: 18 seconds")
             time.sleep(18)
+
+            bt.logging.warning(f"TESTING AUTO UPDATE!!")
+
         except TimeoutError as e:
             bt.logging.debug("Validator timed out")
 
