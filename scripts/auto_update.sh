@@ -26,7 +26,7 @@ while true; do
         exec $SCRIPT_NAME
         exit 0
     else
-        echo "No updates found. Checking again in 10 minutes..."
+        echo "No updates found. Checking again in 2 minutes..."
     fi
-    sleep 600
+    sleep 120
 done
