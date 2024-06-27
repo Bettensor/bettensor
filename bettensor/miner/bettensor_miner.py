@@ -436,7 +436,8 @@ class BettensorMiner(BaseNeuron):
             )
             # Check games table, add games that are not in the table
             for game_id, game_data in game_data_dict.items():
-                cursor.execute("SELECT * FROM games WHERE gameID = ?", (game_id,))
+                external_id = game_data.externalId
+                cursor.execute("SELECT * FROM games WHERE externalID = ?", (external_id,))
                 if not cursor.fetchone():
                     # Game is not in the table, add it
                     cursor.execute(
@@ -465,7 +466,7 @@ class BettensorMiner(BaseNeuron):
                     db.commit()
                 else:
                     bt.logging.debug(
-                        f"add_game_data() | Game {game_id} already in the table, updating."
+                        f"add_game_data() | Game {external_id} already in the table, updating."
                     )
                     cursor.execute(
                         """UPDATE games SET teamA = ?, teamAodds = ?, teamB = ?, teamBodds = ?, sport = ?, league = ?, externalID = ?, 

@@ -247,9 +247,11 @@ class MinerStatsHandler:
         def time_until_utc_midnight():
             now = datetime.datetime.now(pytz.utc)
             tomorrow = now.date() + datetime.timedelta(days=1)
-            midnight = datetime.datetime.combine(tomorrow, datetime.time.min)
+            midnight = datetime.datetime.combine(tomorrow, datetime.time.min, tzinfo=pytz.utc)
             return (midnight - now).total_seconds()
+
         schedule.every(time_until_utc_midnight()).seconds.do(self.reset_daily_cash)
+        
         # For testing: run every minute instead of daily (if you think you're gonna be sneaky and reset this here, we check it on validator side`:) `)
         #schedule.every(1).minutes.do(self.reset_daily_cash)
         
