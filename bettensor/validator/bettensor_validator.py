@@ -225,7 +225,6 @@ class BettensorValidator(BaseNeuron):
         processed_uids: list of uids that have been processed
         predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
         """
-        bt.logging.debug(f"predictions: {predictions}")
         conn = self.connect_db()
         cursor = conn.cursor()
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
@@ -356,9 +355,6 @@ class BettensorValidator(BaseNeuron):
 
                 if metadata and hasattr(metadata, "neuron_uid"):
                     uid = metadata.neuron_uid
-                    bt.logging.debug(f"processing prediction from miner: {uid}")
-                    bt.logging.debug(f"prediction: {prediction_dict}")
-                    bt.logging.debug(f"prediction type: {type(prediction_dict)}")
 
                     # ensure prediction_dict is not none before adding it to predictions_dict
                     if prediction_dict is not None:
@@ -756,8 +752,6 @@ class BettensorValidator(BaseNeuron):
         else:
             bt.logging.error(f"Failed to fetch game data for {externalId}. Status code: {response.status_code}")
 
-        # Log the entire response for debugging
-        bt.logging.debug(f"API response for game {externalId}: {response.text}")
 
     def update_recent_games(self):
         """Updates the outcomes of recent games and corresponding predictions"""
@@ -896,7 +890,7 @@ class BettensorValidator(BaseNeuron):
         # check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
-        if stake < 100.0:
+        if stake < 0.0:
             bt.logging.error("insufficient stake. failed in setting weights.")
         else:
             result = self.subtensor.set_weights(
