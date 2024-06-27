@@ -50,28 +50,33 @@ To mine or validate on this subnet, we recommend starting with a cheap VPS insta
    git clone https://github.com/bettensor/bettensor.git
 ```
 
-2. Set up a virtual environment (Python 3.10 recommended):
+3. Update apt-get:
+```bash
+sudo apt-get update
+```
+
+3. Set up a virtual environment (Python 3.10 recommended):
 ```bash
    python3.10 -m venv venv
    source venv/bin/activate
 ```
 
-3. Install dependencies:
+4. Install dependencies:
 ```bash
    cd bettensor
    pip install -e .
    pip install -r requirements.txt
 ```
 
-4. Install pm2 (recommended for process management):
+5. Install pm2 (recommended for process management):
 ```bash
 sudo apt-get install -y npm jq
 sudo npm install -g pm2
 ```
 
-5. Set up a Bittensor wallet (guide [here](https://docs.bittensor.com/wallets/)).
+6. Set up a Bittensor wallet (guide [here](https://docs.bittensor.com/getting-started/wallets)).
 
-6. Register on the subnet:
+7. Register on the subnet:
 
 - Mainnet `(NETUID 30)`:
 
@@ -93,7 +98,7 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 
 2. Create a `.env` file in the top-level directory:
    ```
-   API_KEY=<YOUR_API_KEY>
+   RAPID_API_KEY=<YOUR_API_KEY>
    ```
 
 3. Edit the `validator.sh` file, uncommenting the appropriate network and replacing wallet details.
@@ -155,7 +160,7 @@ With this design, we heavily incentivize correct predictions. Danger of deregist
 ## Details for Current Release Version (v0.0.1, Beta)
 
 >[!CAUTION]
->This is a Beta release of BetTensor. We expect instability and frequent minor updates. Please contact us on discord if you have any issues or suggestions.
+>This is a Beta release of BetTensor. We expect instability and frequent updates. Please contact us on discord if you have any issues or suggestions.
 
 - Model-based predictions are not integrated in this version. 
 - Currently supported sports: MLB, MLS
