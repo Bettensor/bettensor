@@ -372,6 +372,9 @@ class BettensorMiner(BaseNeuron):
         # clean up games table and set active field
         self.update_games_data(db, cursor)
 
+        # Remove duplicate games
+        self.remove_duplicate_games()
+
         # Get current time
         current_time = datetime.datetime.now(datetime.timezone.utc).isoformat(
             timespec="minutes"
@@ -546,3 +549,39 @@ class BettensorMiner(BaseNeuron):
                 if f"HOTKEY={hotkey}" in line:
                     return True
         return False
+
+    def remove_duplicate_games(self):
+        bt.logging.info("Removing duplicate games from the database")
+        db, cursor = self.get_cursor()
+        try:
+            # Find duplicate games
+            cursor.execute("""
+                SELECT externalID, COUNT(*) as count
+                FROM games
+                GROUP BY externalID
+                HAVING count > 1
+            """)
+            duplicates = cursor.fetchall()
+
+            for external_id, count in duplicates:
+                bt.logging.debug(f"Found {count} duplicates for externalID: {external_id}")
+                
+                # Keep the most recently updated record
+                cursor.execute("""
+                    DELETE FROM games
+                    WHERE externalID = ? AND rowid NOT IN (
+                        SELECT rowid
+                        FROM games
+                        WHERE externalID = ?
+                        ORDER BY lastUpdateDate DESC
+                        LIMIT 1
+                    )
+                """, (external_id, external_id))
+
+            db.commit()
+            bt.logging.info(f"Removed {len(duplicates)} sets of duplicate games")
+        except sqlite3.Error as e:
+            bt.logging.error(f"Error removing duplicate games: {e}")
+            db.rollback()
+        finally:
+            db.close()
