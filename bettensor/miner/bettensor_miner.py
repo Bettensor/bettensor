@@ -583,5 +583,4 @@ class BettensorMiner(BaseNeuron):
         except sqlite3.Error as e:
             bt.logging.error(f"Error removing duplicate games: {e}")
             db.rollback()
-        finally:
-            db.close()
+        
