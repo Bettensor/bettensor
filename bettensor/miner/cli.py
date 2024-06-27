@@ -403,13 +403,40 @@ class GamesList(InteractiveTable):
         super().__init__(app)
         app.reload_data()
 
-        # Sort games by date in descending order
-        sorted_games = sorted(
-            self.app.games.values(),
-            key=lambda x: datetime.datetime.fromisoformat(x["eventStartDate"]),
-        )
+        # Get unique sports from all games
+        self.available_sports = sorted(set(game['sport'] for game in self.app.games.values()))
+        self.current_filter = "All Sports"  # Default to no filter
 
-        if not self.app.games:
+        self.update_sorted_games()
+
+        self.games_per_page = 25
+        self.current_page = 0
+        self.update_total_pages()
+
+        self.update_options()
+        self.update_text_area()
+
+    def update_sorted_games(self):
+        if self.current_filter == "All Sports":
+            self.sorted_games = sorted(
+                self.app.games.values(),
+                key=lambda x: datetime.datetime.fromisoformat(x["eventStartDate"])
+            )
+        else:
+            self.sorted_games = sorted(
+                [game for game in self.app.games.values() if game['sport'] == self.current_filter],
+                key=lambda x: datetime.datetime.fromisoformat(x["eventStartDate"])
+            )
+
+    def update_total_pages(self):
+        self.total_pages = max(1, (len(self.sorted_games) + self.games_per_page - 1) // self.games_per_page)
+        self.current_page = min(self.current_page, self.total_pages - 1)
+
+    def update_options(self):
+        start_idx = self.current_page * self.games_per_page
+        end_idx = min(start_idx + self.games_per_page, len(self.sorted_games))
+        
+        if not self.sorted_games:
             # Set default lengths if there are no games
             max_sport_len = len("Sport")
             max_teamA_len = len("Team A")
@@ -421,39 +448,39 @@ class GamesList(InteractiveTable):
         else:
             # Calculate maximum widths for each column based on data and header
             max_sport_len = max(
-                max(len(game["sport"]) for game in self.app.games.values()),
+                max(len(game["sport"]) for game in self.sorted_games),
                 len("Sport"),
             )
             max_teamA_len = max(
-                max(len(game["teamA"]) for game in self.app.games.values()),
+                max(len(game["teamA"]) for game in self.sorted_games),
                 len("Team A"),
             )
             max_teamB_len = max(
-                max(len(game["teamB"]) for game in self.app.games.values()),
+                max(len(game["teamB"]) for game in self.sorted_games),
                 len("Team B"),
             )
             max_eventStartDate_len = max(
-                max(len(game["eventStartDate"]) for game in self.app.games.values()),
+                max(len(game["eventStartDate"]) for game in self.sorted_games),
                 len("Event Start Date"),
             )
             max_teamAodds_len = max(
                 max(
                     len(str(game.get("teamAodds", "")))
-                    for game in self.app.games.values()
+                    for game in self.sorted_games
                 ),
                 len("Team A Odds"),
             )
             max_teamBodds_len = max(
                 max(
                     len(str(game.get("teamBodds", "")))
-                    for game in self.app.games.values()
+                    for game in self.sorted_games
                 ),
                 len("Team B Odds"),
             )
             max_tieOdds_len = max(
                 max(
                     len(str(game.get("tieOdds", "")))
-                    for game in self.app.games.values()
+                    for game in self.sorted_games
                 ),
                 len("Tie Odds"),
             )
@@ -464,55 +491,64 @@ class GamesList(InteractiveTable):
             style="bold",
         )
 
-        # Generate options for the scrollable list using sorted games
+        # Generate options for the current page
         self.options = [
             f"{game['sport']:<{max_sport_len}} | {game['teamA']:<{max_teamA_len}} | {game['teamB']:<{max_teamB_len}} | {self.format_event_start_date(game['eventStartDate']):<{max_eventStartDate_len}} | {str(game.get('teamAodds', '')):<{max_teamAodds_len}} | {str(game.get('teamBodds', '')):<{max_teamBodds_len}} | {str(game.get('tieOdds', '')):<{max_tieOdds_len}}"
-            for game in sorted_games
+            for game in self.sorted_games[start_idx:end_idx]
         ]
-        self.options.append("Go Back")  # Add "Go Back" option
-        self.update_text_area()
-
-    def format_event_start_date(self, event_start_date):
-        # Parse the ISO format date
-        dt = datetime.datetime.fromisoformat(event_start_date)
-        # Convert to UTC
-        dt = dt.astimezone(pytz.utc)
-        # Format it to the desired format
-        return dt.strftime("%Y-%m-%d %H:%M")
+        # Add filter option and Go Back
+        self.options.append(f"Filter: {self.current_filter}")
+        self.options.append("Go Back")
 
     def update_text_area(self):
-        # Update the text area to include the header, divider, options, and space before "Go Back"
         header_text = self.header.text
         divider = "-" * len(header_text)
-        if len(self.options) == 1:  # Only "Go Back" is present
+        if len(self.options) == 2:  # Only "Filter" and "Go Back" are present
             options_text = "No games available."
         else:
             options_text = "\n".join(
                 f"> {option}" if i == self.selected_index else f"  {option}"
-                for i, option in enumerate(self.options[:-1])
+                for i, option in enumerate(self.options[:-2])
             )
         current_time_text = f"\n\nCurrent Time (UTC): {datetime.datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M')}"
+        page_info = f"\nPage {self.current_page + 1}/{self.total_pages} (Use left/right arrow keys to navigate)"
         go_back_text = (
             f"\n\n  {self.options[-1]}"
             if self.selected_index != len(self.options) - 1
             else f"\n\n> {self.options[-1]}"
         )
+        filter_text = (
+            f"\n\n  {self.options[-2]}"
+            if self.selected_index != len(self.options) - 2
+            else f"\n\n> {self.options[-2]}"
+        )
         self.text_area.text = (
-            f"{header_text}\n{divider}\n{options_text}{go_back_text}{current_time_text}"
+            f"{header_text}\n{divider}\n{options_text}{filter_text}{go_back_text}{current_time_text}{page_info}"
         )
 
     def handle_enter(self):
         if self.selected_index == len(self.options) - 1:  # Go Back
             self.app.change_view(MainMenu(self.app))
+        elif self.selected_index == len(self.options) - 2:  # Filter option
+            self.cycle_filter()
         else:
             # Get the currently selected game data from the sorted list
-            sorted_games = sorted(
-                self.app.games.values(),
-                key=lambda x: datetime.datetime.fromisoformat(x["eventStartDate"]),
-            )
-            selected_game_data = sorted_games[self.selected_index]
-            # Change view to WagerConfirm, passing the selected game data
-            self.app.change_view(WagerConfirm(self.app, selected_game_data, self))
+            game_index = self.current_page * self.games_per_page + self.selected_index
+            if game_index < len(self.sorted_games):
+                selected_game_data = self.sorted_games[game_index]
+                # Change view to WagerConfirm, passing the selected game data
+                self.app.change_view(WagerConfirm(self.app, selected_game_data, self))
+
+    def cycle_filter(self):
+        current_index = self.available_sports.index(self.current_filter) if self.current_filter != "All Sports" else -1
+        next_index = (current_index + 1) % (len(self.available_sports) + 1)
+        self.current_filter = self.available_sports[next_index] if next_index < len(self.available_sports) else "All Sports"
+        self.update_sorted_games()
+        self.update_total_pages()
+        self.current_page = 0
+        self.selected_index = 0
+        self.update_options()
+        self.update_text_area()
 
     def move_up(self):
         if self.selected_index > 0:
@@ -523,6 +559,28 @@ class GamesList(InteractiveTable):
         if self.selected_index < len(self.options) - 1:
             self.selected_index += 1
             self.update_text_area()
+
+    def move_left(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.selected_index = 0
+            self.update_options()
+            self.update_text_area()
+
+    def move_right(self):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.selected_index = 0
+            self.update_options()
+            self.update_text_area()
+
+    def format_event_start_date(self, event_start_date):
+        # Parse the ISO format date
+        dt = datetime.datetime.fromisoformat(event_start_date)
+        # Convert to UTC
+        dt = dt.astimezone(pytz.utc)
+        # Format it to the desired format
+        return dt.strftime("%Y-%m-%d %H:%M")
 
 
 class WagerConfirm(InteractiveTable):
@@ -711,6 +769,28 @@ def _(event):
 def _(event):
     custom_app = event.app.custom_app
     graceful_shutdown(custom_app, submit=False)
+
+
+@bindings.add("left")
+def _(event):
+    try:
+        custom_app = event.app.custom_app
+        if hasattr(custom_app, "current_view") and isinstance(custom_app.current_view, GamesList):
+            custom_app.current_view.move_left()
+    except AttributeError as e:
+        logging.error(f"Failed to move left: {e}")
+        print("Failed to move left:", str(e))
+
+
+@bindings.add("right")
+def _(event):
+    try:
+        custom_app = event.app.custom_app
+        if hasattr(custom_app, "current_view") and isinstance(custom_app.current_view, GamesList):
+            custom_app.current_view.move_right()
+    except AttributeError as e:
+        logging.error(f"Failed to move right: {e}")
+        print("Failed to move right:", str(e))
 
 
 def graceful_shutdown(app, submit: bool):

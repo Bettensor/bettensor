@@ -85,12 +85,18 @@ class BettensorMiner(BaseNeuron):
         self.ensure_db_directory_exists(self.db_path)
         self.initialize_database()
 
-        with open("data/miner_env.txt", "a") as f:
-            f.write(
-                f"UID={self.miner_uid}, DB_PATH={self.db_path}, HOTKEY={self.wallet.hotkey.ss58_address}\n"
-            )
+        # Ensure the data directory exists
+        os.makedirs(os.path.dirname("data/miner_env.txt"), exist_ok=True)
 
-        
+        # Check if the miner's hotkey is already in the file
+        if not self.hotkey_exists_in_file("data/miner_env.txt", self.wallet.hotkey.ss58_address):
+            with open("data/miner_env.txt", "a") as f:
+                f.write(
+                    f"UID={self.miner_uid}, DB_PATH={self.db_path}, HOTKEY={self.wallet.hotkey.ss58_address}\n"
+                )
+            bt.logging.info(f"Added miner info to data/miner_env.txt")
+        else:
+            bt.logging.info(f"Miner info already exists in data/miner_env.txt")
 
         # Initialize Miner Stats
         self.stats = MinerStatsHandler(db_path=self.db_path, profile="miner")
@@ -532,3 +538,11 @@ class BettensorMiner(BaseNeuron):
                 )
 
             db.commit()
+    def hotkey_exists_in_file(self, file_path, hotkey):
+        if not os.path.exists(file_path):
+            return False
+        with open(file_path, "r") as f:
+            for line in f:
+                if f"HOTKEY={hotkey}" in line:
+                    return True
+        return False
