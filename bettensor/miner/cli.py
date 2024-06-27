@@ -22,10 +22,12 @@ from argparse import ArgumentParser
 import time  # Import time module for handling timeout
 import threading  # Import threading for non-blocking delay
 from prompt_toolkit.layout.containers import Window, HSplit
-
-
 import logging
+import os
 
+log_dir = "./logs"
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
 
 logging.basicConfig(
     filename="./logs/cli_errors.log",
