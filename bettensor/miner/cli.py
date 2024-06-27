@@ -639,6 +639,7 @@ class WagerConfirm(InteractiveTable):
                 self.app.unsubmitted_predictions[prediction_id] = {
                     "predictionID": prediction_id,
                     "teamGameID": self.game_data["externalID"],
+                    "minerID": self.app.miner_stats["miner_uid"],
                     "sport": self.game_data["sport"],
                     "teamA": self.game_data["teamA"],
                     "teamB": self.game_data["teamB"],
@@ -814,11 +815,12 @@ def submit_predictions(app):
     for prediction in app.unsubmitted_predictions.values():
         try:
             app.cursor.execute(
-                """INSERT INTO predictions (predictionID, teamGameID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     prediction["predictionID"],
                     prediction["teamGameID"],
+                    prediction["minerID"],
                     prediction["predictionDate"],
                     prediction["teamA"],
                     prediction["teamB"],

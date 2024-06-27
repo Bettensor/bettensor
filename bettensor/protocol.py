@@ -17,7 +17,7 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import typing
 import uuid
@@ -162,7 +162,7 @@ class TeamGame(BaseModel):
     Data class from json. May need to be modified in the future for more complex prediction types
     """
 
-    id: str = Field(..., description="UUID of the team game")
+    id: str = Field(..., description="ID of the team game")
     teamA: str = Field(..., description="Team A")
     teamB: str = Field(..., description="Team B")
 
@@ -221,13 +221,16 @@ class GameData(bt.Synapse):
         connection = sqlite3.connect(db_path)
         cursor = connection.cursor()
 
+        # Calculate timestamp for 5 days ago
+        fifteen_days_ago = (datetime.fromisoformat(current_timestamp) - timedelta(days=15)).isoformat()
+
         query = """
             SELECT id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie
             FROM game_data
-            WHERE eventStartDate > ?
+            WHERE eventStartDate > ? OR (eventStartDate BETWEEN ? AND ?)
         """
 
-        cursor.execute(query, (current_timestamp,))
+        cursor.execute(query, (current_timestamp, fifteen_days_ago, current_timestamp))
         rows = cursor.fetchall()
 
         gamedata_dict = {}
