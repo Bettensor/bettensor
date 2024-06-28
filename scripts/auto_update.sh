@@ -1,15 +1,6 @@
 #!/bin/bash
 
-SCRIPT_NAME=$1
-DISABLE_AUTO_UPDATE=$2
-
-echo "Starting auto_update.sh with SCRIPT_NAME=$SCRIPT_NAME and DISABLE_AUTO_UPDATE=$DISABLE_AUTO_UPDATE"
-
-if [ "$DISABLE_AUTO_UPDATE" = "true" ]; then
-    echo "Auto-update is disabled. Running $SCRIPT_NAME without updates."
-    exec $SCRIPT_NAME
-    exit 0
-fi
+echo "Starting auto_update.sh"
 
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 echo "Auto-update enabled on branch: $current_branch"
@@ -28,9 +19,8 @@ while true; do
         git pull origin $current_branch
         echo "Reinstalling dependencies..."
         pip install -e .
-        echo "Restarting PM2 process..."
-        pm2 restart $SCRIPT_NAME
-        exit 0
+        echo "Restarting all neuron processes..."
+        pm2 restart all --update-env
     else
         echo "No updates found. Checking again in 2 minutes..."
     fi

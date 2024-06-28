@@ -17,7 +17,7 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import typing
 import uuid
@@ -221,13 +221,16 @@ class GameData(bt.Synapse):
         connection = sqlite3.connect(db_path)
         cursor = connection.cursor()
 
+        # Calculate timestamp for 5 days ago
+        five_days_ago = (datetime.fromisoformat(current_timestamp) - timedelta(days=5)).isoformat()
+
         query = """
             SELECT id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie
             FROM game_data
-            WHERE eventStartDate > ?
+            WHERE eventStartDate > ? OR (eventStartDate BETWEEN ? AND ?)
         """
 
-        cursor.execute(query, (current_timestamp,))
+        cursor.execute(query, (current_timestamp, five_days_ago, current_timestamp))
         rows = cursor.fetchall()
 
         gamedata_dict = {}

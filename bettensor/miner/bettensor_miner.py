@@ -588,3 +588,5 @@ class BettensorMiner(BaseNeuron):
             bt.logging.error(f"Error removing duplicate games: {e}")
             db.rollback()
         
+def update_outcomes(self):
+    pass
