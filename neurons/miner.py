@@ -117,6 +117,8 @@ def main(miner: BettensorMiner):
                 bt.logging.info(log)
                 bt.logging.info(f"Miner UID: {miner.miner_uid}")
 
+                #bt.logging.warning(f"TESTING AUTO UPDATE!!")
+
             miner.step += 1
             time.sleep(1)
 

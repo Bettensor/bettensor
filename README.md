@@ -106,48 +106,70 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
    RAPID_API_KEY=<YOUR_API_KEY>
    ```
 
-3. Edit the `validator.sh` file, uncommenting the appropriate network and replacing wallet details.
-
-4. Start the validator:
+3. Create a new file `validator.sh` in the top-level directory. Copy the contents of `template-scripts/validator.sh.template` to this file. 
    ```bash
-   pm2 start validator.sh --name validator --interpreter bash
+   cp template-scripts/validator.sh.template validator.sh
    ```
 
-5. Check logs for Success:
+
+4. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
+   - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
+
+5. Start the validator:
+   ```bash
+   pm2 start validator.sh  
+   ```
+   >[!NOTE]
+   > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the pm2 command. (not recommended).
+   >
+   >Additionally, you should NOT use the pm2 --name flag anymore, this will prevent auto updates from working.
+
+6. Check logs for Success:
    ```bash
    pm2 logs validator
    ```
->[!NOTE]
-> We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
+   >[!NOTE]
+   > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
 
 
 
 
 ## Guide for Miners
 
-1. Edit the `miner.sh` file, uncommenting the appropriate network and replacing wallet details.
-
-2. Start the miner:
+1. Create a new file `miner.sh` in the top-level directory. Copy the contents of `template-scripts/miner.sh.template` to this file. 
    ```bash
-   pm2 start miner.sh --name miner --interpreter bash
+   cp template-scripts/miner.sh.template miner.sh
    ```
 
-3. Check logs for Success and wait for some game data:
+2. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
+   - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
+   
+
+3. Start the miner:
+   ```bash
+   pm2 start miner.sh 
+   ```
+   >[!NOTE]
+   > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the pm2 command. (not recommended for "manual" miners)
+   > Additionally, if you are running multiple miners, you'll need to have multiple copies of the `miner.sh` file, each with a unique name, (like miner1,miner2,etc) and run each one with `pm2 start <script-name>`.
+   >You should NOT use the name flag anymore, this will prevent auto updates from working.
+
+4. Check logs for Success and wait for some game data:
    ```bash
    pm2 logs miner
    ```
 
-4. Submit predictions with our Beta User Interface:
+5. Submit predictions with our Beta User Interface:
    ```bash
    python bettensor/miner/cli.py
    ```
-5. If you're running more than one miner, you can specify with the `--uid` flag. (this is your network UID for the miner). You can reference `./data/miner_env.txt` to find your NETUIDs
+6. If you're running more than one miner, you can specify with the `--uid` flag. (this is your network UID for the miner). You can reference `./data/miner_env.txt` to find your NETUIDs
     ```bash
     python bettensor/miner/cli.py --uid <UID>
     ```
 
->[!NOTE]
-> We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
+   >[!NOTE]
+   > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
 
 
 ## Incentive Mechanism and Scoring
@@ -162,7 +184,7 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 With this design, we heavily incentivize correct predictions. Danger of deregistration is high with just one bad day of predictions. Potential of earning high rewards is there too, if you know something other people don't.
 
 
-## Details for Current Release Version (v0.0.1, Beta)
+## Details for Current Release Version (v0.0.2, Beta)
 
 >[!CAUTION]
 >This is a Beta release of BetTensor. We expect instability and frequent updates. Please contact us on discord if you have any issues or suggestions.

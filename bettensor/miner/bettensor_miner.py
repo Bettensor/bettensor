@@ -100,7 +100,7 @@ class BettensorMiner(BaseNeuron):
 
         # Initialize Miner Stats
         self.stats = MinerStatsHandler(db_path=self.db_path, profile="miner")
-        bt.logging.debug(
+        bt.logging.trace(
             f"Miner stats initialized with db_path: {self.db_path} and profile: miner"
         )
         init_stats = self.stats.init_miner_row(
@@ -342,7 +342,7 @@ class BettensorMiner(BaseNeuron):
         return stake
 
     def forward(self, synapse: GameData) -> GameData:
-        bt.logging.info(f"Miner: forward()")
+        bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
         db, cursor = self.get_cursor()
 
         # Print version information and perform version checks
@@ -352,6 +352,10 @@ class BettensorMiner(BaseNeuron):
         if synapse.metadata.subnet_version > self.subnet_version:
             bt.logging.warning(
                 f"Received a synapse from a validator with higher subnet version ({synapse.subnet_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
+            )
+        if synapse.metadata.subnet_version < self.subnet_version:
+            bt.logging.warning(
+                f"Received a synapse from a validator with lower subnet version ({synapse.subnet_version}) than yours ({self.subnet_version})."
             )
 
         # Verify schema
@@ -392,18 +396,18 @@ class BettensorMiner(BaseNeuron):
         # bt.logging.info(f"Fetched games: {games}")
 
         # Process the fetched games
-        bt.logging.info(f"Processing predictions")
+        bt.logging.info(f"Processing recent predictions")
         prediction_dict = {}
         for game in games:
-            bt.logging.debug(f" Processing Predictions: Game: {game}")
+            bt.logging.trace(f" Processing Predictions: Game: {game}")
             external_game_id = game[0]
-            bt.logging.debug(f"Processing Predictions: Game ID: {external_game_id}")
+            bt.logging.trace(f"Processing Predictions: Game ID: {external_game_id}")
             # Fetch predictions for the game
             cursor.execute(
                 "SELECT * FROM predictions WHERE teamGameID = ?", (external_game_id,)
             )
             predictions = cursor.fetchall()
-            bt.logging.info(f"Predictions: {predictions}")
+            bt.logging.trace(f"Predictions: {predictions}")
 
             # Add predictions to prediction_dict
             for prediction in predictions:
@@ -424,7 +428,7 @@ class BettensorMiner(BaseNeuron):
                 )
                 prediction_dict[prediction[0]] = single_prediction
 
-        bt.logging.info(f"prediction_dict: {prediction_dict}")
+        bt.logging.trace(f"prediction_dict: {prediction_dict}")
         synapse.prediction_dict = prediction_dict
         synapse.gamedata_dict = None
         synapse.metadata = Metadata.create(
@@ -437,10 +441,10 @@ class BettensorMiner(BaseNeuron):
 
     def add_game_data(self, game_data_dict):
         try:
-            bt.logging.debug(f"add_game_data() | Adding game data to local database")
+            bt.logging.trace(f"add_game_data() | Adding game data to local database")
             db, cursor = self.get_cursor()
             number_of_games = len(game_data_dict)
-            bt.logging.debug(
+            bt.logging.trace(
                 f"add_game_data() | Number of games to add: {number_of_games}"
             )
             # Check games table, add games that are not in the table
@@ -474,7 +478,7 @@ class BettensorMiner(BaseNeuron):
                     )
                     db.commit()
                 else:
-                    bt.logging.debug(
+                    bt.logging.trace(
                         f"add_game_data() | Game {external_id} already in the table, updating."
                     )
                     cursor.execute(
@@ -504,7 +508,7 @@ class BettensorMiner(BaseNeuron):
             bt.logging.error(f"Failed to add game data: {e}")
 
     def update_games_data(self, db, cursor):
-        bt.logging.info(f"update_games_data() | Updating games data")
+        bt.logging.trace(f"update_games_data() | Updating games data")
         # go through games table. If current time UTC is greater than eventStartDate, set active to 1
 
         # if current time UTC is 3 days past event start date, remove the row
@@ -512,22 +516,22 @@ class BettensorMiner(BaseNeuron):
         cursor.execute("SELECT * FROM games")
         games = cursor.fetchall()
         for game in games:
-            bt.logging.debug(
+            bt.logging.trace(
                 f"Current time: {datetime.datetime.now(datetime.timezone.utc)}"
             )
-            bt.logging.debug(f"update_games_data() | Game: {game}")
+            bt.logging.trace(f"update_games_data() | Game: {game}")
             if datetime.datetime.now(
                 datetime.timezone.utc
             ) > datetime.datetime.fromisoformat(game[10]):
                 cursor.execute(
                     "UPDATE games SET active = 1 WHERE gameID = ?", (game[0],)
                 )
-                bt.logging.debug(f"update_games_data() | Game {game[0]} is now active")
+                bt.logging.trace(f"update_games_data() | Game {game[0]} is now active")
             if datetime.datetime.now(
                 datetime.timezone.utc
             ) > datetime.datetime.fromisoformat(game[10]) + datetime.timedelta(days=3):
                 cursor.execute("DELETE FROM games WHERE gameID = ?", (game[0],))
-                bt.logging.debug(
+                bt.logging.trace(
                     f"update_games_data() | Game {game[0]} is deleted from db"
                 )
             if datetime.datetime.now(
@@ -536,7 +540,7 @@ class BettensorMiner(BaseNeuron):
                 cursor.execute(
                     "UPDATE games SET active = 0 WHERE gameID = ?", (game[0],)
                 )
-                bt.logging.debug(
+                bt.logging.trace(
                     f"update_games_data() | Game {game[0]} is now inactive"
                 )
 
@@ -551,7 +555,7 @@ class BettensorMiner(BaseNeuron):
         return False
 
     def remove_duplicate_games(self):
-        bt.logging.info("Removing duplicate games from the database")
+        bt.logging.trace("Removing duplicate games from the database")
         db, cursor = self.get_cursor()
         try:
             # Find duplicate games
@@ -579,7 +583,7 @@ class BettensorMiner(BaseNeuron):
                 """, (external_id, external_id))
 
             db.commit()
-            bt.logging.info(f"Removed {len(duplicates)} sets of duplicate games")
+            bt.logging.trace(f"Removed {len(duplicates)} sets of duplicate games")
         except sqlite3.Error as e:
             bt.logging.error(f"Error removing duplicate games: {e}")
             db.rollback()
