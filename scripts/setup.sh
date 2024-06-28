@@ -1,21 +1,24 @@
-#!/bin/bash
+# Check if the script is being sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "This script must be sourced. Please run: source ./$(basename ${BASH_SOURCE[0]}) <flags>"
+    exit 1
+fi
 
 # Default values
 LITE_NODE=false
 NETWORK="test"
-
-echo  "WARNING: If you are running in a containerized service (vast.ai, runpod, etc), or with a firewall, you may need to add the appropriate ports to the firewall rules.\n
-        Ports: \n
-        9944 - Websocket. This port is used by Bittensor. This port only accepts connections from localhost. Make sure this port is firewalled off from the public internet domain.\n
-        9933 - RPC. This port should be opened but it is not used.\n
-        30333 - p2p socket. This port should accept connections from other subtensor nodes on the internet. Make sure your firewall allows incoming traffic to this port.\n
-        We assume that your default outgoing traffic policy is ACCEPT. If not, make sure that outbound traffic on port 30333 is allowed.\n
-        If you decide to set up a firewall, be careful about blocking your ssh port (22) and losing access to your server.\n
+echo "Running setup..."
+echo -e "WARNING: If you are running in a containerized service (vast.ai, runpod, etc), or with a firewall, 
+         you may need to add the appropriate ports to the firewall rules:
+        Ports:
+        9944 - Websocket. This port is used by Bittensor. This port only accepts connections from localhost.
+               Make sure this port is firewalled off from the public internet domain.
+        9933 - RPC. This port should be opened but it is not used.
+        30333 - p2p socket. This port should accept connections from other subtensor nodes on the internet. 
+                Make sure your firewall allows incoming traffic to this port.
+        We assume that your default outgoing traffic policy is ACCEPT. If not, make sure that outbound traffic on port 30333 is allowed.
+        If you decide to set up a firewall, be careful about blocking your ssh port (22) and losing access to your server.
         "
-
-
-
-
 # Function to display usage information
 usage() {
     echo "Usage: $0 [--lite-node] [--subtensor.network <test|main>]"
@@ -55,12 +58,10 @@ fi
 # Update and install dependencies
 sudo apt-get update 
 sudo apt install -y build-essential
-sudo apt-get install -y clang
-sudo apt-get install -y curl 
-sudo apt-get install -y git 
-sudo apt-get install -y make
+sudo apt-get install -y clang curl git make
 sudo apt install -y --assume-yes git clang curl libssl-dev protobuf-compiler
 sudo apt install -y --assume-yes git clang curl libssl-dev llvm libudev-dev make protobuf-compiler
+sudo apt-get install -y python-is-python3
 
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -97,10 +98,33 @@ else
 fi
 
 echo "Setup complete!"
-# Need to install python 3.10, venv, etc. 
-# npm, jq , pm2. 
-# create venv named .venv in root/top level directory and activate
-# cd back to bettensor and install dependencies (requirements.txt and -e .)
-# verify everything.
-# test that it works on 20.04 and 22.04 ubuntu (can use same contabo instance and reinstall the OS/reboot, or make one more and use that if you want to keep your testnet stuff) 
-# new branch and pull request to auto_update
+
+# Install Python 3.10
+sudo apt-get install -y software-properties-common
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt-get update
+sudo apt-get install -y python3.10 python3.10-venv python3.10-dev
+
+# Install npm, jq, and pm2
+sudo apt-get install -y npm jq
+sudo npm install -g pm2
+
+# Clone Bettensor repository
+cd $HOME
+git clone https://github.com/bettensor/bettensor.git
+cd bettensor
+
+# Create and activate virtual environment
+python3.10 -m venv .venv
+source .venv/bin/activate
+
+# Install Bettensor dependencies
+pip install -e .
+pip install -r requirements.txt
+
+# Verify installation
+python -c "import bittensor; print(bittensor.__version__)"
+
+echo "Bettensor setup complete!"
+echo "Please ensure you are running Bittensor v6.9.3 as required for the current Beta version."
+echo "You can now start mining or validating on the Bettensor subnet."
