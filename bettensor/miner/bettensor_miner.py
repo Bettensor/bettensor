@@ -351,11 +351,11 @@ class BettensorMiner(BaseNeuron):
         )
         if synapse.metadata.subnet_version > self.subnet_version:
             bt.logging.warning(
-                f"Received a synapse from a validator with higher subnet version ({synapse.subnet_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
+                f"Received a synapse from a validator with higher subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
             )
         if synapse.metadata.subnet_version < self.subnet_version:
             bt.logging.warning(
-                f"Received a synapse from a validator with lower subnet version ({synapse.subnet_version}) than yours ({self.subnet_version})."
+                f"Received a synapse from a validator with lower subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version})."
             )
 
         # Verify schema
