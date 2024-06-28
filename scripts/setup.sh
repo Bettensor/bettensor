@@ -4,6 +4,25 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     exit 1
 fi
 
+# Check Ubuntu version
+ubuntu_version=$(lsb_release -rs)
+
+if [[ "$ubuntu_version" == "20.04" ]]; then
+    echo "Running on Ubuntu 20.04"
+    # Add any 20.04-specific adjustments here
+elif [[ "$ubuntu_version" == "22.04" ]]; then
+    echo "Running on Ubuntu 22.04"
+else
+    echo "This script is only tested on Ubuntu 20.04 and 22.04"
+    echo "Your version: $ubuntu_version"
+    echo "The script may not work correctly. Do you want to continue? (y/n)"
+    read -r response
+    if [[ "$response" != "y" ]]; then
+        echo "Exiting script"
+        exit 1
+    fi
+fi
+
 # Default values
 LITE_NODE=false
 NETWORK="test"
