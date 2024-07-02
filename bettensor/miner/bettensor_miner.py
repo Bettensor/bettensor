@@ -661,7 +661,7 @@ class BettensorMiner(BaseNeuron):
         game_dict = self.get_games()
 
         current_stats = self.stats.return_miner_stats(self.hotkey)
-        bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
+        #bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
         for prediction in prediction_dict:
             if prediction.teamGameID in game_dict:
                 outcome = game_dict[prediction.teamGameID].outcome
