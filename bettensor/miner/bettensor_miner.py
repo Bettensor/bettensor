@@ -662,9 +662,6 @@ class BettensorMiner(BaseNeuron):
         return game_dict
 
 
-            
-
-        
     def update_outcomes(self):
         '''
         Update outcomes for all predictions and recalculate miner stats
@@ -677,7 +674,9 @@ class BettensorMiner(BaseNeuron):
         bt.logging.info("update_outcomes() | Updating outcomes for all predictions and recalculating miner stats")
         prediction_dict = self.get_predictions()
         game_dict = self.get_games()
+
         current_stats = self.stats.return_miner_stats(self.hotkey)
+        bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
         for prediction in prediction_dict:
             if prediction.teamGameID in game_dict:
                 outcome = game_dict[prediction.teamGameID].outcome
@@ -715,7 +714,7 @@ class BettensorMiner(BaseNeuron):
 
         #recalculate ratio
         current_stats.miner_lifetime_ratio = current_stats.miner_lifetime_wins / current_stats.miner_lifetime_losses
-        
+        bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
         #update miner stats table
         self.stats.update_miner_row(current_stats)
     
