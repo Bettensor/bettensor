@@ -11,7 +11,10 @@ update_and_restart() {
         echo "Reinstalling dependencies..."
         if pip install -e .; then
             echo "Restarting all PM2 processes..."
-            pm2 list --no-color | awk 'NR>2 {print $2}' | xargs -I{} pm2 restart {} --update-env
+            pm2 list --no-color | awk 'NR>2 {print $2}' | while read -r process; do
+                echo "Restarting process: $process"
+                pm2 restart "$process" --update-env
+            done
             return 0
         else
             echo "Failed to install dependencies. Skipping restart."
