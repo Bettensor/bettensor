@@ -635,6 +635,7 @@ class BettensorMiner(BaseNeuron):
         db, cursor = self.get_cursor()
         cursor.execute("SELECT * FROM games")
         games_raw = cursor.fetchall()
+        bt.logging.info(f"get_games() | Games: {games_raw}")
         # convert games_raw to game_dict
         game_dict = {}
         for game in games_raw:
