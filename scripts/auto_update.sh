@@ -12,12 +12,11 @@ update_and_restart() {
     if git pull origin $current_branch; then
         echo "Reinstalling dependencies..."
         if pip install -e .; then
-            echo "Restarting all PM2 processes..."
-            # Execute the restart script in a separate process
-            bash scripts/restart_pm2_processes.sh &
-            # Wait for a moment to allow the restart to begin
-            sleep 5
-            return 0
+            echo "Scheduling PM2 restart..."
+            # Schedule the restart script to run after 1 minute
+            echo "bash $(pwd)/scripts/restart_pm2_processes.sh" | at now + 1 minute
+            echo "PM2 restart scheduled. The script will exit now and restart shortly."
+            exit 0
         else
             echo "Failed to install dependencies. Skipping restart."
             return 1
