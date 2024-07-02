@@ -138,6 +138,7 @@ class MinerStatsHandler:
                 """,
                     (miner_uid, miner_hotkey),
                     )
+            self.conn.commit()
             return True
         else:
             pass
