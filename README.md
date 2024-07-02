@@ -55,24 +55,15 @@ To mine or validate on this subnet, we recommend starting with a cheap VPS insta
 sudo apt-get update
 ```
 
-3. Set up a virtual environment (Python 3.10 recommended):
-```bash
-   python3.10 -m venv venv
-   source venv/bin/activate
-```
-
-4. Install dependencies:
+4. Run the setup script:
 ```bash
    cd bettensor
-   pip install -e .
-   pip install -r requirements.txt
+   chmod +x scripts/setup.sh
+   source ./scripts/setup.sh
 ```
+   - if you want to set up a lite node (recommended), run the command with the flag `source ./scripts/setup.sh --lite-node`
 
-5. Install pm2 (recommended for process management):
-```bash
-sudo apt-get install -y npm jq
-sudo npm install -g pm2
-```
+   - additionally, the script takes `--subtensor.network` as an optional flag. if you want to run the lite node on testnet, run `source ./scripts/setup.sh --subtensor.network test` , or `main` for mainnet.
 
 6. Set up a Bittensor wallet (guide [here](https://docs.bittensor.com/getting-started/wallets)).
 
