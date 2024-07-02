@@ -130,15 +130,14 @@ class MinerStatsHandler:
         )
         if c.fetchone():
             #update UID if necessary
-            if miner_uid != c.fetchone()[2]:
-                c.execute(
-                    """
+            c.execute(
+                """
                 UPDATE miner_stats
                 SET miner_uid = ?
                 WHERE miner_hotkey = ?
                 """,
                     (miner_uid, miner_hotkey),
-                )
+                    )
             return True
         else:
             pass
