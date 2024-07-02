@@ -701,12 +701,12 @@ class BettensorMiner(BaseNeuron):
         total_games = current_stats.miner_lifetime_wins + current_stats.miner_lifetime_losses
         
         if total_games == 0:
-            current_stats.miner_lifetime_ratio = 0  # No games played
+            current_stats.miner_win_loss_ratio = 0  # No games played
         else:
-            current_stats.miner_lifetime_ratio = current_stats.miner_lifetime_wins / total_games
+            current_stats.miner_win_loss_ratio = current_stats.miner_lifetime_wins / total_games
 
         # Round to 3 decimal places for precision
-        current_stats.miner_lifetime_ratio = round(current_stats.miner_lifetime_ratio, 3)
+        current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
 
         bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
         #update miner stats table
