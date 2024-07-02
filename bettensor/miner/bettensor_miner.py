@@ -394,7 +394,7 @@ class BettensorMiner(BaseNeuron):
             timespec="minutes"
         )
         # Update outcomes for all predictions and recalculate miner stats
-        self.update_outcomes()
+        
 
         # Fetch games that have not started yet
         cursor.execute(
@@ -449,6 +449,7 @@ class BettensorMiner(BaseNeuron):
             neuron_uid=self.miner_uid,
             synapse_type="prediction",
         )
+        self.update_outcomes()
         return synapse
 
     def add_game_data(self, game_data_dict):
@@ -609,10 +610,11 @@ class BettensorMiner(BaseNeuron):
         prediction_dict = {}
         # convert predictions_raw to prediction_dict
         for prediction in predictions_raw:
+            bt.logging.trace(f"get_predictions() | Prediction: {prediction}")
             single_prediction = TeamGamePrediction(
                 predictionID=prediction[0],
                         teamGameID=prediction[1],
-                        minerID=prediction[2],
+                        minerID=prediction[2] or self.miner_uid,
                         predictionDate=prediction[3],
                         predictedOutcome=prediction[4],
                         teamA=prediction[5],

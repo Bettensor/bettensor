@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default neuron arguments
-DEFAULT_NEURON_ARGS="--netuid 181 --logging.debug"
+DEFAULT_NEURON_ARGS="--netuid 181"
 DISABLE_AUTO_UPDATE="false"
 NEURON_TYPE=""
 NETWORK=""
@@ -9,6 +9,7 @@ WALLET_NAME=""
 WALLET_HOTKEY=""
 AXON_PORT=""
 VALIDATOR_MIN_STAKE=""
+LOGGING_LEVEL=""
 
 # Function to prompt for user input
 prompt_for_input() {
@@ -116,6 +117,10 @@ while [[ $# -gt 0 ]]; do
             DISABLE_AUTO_UPDATE="true"
             shift
             ;;
+        --logging.level)
+            LOGGING_LEVEL="$2"
+            shift 2
+            ;;
         *)
             DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS $1"
             shift
@@ -145,6 +150,18 @@ if [ "$NEURON_TYPE" = "miner" ]; then
     prompt_for_input "Enter validator_min_stake" "0" "VALIDATOR_MIN_STAKE"
     DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --axon.port $AXON_PORT --validator_min_stake $VALIDATOR_MIN_STAKE"
 fi
+
+# Prompt for logging level if not specified
+prompt_for_input "Enter logging level (info/debug/trace)" "debug" "LOGGING_LEVEL"
+case $LOGGING_LEVEL in
+    info|debug|trace)
+        DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --logging.$LOGGING_LEVEL"
+        ;;
+    *)
+        echo "Invalid logging level. Using default (debug)."
+        DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --logging.debug"
+        ;;
+esac
 
 # Prompt for disabling auto-update if not specified
 if [ "$DISABLE_AUTO_UPDATE" = "false" ]; then
