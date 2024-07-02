@@ -10,8 +10,8 @@ update_and_restart() {
     if git pull origin $current_branch; then
         echo "Reinstalling dependencies..."
         if pip install -e .; then
-            echo "Restarting all neuron processes..."
-            pm2 restart all --update-env
+            echo "Restarting all PM2 processes..."
+            pm2 list --no-color | awk 'NR>2 {print $2}' | xargs -I{} pm2 restart {} --update-env
             return 0
         else
             echo "Failed to install dependencies. Skipping restart."
