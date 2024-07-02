@@ -737,6 +737,10 @@ class BettensorValidator(BaseNeuron):
             away_team = game_response["teams"]["away"]["name"]
             home_score = game_response["scores"]["home"]["total"]
             away_score = game_response["scores"]["away"]["total"]
+            # Ensure home_score and away_score are not None
+            if home_score is None or away_score is None:
+                bt.logging.trace(f"Score data is incomplete for game {externalId}")
+                return
 
             if home_score != None and away_score != None:   
                 if home_score > away_score:

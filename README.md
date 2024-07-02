@@ -50,7 +50,7 @@ To mine or validate on this subnet, we recommend starting with a cheap VPS insta
    git clone https://github.com/bettensor/bettensor.git
 ```
 
-3. Update apt-get:
+2. Update apt-get:
 ```bash
 sudo apt-get update
 ```
@@ -65,9 +65,9 @@ sudo apt-get update
 
    - additionally, the script takes `--subtensor.network` as an optional flag. if you want to run the lite node on testnet, run `source ./scripts/setup.sh --subtensor.network test` , or `main` for mainnet.
 
-6. Set up a Bittensor wallet (guide [here](https://docs.bittensor.com/getting-started/wallets)).
+7. Set up a Bittensor wallet (guide [here](https://docs.bittensor.com/getting-started/wallets)).
 
-7. Register on the subnet:
+8. Register on the subnet:
 
 - Mainnet `(NETUID 30)`:
 
