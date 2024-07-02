@@ -76,8 +76,8 @@ fi
 
 # Update and install dependencies
 sudo apt-get update 
-sudo apt install -y build-essential
-sudo apt-get install -y clang curl git make
+sudo apt install -y build-essential net-tools
+sudo apt-get install -y clang curl git make 
 sudo apt install -y --assume-yes git clang curl libssl-dev protobuf-compiler
 sudo apt install -y --assume-yes git clang curl libssl-dev llvm libudev-dev make protobuf-compiler
 sudo apt-get install -y python-is-python3

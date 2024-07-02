@@ -662,7 +662,7 @@ class BettensorMiner(BaseNeuron):
 
         current_stats = self.stats.return_miner_stats(self.hotkey)
         #bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
-        for prediction in prediction_dict:
+        for prediction_id, prediction in prediction_dict.items():
             if prediction.teamGameID in game_dict:
                 outcome = game_dict[prediction.teamGameID].outcome
                 if outcome == "Unfinished":
