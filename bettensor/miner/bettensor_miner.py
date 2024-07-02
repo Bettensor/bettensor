@@ -4,7 +4,7 @@ import sys
 import bittensor as bt
 import sqlite3
 from bettensor.base.neuron import BaseNeuron
-from bettensor.protocol import Metadata, GameData, TeamGamePrediction
+from bettensor.protocol import Metadata, GameData, TeamGame, TeamGamePrediction
 from bettensor.utils.sign_and_validate import verify_signature
 from bettensor.utils.miner_stats import MinerStatsHandler
 import datetime
@@ -174,6 +174,14 @@ class BettensorMiner(BaseNeuron):
             raise Exception("Failed to initialize local database")
 
     def get_cursor(self):
+        '''
+        Get db and cursor instance for local sqlite db
+        Args:
+            None
+        Returns:
+            db: sqlite3.Connection
+            cursor: sqlite3.Cursor
+        '''
         try:
             db = sqlite3.connect(self.db_path)
             return db, db.cursor()
@@ -307,6 +315,8 @@ class BettensorMiner(BaseNeuron):
             bt.logging.info(f"Blacklisted non-validator: {synapse.dendrite.hotkey}")
             return (True, f"Hotkey {synapse.dendrite.hotkey} is not a validator")
 
+
+        bt.logging.info(f"validator_min_stake: {self.validator_min_stake}")
         # Blacklist entities that have insufficient stake
         stake = float(self.metagraph.S[uid])
         if stake < self.validator_min_stake:
@@ -383,7 +393,9 @@ class BettensorMiner(BaseNeuron):
         current_time = datetime.datetime.now(datetime.timezone.utc).isoformat(
             timespec="minutes"
         )
-
+        # Update outcomes for all predictions and recalculate miner stats
+        self.update_outcomes()
+        
         # Fetch games that have not started yet
         cursor.execute(
             "SELECT externalID FROM games WHERE eventStartDate > ?", (current_time,)
@@ -587,6 +599,125 @@ class BettensorMiner(BaseNeuron):
         except sqlite3.Error as e:
             bt.logging.error(f"Error removing duplicate games: {e}")
             db.rollback()
+
+def get_predictions(self):
+    # get predictions from db
+    db, cursor = self.get_cursor()
+    cursor.execute("SELECT * FROM predictions")
+    predictions_raw = cursor.fetchall()
+
+    prediction_dict = {}
+    # convert predictions_raw to prediction_dict
+    for prediction in predictions_raw:
+        single_prediction = TeamGamePrediction(
+            predictionID=prediction[0],
+                    teamGameID=prediction[1],
+                    minerID=prediction[2],
+                    predictionDate=prediction[3],
+                    predictedOutcome=prediction[4],
+                    teamA=prediction[5],
+                    teamB=prediction[6],
+                    wager=prediction[7],
+                    teamAodds=prediction[8],
+                    teamBodds=prediction[9],
+                    tieOdds=prediction[10],
+                    can_overwrite=prediction[11],
+                    outcome=prediction[12],
+                )   
+        prediction_dict[prediction[0]] = single_prediction
+    
+    return prediction_dict
+
+def get_games(self):
+    # get games from db
+    db, cursor = self.get_cursor()
+    cursor.execute("SELECT * FROM games")
+    games_raw = cursor.fetchall()
+    # convert games_raw to game_dict
+    game_dict = {}
+    for game in games_raw:
+        single_game = TeamGame(
+            gameID=game[0],
+            teamA=game[1],
+            teamB=game[2],
+            sport=game[3],
+            league=game[4],
+            externalID=game[5],
+            createDate=game[6],
+            lastUpdateDate=game[7],
+            eventStartDate=game[8],
+            active=game[9],
+            outcome=game[10],
+            tieOdds=game[11],
+            canTie=game[12],
+        )
+        game_dict[game[0]] = single_game
+    return game_dict
+
+
+            
+
         
 def update_outcomes(self):
-    pass
+    '''
+    Update outcomes for all predictions and recalculate miner stats
+
+    Args:
+        None
+    Returns:
+        None
+    '''
+    bt.logging.info("update_outcomes() | Updating outcomes for all predictions and recalculating miner stats")
+    prediction_dict = self.get_predictions()
+    game_dict = self.get_games()
+
+    for prediction in prediction_dict:
+        if prediction.teamGameID in game_dict:
+            outcome = game_dict[prediction.teamGameID].outcome
+            if outcome == "Unfinished":
+                continue
+            if outcome == 0:
+                #teamA wins
+                if prediction.predictedOutcome == prediction.teamA:
+                    prediction.outcome = "Win"
+                    self.stats.miner_lifetime_wins += 1
+                    self.stats.miner_lifetime_earnings += prediction.wager * prediction.teamAodds
+
+                elif prediction.predictedOutcome == 1:
+                    prediction.outcome = "Loss"
+                    self.stats.miner_lifetime_losses += 1
+            elif outcome == 1:
+                #teamB wins
+                if prediction.predictedOutcome == prediction.teamB:
+                    prediction.outcome = "Win"
+                    self.stats.miner_lifetime_wins += 1
+                    self.stats.miner_lifetime_earnings += prediction.wager * prediction.teamBodds
+                elif prediction.predictedOutcome == 0:
+                    prediction.outcome = "Loss"
+                    self.stats.miner_lifetime_losses += 1
+            elif outcome == 2:
+                #tie
+                if prediction.predictedOutcome == "Tie":
+                    prediction.outcome = "Win"
+                    self.stats.miner_lifetime_wins += 1
+                    self.stats.miner_lifetime_earnings += prediction.wager * prediction.tieOdds
+                elif prediction.predictedOutcome == 0 or prediction.predictedOutcome == 1:
+                    prediction.outcome = "Loss"
+                    self.stats.miner_lifetime_losses += 1
+
+
+    #recalculate ratio
+    self.stats.miner_lifetime_ratio = self.stats.miner_lifetime_wins / self.stats.miner_lifetime_losses
+    
+    # update miner stats table
+    db, cursor = self.get_cursor()
+    cursor.execute("""UPDATE miner_stats SET miner_lifetime_wins = ?, 
+                   miner_lifetime_losses = ?, miner_lifetime_earnings = ?,
+                    miner_lifetime_ratio = ? WHERE miner_id = ?""",
+                    (self.stats.miner_lifetime_wins, self.stats.miner_lifetime_losses, 
+                     self.stats.miner_lifetime_earnings, self.stats.miner_lifetime_ratio, 
+                     self.miner_uid))
+    db.commit()
+    
+   
+    

@@ -162,7 +162,7 @@ class TeamGame(BaseModel):
     Data class from json. May need to be modified in the future for more complex prediction types
     """
 
-    id: str = Field(..., description="UUID of the team game")
+    id: str = Field(..., description="ID of the team game")
     teamA: str = Field(..., description="Team A")
     teamB: str = Field(..., description="Team B")
 
@@ -222,7 +222,7 @@ class GameData(bt.Synapse):
         cursor = connection.cursor()
 
         # Calculate timestamp for 5 days ago
-        five_days_ago = (datetime.fromisoformat(current_timestamp) - timedelta(days=5)).isoformat()
+        fifteen_days_ago = (datetime.fromisoformat(current_timestamp) - timedelta(days=15)).isoformat()
 
         query = """
             SELECT id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie
@@ -230,7 +230,7 @@ class GameData(bt.Synapse):
             WHERE eventStartDate > ? OR (eventStartDate BETWEEN ? AND ?)
         """
 
-        cursor.execute(query, (current_timestamp, five_days_ago, current_timestamp))
+        cursor.execute(query, (current_timestamp, fifteen_days_ago, current_timestamp))
         rows = cursor.fetchall()
 
         gamedata_dict = {}
