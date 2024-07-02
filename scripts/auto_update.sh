@@ -15,9 +15,10 @@ update_and_restart() {
         echo "Reinstalling dependencies..."
         if pip install -e .; then
             echo "Scheduling PM2 restart..."
-            # Run the restart script in the background after a short delay
-            (sleep 10 && bash "$(pwd)/scripts/restart_pm2_processes.sh") &
+            # Run the restart script detached from this process
+            nohup bash -c "sleep 10 && $(pwd)/scripts/restart_pm2_processes.sh" > /tmp/pm2_restart.log 2>&1 &
             echo "PM2 restart scheduled. The script will exit now and restart shortly."
+            # Force exit to ensure the process terminates
             exit 0
         else
             echo "Failed to install dependencies. Skipping restart."

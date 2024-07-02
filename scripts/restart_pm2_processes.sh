@@ -20,3 +20,6 @@ done
 $PM2_PATH save
 
 echo "PM2 restart process completed"
+
+# Ensure this script exits
+exit 0
