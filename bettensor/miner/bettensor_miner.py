@@ -635,7 +635,7 @@ class BettensorMiner(BaseNeuron):
         db, cursor = self.get_cursor()
         cursor.execute("SELECT * FROM games")
         games_raw = cursor.fetchall()
-        bt.logging.info(f"get_games() | Games: {games_raw}")
+        #bt.logging.info(f"get_games() | Games: {games_raw}")
         # convert games_raw to game_dict
         game_dict = {}
         for game in games_raw:
@@ -649,7 +649,7 @@ class BettensorMiner(BaseNeuron):
                 teamBodds=game[4],
                 sport=game[5],
                 league=game[6],
-                externalID=game[7],
+                externalId=game[7],
                 createDate=game[8],
                 lastUpdateDate=game[9],
                 eventStartDate=game[10],
