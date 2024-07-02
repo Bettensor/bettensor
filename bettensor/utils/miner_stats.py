@@ -22,6 +22,7 @@ class MinerStatsHandler:
         self.profile = profile
         self.conn = self.connect_to_db(self.db_path)
         self.create_table(self.conn)
+        
 
         # Start the run method in a separate thread
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -34,7 +35,7 @@ class MinerStatsHandler:
         conn = sqlite3.connect(db_path)
         return conn
 
-    def create_table(self, conn):
+    def create_table(self):
         """
         This method creates a table in the database to store miner stats.
 
@@ -54,7 +55,7 @@ class MinerStatsHandler:
         miner_win_loss_ratio :         win loss ratio of the miner
         miner_status :                 status of the miner (active, inactive, banned, deregistered)
         """
-        c = conn.cursor()
+        c = self.conn.cursor()
         c.execute(
             """
         CREATE TABLE IF NOT EXISTS miner_stats (
@@ -74,7 +75,7 @@ class MinerStatsHandler:
             miner_status TEXT
         )"""
         )
-        conn.commit()
+        self.conn.commit()
 
     def reset_daily_cash(self):
         """
@@ -127,6 +128,16 @@ class MinerStatsHandler:
             (miner_hotkey,),
         )
         if c.fetchone():
+            #update UID if necessary
+            if miner_uid != c.fetchone()[2]:
+                c.execute(
+                    """
+                UPDATE miner_stats
+                SET miner_uid = ?
+                WHERE miner_hotkey = ?
+                """,
+                    (miner_uid, miner_hotkey),
+                )
             return True
         else:
             pass
@@ -156,16 +167,15 @@ class MinerStatsHandler:
 
         return True
 
-    def update_miner_row(self, conn, miner: MinerStats) -> bool:
+    def update_miner_row(self, miner: MinerStats) -> bool:
         """
         This method is called on a miner row when some event triggers it (new game outcome, miner makes a prediction, etc)
         Args:
-            conn : sqlite3 connection
             miner : MinerStats object
         Returns:
             bool : True if the miner row was updated, False otherwise
         """
-        c = conn.cursor()
+        c = self.conn.cursor()
         miner_hotkey = miner.miner_hotkey
         miner_coldkey = miner.miner_coldkey
         miner_uid = miner.miner_uid
@@ -218,11 +228,11 @@ class MinerStatsHandler:
 
         return True
 
-    def return_miner_stats(self, conn, miner_hotkey: str) -> MinerStats:
+    def return_miner_stats(self, miner_hotkey: str) -> MinerStats:
         """
         This method returns the miner row from the database as a MinerStats object, using the create method from the MinerStats class
         """
-        c = conn.cursor()
+        c = self.conn.cursor()
         c.execute(
             """
         SELECT * FROM miner_stats

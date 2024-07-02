@@ -75,8 +75,8 @@ class BettensorMiner(BaseNeuron):
         # Neuron setup
         self.wallet, self.subtensor, self.metagraph, self.miner_uid = self.setup()
         self.hotkey_blacklisted = False
-
-        # set env variables for Miner process, so that CLI can connect.
+        self.hotkey = self.wallet.hotkey.ss58_address
+        
         os.environ["DB_PATH"] = self.db_path
         os.environ["HOTKEY"] = self.wallet.hotkey.ss58_address
         os.environ["UID"] = str(self.miner_uid)
@@ -639,8 +639,8 @@ class BettensorMiner(BaseNeuron):
         # convert games_raw to game_dict
         game_dict = {}
         for game in games_raw:
-            bt.logging.info(f"get_games() | Game: {game}")
-            bt.logging.info(f"get_games() | Game[7]: {game[7]}")
+            #bt.logging.info(f"get_games() | Game: {game}")
+            #bt.logging.info(f"get_games() | Game[7]: {game[7]}")
             single_game = TeamGame(
                 id=game[0],
                 teamA=game[1],
@@ -677,7 +677,7 @@ class BettensorMiner(BaseNeuron):
         bt.logging.info("update_outcomes() | Updating outcomes for all predictions and recalculating miner stats")
         prediction_dict = self.get_predictions()
         game_dict = self.get_games()
-
+        current_stats = self.stats.return_miner_stats(self.hotkey)
         for prediction in prediction_dict:
             if prediction.teamGameID in game_dict:
                 outcome = game_dict[prediction.teamGameID].outcome
@@ -687,44 +687,37 @@ class BettensorMiner(BaseNeuron):
                     #teamA wins
                     if prediction.predictedOutcome == prediction.teamA:
                         prediction.outcome = "Win"
-                        self.stats.miner_lifetime_wins += 1
-                        self.stats.miner_lifetime_earnings += prediction.wager * prediction.teamAodds
+                        current_stats.miner_lifetime_wins += 1
+                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamAodds
 
                     elif prediction.predictedOutcome == 1:
                         prediction.outcome = "Loss"
-                        self.stats.miner_lifetime_losses += 1
+                        current_stats.miner_lifetime_losses += 1
                 elif outcome == 1:
                     #teamB wins
                     if prediction.predictedOutcome == prediction.teamB:
                         prediction.outcome = "Win"
-                        self.stats.miner_lifetime_wins += 1
-                        self.stats.miner_lifetime_earnings += prediction.wager * prediction.teamBodds
+                        current_stats.miner_lifetime_wins += 1
+                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamBodds
                     elif prediction.predictedOutcome == 0:
                         prediction.outcome = "Loss"
-                        self.stats.miner_lifetime_losses += 1
+                        current_stats.miner_lifetime_losses += 1
                 elif outcome == 2:
                     #tie
                     if prediction.predictedOutcome == "Tie":
                         prediction.outcome = "Win"
-                        self.stats.miner_lifetime_wins += 1
-                        self.stats.miner_lifetime_earnings += prediction.wager * prediction.tieOdds
+                        current_stats.miner_lifetime_wins += 1
+                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.tieOdds
                     elif prediction.predictedOutcome == 0 or prediction.predictedOutcome == 1:
                         prediction.outcome = "Loss"
-                        self.stats.miner_lifetime_losses += 1
+                        current_stats.miner_lifetime_losses += 1
 
 
         #recalculate ratio
-        self.stats.miner_lifetime_ratio = self.stats.miner_lifetime_wins / self.stats.miner_lifetime_losses
+        current_stats.miner_lifetime_ratio = current_stats.miner_lifetime_wins / current_stats.miner_lifetime_losses
         
-        # update miner stats table
-        db, cursor = self.get_cursor()
-        cursor.execute("""UPDATE miner_stats SET miner_lifetime_wins = ?, 
-                    miner_lifetime_losses = ?, miner_lifetime_earnings = ?,
-                        miner_lifetime_ratio = ? WHERE miner_id = ?""",
-                        (self.stats.miner_lifetime_wins, self.stats.miner_lifetime_losses, 
-                        self.stats.miner_lifetime_earnings, self.stats.miner_lifetime_ratio, 
-                        self.miner_uid))
-        db.commit()
+        #update miner stats table
+        self.stats.update_miner_row(current_stats)
     
    
     
