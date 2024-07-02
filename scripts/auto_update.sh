@@ -11,17 +11,12 @@ update_and_restart() {
         echo "Reinstalling dependencies..."
         if pip install -e .; then
             echo "Restarting all PM2 processes..."
-            pm2 list --no-color | awk 'NR>2 {print $4}' | while read -r process_id; do
-                echo "Read process ID: '$process_id'"
-                if [ ! -z "$process_id" ]; then
-                    echo "Attempting to restart process ID: $process_id"
-                    if pm2 restart "$process_id" --update-env; then
-                        echo "Successfully restarted process ID $process_id"
-                    else
-                        echo "Failed to restart process ID $process_id"
-                    fi
+            pm2 jlist | jq -r '.[] | .pm_id' | while read -r process_id; do
+                echo "Attempting to restart process ID: $process_id"
+                if pm2 restart "$process_id" --update-env; then
+                    echo "Successfully restarted process ID $process_id"
                 else
-                    echo "Skipping empty process ID"
+                    echo "Failed to restart process ID $process_id"
                 fi
             done
             return 0
