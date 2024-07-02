@@ -131,12 +131,13 @@ sudo npm install -g pm2
 # Clone Bettensor repository
 cd $HOME
 git clone https://github.com/bettensor/bettensor.git
-cd bettensor
+
 
 # Create and activate virtual environment
 python3.10 -m venv .venv
 source .venv/bin/activate
 
+cd bettensor
 # Install Bettensor dependencies
 pip install -e .
 pip install -r requirements.txt
