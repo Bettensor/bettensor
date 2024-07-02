@@ -9,6 +9,7 @@ from bettensor.utils.sign_and_validate import verify_signature
 from bettensor.utils.miner_stats import MinerStatsHandler
 import datetime
 import os
+import threading
 
 
 class BettensorMiner(BaseNeuron):
@@ -82,7 +83,11 @@ class BettensorMiner(BaseNeuron):
         os.environ["UID"] = str(self.miner_uid)
 
         # Initialize local sqlite
-        self.ensure_db_directory_exists(self.db_path)
+        self.db_lock = threading.Lock()
+        self.db = None
+        self.cursor = None
+        self.initialize_db_connection()
+        self.ensure_db_directory_exists()
         self.initialize_database()
 
         # Ensure the data directory exists
@@ -113,25 +118,27 @@ class BettensorMiner(BaseNeuron):
 
         bt.logging.debug(f"init_stats: {init_stats}")
 
-    def ensure_db_directory_exists(self, db_path):
-        db_dir = os.path.dirname(db_path)
+    def initialize_db_connection(self):
+        with self.db_lock:
+            if self.db is None:
+                self.db = sqlite3.connect(self.db_path, check_same_thread=False)
+                self.cursor = self.db.cursor()
+
+    def ensure_db_directory_exists(self):
+        db_dir = os.path.dirname(self.db_path)
         if not os.path.exists(db_dir):
             os.makedirs(db_dir)
 
     def print_table_schema(self):
-        db, cursor = self.get_cursor()
-        cursor.execute("PRAGMA table_info(games)")
-        schema = cursor.fetchall()
+        self.cursor.execute("PRAGMA table_info(games)")
+        schema = self.cursor.fetchall()
         for column in schema:
             print(column)
-        db.close()
 
     def initialize_database(self):
         bt.logging.debug(f"Initializing database at {self.db_path}")
         try:
-            db = sqlite3.connect(self.db_path)
-            cursor = db.cursor()
-            cursor.execute(
+            self.cursor.execute(
                 """CREATE TABLE IF NOT EXISTS predictions (
                                predictionID TEXT PRIMARY KEY, 
                                teamGameID TEXT, 
@@ -148,7 +155,7 @@ class BettensorMiner(BaseNeuron):
                                outcome TEXT
                                )"""
             )
-            cursor.execute(
+            self.cursor.execute(
                 """CREATE TABLE IF NOT EXISTS games (
                                gameID TEXT PRIMARY KEY, 
                                teamA TEXT,
@@ -167,27 +174,10 @@ class BettensorMiner(BaseNeuron):
                                canTie BOOLEAN
                                )"""
             )
-            db.commit()
-            db.close()
+            self.db.commit()
         except sqlite3.Error as e:
             bt.logging.error(f"Failed to initialize local database: {e}")
             raise Exception("Failed to initialize local database")
-
-    def get_cursor(self):
-        '''
-        Get db and cursor instance for local sqlite db
-        Args:
-            None
-        Returns:
-            db: sqlite3.Connection
-            cursor: sqlite3.Cursor
-        '''
-        try:
-            db = sqlite3.connect(self.db_path)
-            return db, db.cursor()
-        except sqlite3.Error as e:
-            bt.logging.error(f"Failed to connect to local database: {e}")
-            raise Exception("Failed to connect to local database")
 
     def setup(self) -> Tuple[bt.wallet, bt.subtensor, bt.metagraph, str]:
         """This function sets up the neuron.
@@ -353,7 +343,6 @@ class BettensorMiner(BaseNeuron):
 
     def forward(self, synapse: GameData) -> GameData:
         bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
-        db, cursor = self.get_cursor()
 
         # Print version information and perform version checks
         print(
@@ -379,12 +368,12 @@ class BettensorMiner(BaseNeuron):
         # check if tables in db are initialized
         # if not, initialize them
 
-        cursor.execute("SELECT * FROM games")
-        if not cursor.fetchone():
+        self.cursor.execute("SELECT * FROM games")
+        if not self.cursor.fetchone():
             self.initialize_database()
 
         # clean up games table and set active field
-        self.update_games_data(db, cursor)
+        self.update_games_data()
 
         # Remove duplicate games
         self.remove_duplicate_games()
@@ -397,10 +386,10 @@ class BettensorMiner(BaseNeuron):
         
 
         # Fetch games that have not started yet
-        cursor.execute(
+        self.cursor.execute(
             "SELECT externalID FROM games WHERE eventStartDate > ?", (current_time,)
         )
-        games = cursor.fetchall()
+        games = self.cursor.fetchall()
 
         bt.logging.debug(f"Fetched {len(games)} games")
 
@@ -415,10 +404,10 @@ class BettensorMiner(BaseNeuron):
             external_game_id = game[0]
             bt.logging.trace(f"Processing Predictions: Game ID: {external_game_id}")
             # Fetch predictions for the game
-            cursor.execute(
+            self.cursor.execute(
                 "SELECT * FROM predictions WHERE teamGameID = ?", (external_game_id,)
             )
-            predictions = cursor.fetchall()
+            predictions = self.cursor.fetchall()
             bt.logging.trace(f"Predictions: {predictions}")
 
             # Add predictions to prediction_dict
@@ -455,7 +444,6 @@ class BettensorMiner(BaseNeuron):
     def add_game_data(self, game_data_dict):
         try:
             bt.logging.trace(f"add_game_data() | Adding game data to local database")
-            db, cursor = self.get_cursor()
             number_of_games = len(game_data_dict)
             bt.logging.trace(
                 f"add_game_data() | Number of games to add: {number_of_games}"
@@ -463,10 +451,10 @@ class BettensorMiner(BaseNeuron):
             # Check games table, add games that are not in the table
             for game_id, game_data in game_data_dict.items():
                 external_id = game_data.externalId
-                cursor.execute("SELECT * FROM games WHERE externalID = ?", (external_id,))
-                if not cursor.fetchone():
+                self.cursor.execute("SELECT * FROM games WHERE externalID = ?", (external_id,))
+                if not self.cursor.fetchone():
                     # Game is not in the table, add it
-                    cursor.execute(
+                    self.cursor.execute(
                         """INSERT INTO games (
                         gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, createDate, lastUpdateDate, 
                         eventStartDate, active, outcome, tieOdds, canTie
@@ -489,12 +477,12 @@ class BettensorMiner(BaseNeuron):
                             game_data.canTie,
                         ),
                     )
-                    db.commit()
+                    self.db.commit()
                 else:
                     bt.logging.trace(
                         f"add_game_data() | Game {external_id} already in the table, updating."
                     )
-                    cursor.execute(
+                    self.cursor.execute(
                         """UPDATE games SET teamA = ?, teamAodds = ?, teamB = ?, teamBodds = ?, sport = ?, league = ?, externalID = ?, 
                                    createDate = ?, lastUpdateDate = ?, eventStartDate = ?, active = ?, outcome = ?, tieOdds = ?, canTie = ? WHERE gameID = ?""",
                         (
@@ -515,19 +503,19 @@ class BettensorMiner(BaseNeuron):
                             game_id,
                         ),
                     )
-                    db.commit()
+                    self.db.commit()
 
         except Exception as e:
             bt.logging.error(f"Failed to add game data: {e}")
 
-    def update_games_data(self, db, cursor):
+    def update_games_data(self):
         bt.logging.trace(f"update_games_data() | Updating games data")
         # go through games table. If current time UTC is greater than eventStartDate, set active to 1
 
         # if current time UTC is 3 days past event start date, remove the row
 
-        cursor.execute("SELECT * FROM games")
-        games = cursor.fetchall()
+        self.cursor.execute("SELECT * FROM games")
+        games = self.cursor.fetchall()
         for game in games:
             bt.logging.trace(
                 f"Current time: {datetime.datetime.now(datetime.timezone.utc)}"
@@ -536,28 +524,28 @@ class BettensorMiner(BaseNeuron):
             if datetime.datetime.now(
                 datetime.timezone.utc
             ) > datetime.datetime.fromisoformat(game[10]):
-                cursor.execute(
+                self.cursor.execute(
                     "UPDATE games SET active = 1 WHERE gameID = ?", (game[0],)
                 )
                 bt.logging.trace(f"update_games_data() | Game {game[0]} is now active")
             if datetime.datetime.now(
                 datetime.timezone.utc
             ) > datetime.datetime.fromisoformat(game[10]) + datetime.timedelta(days=3):
-                cursor.execute("DELETE FROM games WHERE gameID = ?", (game[0],))
+                self.cursor.execute("DELETE FROM games WHERE gameID = ?", (game[0],))
                 bt.logging.trace(
                     f"update_games_data() | Game {game[0]} is deleted from db"
                 )
             if datetime.datetime.now(
                 datetime.timezone.utc
             ) < datetime.datetime.fromisoformat(game[10]):
-                cursor.execute(
+                self.cursor.execute(
                     "UPDATE games SET active = 0 WHERE gameID = ?", (game[0],)
                 )
                 bt.logging.trace(
                     f"update_games_data() | Game {game[0]} is now inactive"
                 )
 
-            db.commit()
+            self.db.commit()
     def hotkey_exists_in_file(self, file_path, hotkey):
         if not os.path.exists(file_path):
             return False
@@ -569,22 +557,21 @@ class BettensorMiner(BaseNeuron):
 
     def remove_duplicate_games(self):
         bt.logging.trace("Removing duplicate games from the database")
-        db, cursor = self.get_cursor()
         try:
             # Find duplicate games
-            cursor.execute("""
+            self.cursor.execute("""
                 SELECT externalID, COUNT(*) as count
                 FROM games
                 GROUP BY externalID
                 HAVING count > 1
             """)
-            duplicates = cursor.fetchall()
+            duplicates = self.cursor.fetchall()
 
             for external_id, count in duplicates:
                 bt.logging.debug(f"Found {count} duplicates for externalID: {external_id}")
                 
                 # Keep the most recently updated record
-                cursor.execute("""
+                self.cursor.execute("""
                     DELETE FROM games
                     WHERE externalID = ? AND rowid NOT IN (
                         SELECT rowid
@@ -595,17 +582,16 @@ class BettensorMiner(BaseNeuron):
                     )
                 """, (external_id, external_id))
 
-            db.commit()
+            self.db.commit()
             bt.logging.trace(f"Removed {len(duplicates)} sets of duplicate games")
         except sqlite3.Error as e:
             bt.logging.error(f"Error removing duplicate games: {e}")
-            db.rollback()
+            self.db.rollback()
 
     def get_predictions(self):
         # get predictions from db
-        db, cursor = self.get_cursor()
-        cursor.execute("SELECT * FROM predictions")
-        predictions_raw = cursor.fetchall()
+        self.cursor.execute("SELECT * FROM predictions")
+        predictions_raw = self.cursor.fetchall()
 
         prediction_dict = {}
         # convert predictions_raw to prediction_dict
@@ -632,9 +618,8 @@ class BettensorMiner(BaseNeuron):
 
     def get_games(self):
         # get games from db
-        db, cursor = self.get_cursor()
-        cursor.execute("SELECT * FROM games")
-        games_raw = cursor.fetchall()
+        self.cursor.execute("SELECT * FROM games")
+        games_raw = self.cursor.fetchall()
         #bt.logging.info(f"get_games() | Games: {games_raw}")
         # convert games_raw to game_dict
         game_dict = {}
@@ -720,3 +705,6 @@ class BettensorMiner(BaseNeuron):
     
    
     
+    def stop(self):
+        self.stats.stop()
+        
