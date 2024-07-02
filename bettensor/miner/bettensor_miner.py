@@ -708,7 +708,7 @@ class BettensorMiner(BaseNeuron):
         # Round to 3 decimal places for precision
         current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
 
-        bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
+        #bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
         #update miner stats table
         self.stats.update_miner_row(current_stats)
     
