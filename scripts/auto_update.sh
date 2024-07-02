@@ -8,21 +8,25 @@ echo "Auto-update enabled on branch: $current_branch"
 chmod +x scripts/restart_pm2_processes.sh
 
 update_and_restart() {
-    echo "New updates detected. Pulling changes..."
+    echo "New updates detected. Stashing local changes..."
+    git stash
+    echo "Pulling changes..."
     if git pull origin $current_branch; then
         echo "Reinstalling dependencies..."
         if pip install -e .; then
             echo "Scheduling PM2 restart..."
-            # Schedule the restart script to run after 1 minute
-            echo "bash $(pwd)/scripts/restart_pm2_processes.sh" | at now + 1 minute
+            # Run the restart script in the background after a short delay
+            (sleep 10 && bash "$(pwd)/scripts/restart_pm2_processes.sh") &
             echo "PM2 restart scheduled. The script will exit now and restart shortly."
             exit 0
         else
             echo "Failed to install dependencies. Skipping restart."
+            git stash pop
             return 1
         fi
     else
         echo "Failed to pull changes. Skipping update and restart."
+        git stash pop
         return 1
     fi
 }
