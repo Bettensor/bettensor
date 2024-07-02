@@ -40,7 +40,7 @@ Mining on this subnet is simple. In this Beta release, miners receive upcoming g
 
 ## Installation and Setup
 
-To mine or validate on this subnet, we recommend starting with a cheap VPS instance running Ubuntu 22.04 (or 20.04, though this can take longer to set up dependencies). As with most Subnets, we also recommend running your own Lite Node. You can find a guide to running a Lite Node [here](https://docs.bittensor.com/subtensor-nodes/). 
+To mine or validate on this subnet, we recommend starting with a cheap VPS instance running Ubuntu 22.04. As with most Subnets, we also recommend running your own Lite Node. You can find a guide to running a Lite Node [here](https://docs.bittensor.com/subtensor-nodes/). 
 
 >[!NOTE]
 >In this current Beta version, we require Bittensor v6.9.3.
@@ -55,29 +55,15 @@ To mine or validate on this subnet, we recommend starting with a cheap VPS insta
 sudo apt-get update
 ```
 
-3. Install python3.10-venv:
-```bash
-sudo apt-get install python3.10-venv
-```
-
-4. Set up a virtual environment (Python 3.10 recommended):
-```bash
-   python3.10 -m venv venv
-   source venv/bin/activate
-```
-
-5. Install dependencies:
+4. Run the setup script:
 ```bash
    cd bettensor
-   pip install -e .
-   pip install -r requirements.txt
+   chmod +x scripts/setup.sh
+   source ./scripts/setup.sh
 ```
+   - if you want to set up a lite node (recommended), run the command with the flag `source ./scripts/setup.sh --lite-node`
 
-6. Install pm2 (recommended for process management):
-```bash
-sudo apt-get install -y npm jq
-sudo npm install -g pm2
-```
+   - additionally, the script takes `--subtensor.network` as an optional flag. if you want to run the lite node on testnet, run `source ./scripts/setup.sh --subtensor.network test` , or `main` for mainnet.
 
 7. Set up a Bittensor wallet (guide [here](https://docs.bittensor.com/getting-started/wallets)).
 
@@ -106,71 +92,36 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
    RAPID_API_KEY=<YOUR_API_KEY>
    ```
 
-3. Create a new file `validator.sh` in the top-level directory. Copy the contents of `template-scripts/validator.sh.template` to this file. 
-   ```bash
-   cp template-scripts/validator.sh.template validator.sh
+3. Run `source ./scripts/start_neuron.sh` and follow prompts for validator. You can run this script with flags if you prefer not to enter prompts.
    ```
-
-
-4. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
-   - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
-
-5. Start the validator:
-   ```bash
-   pm2 start validator.sh  
-   ```
-   >[!NOTE]
-   > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the pm2 command. (not recommended).
-   >
-   >Additionally, you should NOT use the pm2 --name flag anymore, this will prevent auto updates from working.
-
-6. Check logs for Success:
-   ```bash
-   pm2 logs validator
-   ```
-   >[!NOTE]
-   > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
+>[!NOTE]
+> We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
 
 
 
 
 ## Guide for Miners
 
-1. Create a new file `miner.sh` in the top-level directory. Copy the contents of `template-scripts/miner.sh.template` to this file. 
-   ```bash
-   cp template-scripts/miner.sh.template miner.sh
+1. Run `source ./scripts/start_neuron.sh` and follow prompts for miner. You can run this script with flags if you prefer not to enter prompts.
    ```
+>[!NOTE]
+> We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
 
-2. Edit the `NEURON_ARGS` variable to set the appropriate network and wallet details.
-   - if you are running without a local node, remove the `--subtensor.chain_endpoint`  argument
-   
-
-3. Start the miner:
-   ```bash
-   pm2 start miner.sh 
-   ```
-   >[!NOTE]
-   > If you would like to disable auto-updates from github, you will need to add the `--disable-auto-update` flag to the pm2 command. (not recommended for "manual" miners)
-   > Additionally, if you are running multiple miners, you'll need to have multiple copies of the `miner.sh` file, each with a unique name, (like miner1,miner2,etc) and run each one with `pm2 start <script-name>`.
-   >You should NOT use the name flag anymore, this will prevent auto updates from working.
-
-4. Check logs for Success and wait for some game data:
+2. Check logs for Success and wait for some game data:
    ```bash
    pm2 logs miner
    ```
 
-5. Submit predictions with our Beta User Interface:
+3. Submit predictions with our Beta User Interface:
    ```bash
    python bettensor/miner/cli.py
    ```
-6. If you're running more than one miner, you can specify with the `--uid` flag. (this is your network UID for the miner). You can reference `./data/miner_env.txt` to find your NETUIDs
+4. If you're running more than one miner, you can specify with the `--uid` flag. (this is your network UID for the miner). You can reference `./data/miner_env.txt` to find your NETUIDs
     ```bash
     python bettensor/miner/cli.py --uid <UID>
     ```
 
-   >[!NOTE]
-   > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
-
+ 
 
 ## Incentive Mechanism and Scoring
 - In the current version, our scoring system is quite simple. 
@@ -184,7 +135,7 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 With this design, we heavily incentivize correct predictions. Danger of deregistration is high with just one bad day of predictions. Potential of earning high rewards is there too, if you know something other people don't.
 
 
-## Details for Current Release Version (v0.0.2, Beta)
+## Details for Current Release Version (v0.0.4, Beta)
 
 >[!CAUTION]
 >This is a Beta release of BetTensor. We expect instability and frequent updates. Please contact us on discord if you have any issues or suggestions.
