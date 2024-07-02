@@ -638,8 +638,9 @@ class BettensorMiner(BaseNeuron):
         # convert games_raw to game_dict
         game_dict = {}
         for game in games_raw:
+            bt.logging.info(f"get_games() | Game: {game}")
             single_game = TeamGame(
-                gameID=game[0],
+                id=game[0],
                 teamA=game[1],
                 teamB=game[2],
                 sport=game[3],
