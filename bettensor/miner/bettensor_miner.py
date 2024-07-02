@@ -104,9 +104,9 @@ class BettensorMiner(BaseNeuron):
             bt.logging.info(f"Miner info already exists in data/miner_env.txt")
 
         # Initialize Miner Stats
-        self.stats = MinerStatsHandler(db_path=self.db_path, profile="miner")
+        self.stats = MinerStatsHandler(self)
         bt.logging.trace(
-            f"Miner stats initialized with db_path: {self.db_path} and profile: miner"
+            f"Miner stats initialized with miner instance"
         )
         init_stats = self.stats.init_miner_row(
             self.wallet.hotkey.ss58_address, self.miner_uid
