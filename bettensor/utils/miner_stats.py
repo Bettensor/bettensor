@@ -103,6 +103,7 @@ class MinerStatsHandler:
         miner_hotkey = miner_hotkey
 
         miner_uid = miner_uid
+        bt.logging.info(f"init_miner_row() | Miner hotkey: {miner_hotkey}, Miner uid: {miner_uid}")
 
         # init other values to 0
         miner_coldkey = ""
