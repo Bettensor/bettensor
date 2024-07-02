@@ -12,9 +12,16 @@ update_and_restart() {
         if pip install -e .; then
             echo "Restarting all PM2 processes..."
             pm2 list --no-color | awk 'NR>2 {print $4}' | while read -r process_id; do
+                echo "Read process ID: '$process_id'"
                 if [ ! -z "$process_id" ]; then
-                    echo "Restarting process ID: $process_id"
-                    pm2 restart "$process_id" --update-env
+                    echo "Attempting to restart process ID: $process_id"
+                    if pm2 restart "$process_id" --update-env; then
+                        echo "Successfully restarted process ID $process_id"
+                    else
+                        echo "Failed to restart process ID $process_id"
+                    fi
+                else
+                    echo "Skipping empty process ID"
                 fi
             done
             return 0
