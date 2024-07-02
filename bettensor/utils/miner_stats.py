@@ -21,7 +21,7 @@ class MinerStatsHandler:
         self.db_path = db_path
         self.profile = profile
         self.conn = self.connect_to_db(self.db_path)
-        self.create_table(self.conn)
+        self.create_table()
         
 
         # Start the run method in a separate thread
