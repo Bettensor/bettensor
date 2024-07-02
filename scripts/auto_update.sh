@@ -5,20 +5,18 @@ echo "Starting auto_update.sh"
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 echo "Auto-update enabled on branch: $current_branch"
 
+chmod +x scripts/restart_pm2_processes.sh
+
 update_and_restart() {
     echo "New updates detected. Pulling changes..."
     if git pull origin $current_branch; then
         echo "Reinstalling dependencies..."
         if pip install -e .; then
             echo "Restarting all PM2 processes..."
-            pm2 jlist | jq -r '.[] | .pm_id' | while read -r process_id; do
-                echo "Attempting to restart process ID: $process_id"
-                if pm2 restart "$process_id" --update-env; then
-                    echo "Successfully restarted process ID $process_id"
-                else
-                    echo "Failed to restart process ID $process_id"
-                fi
-            done
+            # Execute the restart script in a separate process
+            bash scripts/restart_pm2_processes.sh &
+            # Wait for a moment to allow the restart to begin
+            sleep 5
             return 0
         else
             echo "Failed to install dependencies. Skipping restart."
