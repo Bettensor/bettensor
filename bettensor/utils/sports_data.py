@@ -168,7 +168,6 @@ class SportsData:
                 and game["odds"]["average_tie_odds"] == 1.5 
     )
 ]
-            ]
 
         # Append the fetched games to the overall all_games list
         self.all_games.extend(all_games)
