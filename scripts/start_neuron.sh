@@ -150,7 +150,7 @@ case $NETWORK in
         DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network test --netuid 181"
         ;;
     main)
-        DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network finney --netuid 30"
+        DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network finney --netuid 32"
         ;;
     *)
         DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network $NETWORK"
@@ -219,4 +219,5 @@ echo "Starting $NEURON_TYPE with arguments: $DEFAULT_NEURON_ARGS"
 pm2 start --name "$INSTANCE_NAME" python -- neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
 
 echo "$NEURON_TYPE started successfully with instance name: $INSTANCE_NAME"
+
 
