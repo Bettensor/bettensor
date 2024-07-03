@@ -521,23 +521,27 @@ class BettensorMiner(BaseNeuron):
                 f"Current time: {datetime.datetime.now(datetime.timezone.utc)}"
             )
             bt.logging.trace(f"update_games_data() | Game: {game}")
-            if datetime.datetime.now(
-                datetime.timezone.utc
-            ) > datetime.datetime.fromisoformat(game[10]):
+
+            # check if game[10] (eventStartDate) is None
+            if game[10] is None:
+                bt.logging.trace("update_games_data() | Start Date is None, passing")
+                continue
+            
+            event_start_date = datetime.datetime.fromisoformat(game[10])
+
+            if datetime.datetime.now(datetime.timezone.utc) > event_start_date:
                 self.cursor.execute(
                     "UPDATE games SET active = 1 WHERE gameID = ?", (game[0],)
                 )
                 bt.logging.trace(f"update_games_data() | Game {game[0]} is now active")
-            if datetime.datetime.now(
-                datetime.timezone.utc
-            ) > datetime.datetime.fromisoformat(game[10]) + datetime.timedelta(days=3):
+
+            if datetime.datetime.now(datetime.timezone.utc) > event_start_date + datetime.timedelta(days=3):
                 self.cursor.execute("DELETE FROM games WHERE gameID = ?", (game[0],))
                 bt.logging.trace(
                     f"update_games_data() | Game {game[0]} is deleted from db"
                 )
-            if datetime.datetime.now(
-                datetime.timezone.utc
-            ) < datetime.datetime.fromisoformat(game[10]):
+
+            if datetime.datetime.now(datetime.timezone.utc) < event_start_date:
                 self.cursor.execute(
                     "UPDATE games SET active = 0 WHERE gameID = ?", (game[0],)
                 )
@@ -546,6 +550,7 @@ class BettensorMiner(BaseNeuron):
                 )
 
             self.db.commit()
+            
     def hotkey_exists_in_file(self, file_path, hotkey):
         if not os.path.exists(file_path):
             return False

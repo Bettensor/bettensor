@@ -4,6 +4,52 @@ import json
 from datetime import datetime
 import bittensor as bt
 
+def create_keys_table(db_path: str):
+    """
+    Creates keys table in db
+    """
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS keys (
+            hotkey TEXT PRIMARY KEY,
+            coldkey TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_or_update_coldkey(db_path: str, hotkey: str) -> str:
+    """
+    Retrieves coldkey from metagraph if it doesnt exist in keys table
+    """
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Check if the hotkey exists in the keys table
+    cursor.execute("SELECT coldkey FROM keys WHERE hotkey = ?", (hotkey,))
+    result = cursor.fetchone()
+
+    if result:
+        return result[0]
+    else:
+        # If not found, fetch from Bittensor and insert into the database
+        metagraph = bt.metagraph(netuid=30)
+        metagraph.sync()  # Sync with the network to get the latest data
+
+        for neuron in metagraph.neurons:
+            if neuron.hotkey == hotkey:
+                coldkey = neuron.coldkey
+                cursor.execute("INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)", (hotkey, coldkey))
+                conn.commit()
+                conn.close()
+                return coldkey
+
+        # If coldkey is not found, insert "dummy_coldkey"
+        cursor.execute("INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)", (hotkey, "dummy_coldkey"))
+        conn.commit()
+        conn.close()
+        return "dummy_coldkey"
 
 def fetch_predictions_from_db(db_path):
     """
@@ -16,15 +62,11 @@ def fetch_predictions_from_db(db_path):
     conn.row_factory = sqlite3.Row  # This allows accessing columns by name
     cursor = conn.cursor()
 
-    # First, let's check the available tables
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
     tables = cursor.fetchall()
-    print("Available tables:", [table[0] for table in tables])
 
-    # The 'predictions' table exists, so let's check its structure
     cursor.execute("PRAGMA table_info(predictions)")
     columns = cursor.fetchall()
-    print("Columns in 'predictions' table:", [col[1] for col in columns])
 
     # Construct the query based on the actual columns in the table
     available_columns = [col[1] for col in columns]
@@ -50,7 +92,6 @@ def fetch_predictions_from_db(db_path):
     ]
 
     query = f"SELECT {', '.join(query_columns)} FROM predictions WHERE sent_to_site = 0"
-    print("Executing query:", query)
 
     try:
         cursor.execute(query)
@@ -60,10 +101,9 @@ def fetch_predictions_from_db(db_path):
         for row in rows:
             predictions.append(dict(row))
 
-        print(f"Fetched {len(predictions)} predictions")
         return predictions
     except sqlite3.OperationalError as e:
-        print(f"Error executing query: {e}")
+        bt.logging.trace(e)
         return []
     finally:
         conn.close()
@@ -82,14 +122,14 @@ def update_sent_status(db_path, prediction_ids):
     except sqlite3.Error as e:
         print(f"Error updating sent_to_site status: {e}")
     finally:
-        conn.close()	
-
+        conn.close()    
 
 def send_predictions(predictions, db_path):
     """
     Send predictions to the Bettensor API.
 
     :param predictions: List of dictionaries containing prediction data
+    :param db_path: Path to the SQLite3 database file
     :return: Tuple of (status_code, API response content)
     """
     url = "https://www.bettensor.com/API/Predictions/"
@@ -97,10 +137,17 @@ def send_predictions(predictions, db_path):
     transformed_data = []
 
     for prediction in predictions:
+        hotkey = prediction["minerId"]
+        try:
+            coldkey = get_or_update_coldkey(db_path, hotkey)
+        except ValueError as e:
+            bt.logging.error(e)
+            coldkey = "dummy_coldkey"
+
         transformed_prediction = {
             "externalGameId": prediction["teamGameID"],
-            "minerHotKey": prediction["minerId"],
-            "minerColdKey": "dummy_coldkey",
+            "minerHotKey": hotkey,
+            "minerColdKey": coldkey,
             "predictionDate": prediction["predictionDate"],
             "predictedOutcome": 0,
             "wager": prediction["wager"],
@@ -137,7 +184,6 @@ def send_predictions(predictions, db_path):
         bt.logging.error(f"Error sending predictions: {e}")
         return None, str(e)
 
-
 def fetch_and_send_predictions(db_path):
     """
     Fetch predictions from the database and send them to the API.
@@ -145,6 +191,7 @@ def fetch_and_send_predictions(db_path):
     :param db_path: Path to the SQLite3 database file
     :return: API response
     """
+    create_keys_table(db_path)  # Ensure the keys table exists
     predictions = fetch_predictions_from_db(db_path)
     if predictions:
         bt.logging.debug("Sending predictions to the Bettensor website.")

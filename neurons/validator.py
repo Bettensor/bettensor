@@ -69,6 +69,9 @@ def main(validator: BettensorValidator):
     soccer_games = sports_data.get_game_data(
         sport="soccer", league="262", season="2024"
     )  # Liga MX
+    soccer_games = sports_data.get_game_data(
+        sport="soccer", league="4", season="2024"
+    )  # Euro Cup
 
     while True:
         try:
