@@ -117,6 +117,7 @@ class BettensorMiner(BaseNeuron):
             )
 
         bt.logging.debug(f"init_stats: {init_stats}")
+        self.stats.reset_daily_cash_retro()
 
     def initialize_db_connection(self):
         with self.db_lock:
@@ -517,6 +518,7 @@ class BettensorMiner(BaseNeuron):
         self.cursor.execute("SELECT * FROM games")
         games = self.cursor.fetchall()
         for game in games:
+            # TODO: Handle Event Start Date = None
             bt.logging.trace(
                 f"Current time: {datetime.datetime.now(datetime.timezone.utc)}"
             )
@@ -656,7 +658,7 @@ class BettensorMiner(BaseNeuron):
         Returns:
             None
         '''
-        bt.logging.info("update_outcomes() | Updating outcomes for all predictions and recalculating miner stats")
+        bt.logging.debug("update_outcomes() | Updating outcomes for all predictions and recalculating miner stats")
         prediction_dict = self.get_predictions()
         game_dict = self.get_games()
 

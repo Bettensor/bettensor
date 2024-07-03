@@ -109,7 +109,7 @@ class MinerStatsHandler:
             )
             self.miner.db.commit()
 
-    def reset_daily_cash(self):
+    def reset_daily_cash_timed(self):
         """
         This method resets the daily cash of every miner to 1000, executed at 00:00 UTC
         """
@@ -217,6 +217,31 @@ class MinerStatsHandler:
             row = self.miner.cursor.fetchone()
 
             return MinerStats.create(row)
+        
+    def reset_daily_cash_retro(self):
+        """
+        This method resets the daily cash of every miner to 1000 if the last_prediction_date is not the current date, executed at 00:00 UTC
+        """
+        current_date = datetime.datetime.now(pytz.utc).date()
+        with self.miner.db_lock:
+            self.miner.cursor.execute("SELECT miner_hotkey, miner_last_prediction_date FROM miner_stats")
+            miners = self.miner.cursor.fetchall()
+            for miner in miners:
+                miner_hotkey = miner[0]
+                last_prediction_date = miner[1]
+                # If last_prediction_date is not the current date, reset miner_cash
+                if last_prediction_date is None or datetime.datetime.fromisoformat(last_prediction_date).date() != current_date:
+                    self.miner.cursor.execute(
+                        """
+                        UPDATE miner_stats
+                        SET miner_cash = 1000
+                        WHERE miner_hotkey = ?
+                        """, (miner_hotkey,)
+                    )
+                    bt.logging.info(f"Daily cash reset for miner {miner_hotkey}")
+            self.miner.db.commit()    
+
+    
 
     def run(self):
         self.running = True
@@ -228,7 +253,7 @@ class MinerStatsHandler:
             midnight = datetime.datetime.combine(tomorrow, datetime.time.min, tzinfo=pytz.utc)
             return (midnight - now).total_seconds()
 
-        schedule.every(time_until_utc_midnight()).seconds.do(self.reset_daily_cash)
+        schedule.every(time_until_utc_midnight()).seconds.do(self.reset_daily_cash_timed)
         
         # For testing: run every minute instead of daily (if you think you're gonna be sneaky and reset this here, we check it on validator side`:) `)
         #schedule.every(1).minutes.do(self.reset_daily_cash)
