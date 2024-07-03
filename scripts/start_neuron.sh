@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default neuron arguments
-DEFAULT_NEURON_ARGS="--netuid 181"
+DEFAULT_NEURON_ARGS="--netuid 30"
 DISABLE_AUTO_UPDATE="false"
 NEURON_TYPE=""
 NETWORK=""
