@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default neuron arguments
-DEFAULT_NEURON_ARGS="--netuid 30"
+DEFAULT_NEURON_ARGS=""
 DISABLE_AUTO_UPDATE="false"
 NEURON_TYPE=""
 NETWORK=""
@@ -82,6 +82,11 @@ prompt_yes_no() {
     done
 }
 
+# Function to check if lite node is running
+is_lite_node_running() {
+    pgrep -f "substrate.*--chain bittensor" > /dev/null
+}
+
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -121,6 +126,10 @@ while [[ $# -gt 0 ]]; do
             LOGGING_LEVEL="$2"
             shift 2
             ;;
+        --subtensor.chain_endpoint)
+            DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.chain_endpoint $2"
+            shift 2
+            ;;
         *)
             DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS $1"
             shift
@@ -135,8 +144,23 @@ prompt_for_input "Enter neuron type (miner/validator)" "miner" "NEURON_TYPE"
 check_existing_neurons
 
 # Prompt for network if not specified
-prompt_for_input "Enter network (local/test/finney)" "test" "NETWORK"
-DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network $NETWORK"
+prompt_for_input "Enter network (local/test/main)" "test" "NETWORK"
+case $NETWORK in
+    test)
+        DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network test --netuid 181"
+        ;;
+    main)
+        DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network finney --netuid 30"
+        ;;
+    *)
+        DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network $NETWORK"
+        ;;
+esac
+
+# Check if lite node is running and add chain_endpoint if it is
+if is_lite_node_running; then
+    DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.chain_endpoint ws://127.0.0.1:9946"
+fi
 
 # Prompt for wallet name and hotkey if not specified
 prompt_for_input "Enter wallet name" "default" "WALLET_NAME"
@@ -195,3 +219,4 @@ echo "Starting $NEURON_TYPE with arguments: $DEFAULT_NEURON_ARGS"
 pm2 start --name "$INSTANCE_NAME" python -- neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
 
 echo "$NEURON_TYPE started successfully with instance name: $INSTANCE_NAME"
+
