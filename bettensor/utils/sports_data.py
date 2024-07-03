@@ -153,7 +153,8 @@ class SportsData:
                 continue  # Skip to the next date if key error occurs
             all_games.extend(games_list)
 
-        # Filter games with odds less than 1.05, ensuring odds are not None
+        # Filter games with odds less than 1.05; ensure odds are not None; exclude false odds of 1.5/3.0/1.5
+        # RapidAPI has known issues around each of these conditions
         all_games = [
             game
             for game in all_games
@@ -161,7 +162,13 @@ class SportsData:
             and game["odds"]["average_away_odds"] is not None
             and game["odds"]["average_home_odds"] >= 1.05
             and game["odds"]["average_away_odds"] >= 1.05
-        ]
+            and not (
+                game["odds"]["average_home_odds"] == 1.5
+                and game["odds"]["average_away_odds"] == 3.0
+                and game["odds"]["average_tie_odds"] == 1.5 
+    )
+]
+            ]
 
         # Append the fetched games to the overall all_games list
         self.all_games.extend(all_games)
