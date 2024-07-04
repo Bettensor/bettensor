@@ -717,11 +717,13 @@ class BettensorMiner(BaseNeuron):
         current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
 
 
-        #get most recent prediction date from prediction dict
+        # Get most recent prediction date from prediction dict
         bt.logging.trace(f"update_outcomes() | Prediction dict: {prediction_dict}")
 
-        if len(prediction_dict) > 0:
-            current_stats.last_prediction_date = prediction_dict.popitem()[1].predictionDate
+        if prediction_dict:
+            current_stats.last_prediction_date = max(
+                prediction.predictionDate for prediction in prediction_dict.values()
+            )
         else:
             current_stats.last_prediction_date = None
 
