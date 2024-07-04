@@ -401,7 +401,7 @@ class BettensorValidator(BaseNeuron):
                     uid = metadata.neuron_uid
 
                     # ensure prediction_dict is not none before adding it to predictions_dict
-                    if prediction_dict is not None:
+                    if prediction_dict is not None and any(prediction_dict.values()):
                         predictions_dict[uid] = prediction_dict
                     else:
                         bt.logging.warning(
