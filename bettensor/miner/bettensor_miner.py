@@ -117,6 +117,7 @@ class BettensorMiner(BaseNeuron):
             )
 
         bt.logging.debug(f"init_stats: {init_stats}")
+        self.stats.reset_daily_cash_on_startup()
 
     def initialize_db_connection(self):
         with self.db_lock:
