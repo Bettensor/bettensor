@@ -97,6 +97,16 @@ class SportsData:
         conn.close()
         return exists
 
+    def get_multiple_game_data(self, sports_config):
+        all_games = []
+        for sport, leagues in sports_config.items():
+            for league_info in leagues:
+                league = league_info['id']
+                season = league_info.get('season', '2024')
+                games = self.get_game_data(sport=sport, league=league, season=season)
+                all_games.extend(games)
+        return all_games
+
     def get_game_data(self, sport, league="1", season="2024"):
         bt.logging.trace(
             f"Getting game data for sport: {sport}, league: {league}, season: {season}"

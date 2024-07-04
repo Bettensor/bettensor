@@ -24,6 +24,11 @@ import os
 
 from bettensor.protocol import GameData
 from bettensor.protocol import GameData, Metadata
+import importlib
+import sys
+if 'bettensor.utils.sports_data' in sys.modules:
+    importlib.reload(sys.modules['bettensor.utils.sports_data'])
+
 from bettensor.utils.sports_data import SportsData
 
 # Bittensor
@@ -45,7 +50,7 @@ from bettensor import protocol
 
 # from update_games import update_games
 from bettensor.utils.miner_stats import MinerStatsHandler
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from bettensor.utils.website_handler import fetch_and_send_predictions
 
 def main(validator: BettensorValidator):
@@ -54,27 +59,33 @@ def main(validator: BettensorValidator):
     rapid_api_key = os.getenv('RAPID_API_KEY')
 
     sports_data = SportsData()
-    baseball_games = sports_data.get_game_data(
-        sport="baseball", league="1", season="2024"
-    )
-    soccer_games = sports_data.get_game_data(
-        sport="soccer", league="253", season="2024"
-    )  # MLS
-    soccer_games = sports_data.get_game_data(
-        sport="soccer", league="140", season="2024"
-    )  # La Liga
-    soccer_games = sports_data.get_game_data(
-        sport="soccer", league="78", season="2024"
-    )  # Bundesliga
-    soccer_games = sports_data.get_game_data(
-        sport="soccer", league="262", season="2024"
-    )  # Liga MX
-    soccer_games = sports_data.get_game_data(
-        sport="soccer", league="4", season="2024"
-    )  # Euro Cup
+    sports_config = {
+        "baseball": [
+            {"id": "1", "season": "2024"}
+        ],
+        "soccer": [
+            {"id": "253", "season": "2024"},  # MLS
+            {"id": "140", "season": "2024"},  # La Liga
+            {"id": "78", "season": "2024"},   # Bundesliga
+            {"id": "262", "season": "2024"},  # Liga MX
+            {"id": "4", "season": "2024"}     # Euro Cup
+        ]
+    }
+    print(f"advailable methods: {dir(sports_data)}")
+
+    all_games = sports_data.get_multiple_game_data(sports_config)
+    bt.logging.info("using new system")
+    last_api_call = datetime.now()
 
     while True:
+
         try:
+            current_time = datetime.now()
+            if current_time - last_api_call >= timedelta(hours=1):
+                # Update games every hour
+                all_games = sports_data.get_multiple_game_data(sports_config)
+                last_api_call = current_time
+
             # Periodically sync subtensor status and save the state file
             if validator.step % 5 == 0:
                 # Sync metagraph
@@ -92,12 +103,8 @@ def main(validator: BettensorValidator):
                 # Save state
                 validator.save_state()
 
-            if validator.step % 20 == 0:
-                pass
-                # Update local knowledge of blacklisted miner hotkeys
-                # validator.check_blacklisted_miner_hotkeys()
-            
             if validator.step % 150 == 0:
+                # Sends data to the website
                 result = fetch_and_send_predictions(db_path="data/validator.db")
                 bt.logging.trace(f"result status: {result}")
                 if result:
@@ -106,6 +113,7 @@ def main(validator: BettensorValidator):
                     )
                 else:
                     bt.logging.debug("Failed to fetch or send predictions")
+            
             # Get all axons
             all_axons = validator.metagraph.axons
             bt.logging.trace(f"All axons: {all_axons}")
@@ -143,23 +151,8 @@ def main(validator: BettensorValidator):
 
             # Get data and populate DB
             if validator.step % 200 == 0:
-                baseball_games = sports_data.get_game_data(
-                        sport="baseball", league="1", season="2024"
-                        )
-                soccer_games = sports_data.get_game_data(
-                        sport="soccer", league="253", season="2024"
-                        ) # MLS
-                soccer_games = sports_data.get_game_data(
-                        sport="soccer", league="140", season="2024"
-                        ) # La Liga
-                soccer_games = sports_data.get_game_data(
-                        sport="soccer", league="78", season="2024"
-                        ) # Bundesliga
-                soccer_games = sports_data.get_game_data(
-                        sport="soccer", league="262", season="2024"
-                        ) # Liga MX
-
                 validator.set_weights()
+
             # Broadcast query to valid Axons
             current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
             # metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
@@ -268,7 +261,7 @@ if __name__ == "__main__":
         "--alpha", type=float, default=0.9, help="The alpha value for the validator."
     )
 
-    parser.add_argument("--netuid", type=int, default=34, help="The chain subnet uid.")
+    parser.add_argument("--netuid", type=int, default=30, help="The chain subnet uid.")
 
     parser.add_argument(
         "--max_targets",
