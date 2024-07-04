@@ -721,11 +721,11 @@ class BettensorMiner(BaseNeuron):
         bt.logging.trace(f"update_outcomes() | Prediction dict: {prediction_dict}")
 
         if prediction_dict:
-            current_stats.last_prediction_date = max(
+            current_stats.miner_last_prediction_date = max(
                 prediction.predictionDate for prediction in prediction_dict.values()
             )
         else:
-            current_stats.last_prediction_date = None
+            current_stats.miner_last_prediction_date = None
 
         #bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
         #update miner stats table
