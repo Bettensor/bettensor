@@ -64,7 +64,8 @@ def main(validator: BettensorValidator):
             {"id": "140", "season": "2024"},  # La Liga
             {"id": "78", "season": "2024"},   # Bundesliga
             {"id": "262", "season": "2024"},  # Liga MX
-            {"id": "4", "season": "2024"}     # Euro Cup
+            {"id": "4", "season": "2024"},     # Euro Cup
+            {"id": "9", "season": "2024"}     # Copa America
         ]
     }
 
