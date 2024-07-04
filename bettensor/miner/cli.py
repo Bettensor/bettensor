@@ -644,9 +644,7 @@ class WagerConfirm(InteractiveTable):
                     "teamA": self.game_data["teamA"],
                     "teamB": self.game_data["teamB"],
                     "eventStartDate": self.game_data["eventStartDate"],
-                    "predictionDate": datetime.datetime.now(
-                        datetime.timezone.utc
-                    ).isoformat(),
+                    "predictionDate": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "teamAodds": self.game_data["teamAodds"],
                     "teamBodds": self.game_data["teamBodds"],
                     "tieOdds": self.game_data["tieOdds"],

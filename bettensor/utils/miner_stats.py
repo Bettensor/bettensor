@@ -134,8 +134,10 @@ class MinerStatsHandler:
             for miner in miners:
                 miner_hotkey = miner[0]
                 last_prediction_date = miner[1]
+                if last_prediction_date is None or last_prediction_date == "":
+                    return
                 # If last_prediction_date is not the current date, reset miner_cash
-                if last_prediction_date is None or datetime.datetime.fromisoformat(last_prediction_date).date() != current_date:
+                if datetime.datetime.fromisoformat(last_prediction_date).date() != current_date:
                     self.miner.cursor.execute(
                         """
                         UPDATE miner_stats
