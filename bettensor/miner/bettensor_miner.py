@@ -619,7 +619,9 @@ class BettensorMiner(BaseNeuron):
                         outcome=prediction[12],
                     )   
             prediction_dict[prediction[0]] = single_prediction
-        
+        #sort prediction_dict by predictionDate
+        prediction_dict = dict(sorted(prediction_dict.items(), key=lambda item: item[1].predictionDate, reverse=True))
+
         return prediction_dict
 
     def get_games(self):
@@ -713,6 +715,13 @@ class BettensorMiner(BaseNeuron):
 
         # Round to 3 decimal places for precision
         current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
+
+
+        #get most recent prediction date from prediction dict
+        if len(prediction_dict) > 0:
+            current_stats.last_prediction_date = prediction_dict[0].predictionDate
+        else:
+            current_stats.last_prediction_date = None
 
         #bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
         #update miner stats table
