@@ -127,6 +127,7 @@ class MinerStatsHandler:
         """
         This method resets the daily cash of every miner to 1000 if the last_prediction_date is not the current date, executed at 00:00 UTC
         """
+        bt.logging.debug("reset_daily_cash_on_startup() | Resetting daily cash on startup")
         current_date = datetime.datetime.now(pytz.utc).date()
         with self.miner.db_lock:
             self.miner.cursor.execute("SELECT miner_hotkey, miner_last_prediction_date FROM miner_stats")
