@@ -721,7 +721,7 @@ class BettensorMiner(BaseNeuron):
         bt.logging.trace(f"update_outcomes() | Prediction dict: {prediction_dict}")
 
         if len(prediction_dict) > 0:
-            current_stats.last_prediction_date = prediction_dict[1].predictionDate
+            current_stats.last_prediction_date = prediction_dict.popitem()[1].predictionDate
         else:
             current_stats.last_prediction_date = None
 
