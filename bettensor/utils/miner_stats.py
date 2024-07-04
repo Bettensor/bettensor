@@ -109,7 +109,7 @@ class MinerStatsHandler:
             )
             self.miner.db.commit()
 
-    def reset_daily_cash(self):
+    def reset_daily_cash_timed(self):
         """
         This method resets the daily cash of every miner to 1000, executed at 00:00 UTC
         """
@@ -122,6 +122,32 @@ class MinerStatsHandler:
             )
             self.miner.db.commit()
         bt.logging.info("Daily cash reset for all miners")
+
+    def reset_daily_cash_on_startup(self):
+        """
+        This method resets the daily cash of every miner to 1000 if the last_prediction_date is not the current date, executed at 00:00 UTC
+        """
+        bt.logging.debug("reset_daily_cash_on_startup() | Resetting daily cash on startup")
+        current_date = datetime.datetime.now(pytz.utc).date()
+        with self.miner.db_lock:
+            self.miner.cursor.execute("SELECT miner_hotkey, miner_last_prediction_date FROM miner_stats")
+            miners = self.miner.cursor.fetchall()
+            for miner in miners:
+                miner_hotkey = miner[0]
+                last_prediction_date = miner[1]
+                if last_prediction_date is None or last_prediction_date == "":
+                    return
+                # If last_prediction_date is not the current date, reset miner_cash
+                if datetime.datetime.fromisoformat(last_prediction_date).date() != current_date:
+                    self.miner.cursor.execute(
+                        """
+                        UPDATE miner_stats
+                        SET miner_cash = 1000
+                        WHERE miner_hotkey = ?
+                        """, (miner_hotkey,)
+                    )
+                    bt.logging.info(f"Daily cash reset for miner {miner_hotkey}")
+            self.miner.db.commit()
 
         # TODO: trigger miner_stats update query
 
