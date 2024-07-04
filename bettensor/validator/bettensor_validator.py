@@ -974,8 +974,8 @@ class BettensorValidator(BaseNeuron):
                 idx = miner_id_to_index[miner_id]
                 earnings[idx] = total_earned
 
-        bt.logging.info("Miner performance calculated")
-        bt.logging.info(miner_performance)
+        bt.logging.trace("Miner performance calculated")
+        bt.logging.trace(miner_performance)
 
         return earnings
 
@@ -1002,6 +1002,6 @@ class BettensorValidator(BaseNeuron):
             )
             bt.logging.info(f"Printing weights: {weights}")
             if result:
-                bt.logging.success("Successfully set weights.")
+                bt.logging.info("Successfully set weights.")
             else:
                 bt.logging.error("Failed to set weights.")

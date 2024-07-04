@@ -1,7 +1,7 @@
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
-# TODO(developer): Set your name
-# Copyright © 2023 <your name>
+# Copyright © 2023 oneandahalfcats
+# Copyright © 2023 geardici
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the “Software”), to deal in the Software without restriction, including without limitation
@@ -24,10 +24,6 @@ import os
 
 from bettensor.protocol import GameData
 from bettensor.protocol import GameData, Metadata
-import importlib
-import sys
-if 'bettensor.utils.sports_data' in sys.modules:
-    importlib.reload(sys.modules['bettensor.utils.sports_data'])
 
 from bettensor.utils.sports_data import SportsData
 
@@ -71,10 +67,8 @@ def main(validator: BettensorValidator):
             {"id": "4", "season": "2024"}     # Euro Cup
         ]
     }
-    print(f"advailable methods: {dir(sports_data)}")
 
     all_games = sports_data.get_multiple_game_data(sports_config)
-    bt.logging.info("using new system")
     last_api_call = datetime.now()
 
     while True:
