@@ -47,7 +47,7 @@ To mine or validate on this subnet, we recommend starting with a cheap VPS insta
 
 1. Clone the repository:
 ```bash
-   git clone https://github.com/bettensor/bettensor.git
+git clone https://github.com/bettensor/bettensor.git
 ```
 
 2. Update apt-get:
@@ -57,9 +57,9 @@ sudo apt-get update
 
 4. Run the setup script:
 ```bash
-   cd bettensor
-   chmod +x scripts/setup.sh
-   source ./scripts/setup.sh
+cd bettensor
+chmod +x scripts/setup.sh
+source ./scripts/setup.sh
 ```
    - if you want to set up a lite node (recommended), run the command with the flag `source ./scripts/setup.sh --lite-node`
 
@@ -87,13 +87,14 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 
 1. Obtain API key(s) from [this games API](https://rapidapi.com/search/Sports) (currently using API-FOOTBALL and API-BASEBALL).
 
-2. Create a `.env` file in the top-level directory:
-   ```
-   RAPID_API_KEY=<YOUR_API_KEY>
-   ```
+2. Create a `.env` file in the top-level directory: 
+
+```bash
+RAPID_API_KEY=<YOUR_API_KEY>
+ ```
 
 3. Run `source ./scripts/start_neuron.sh` and follow prompts for validator. You can run this script with flags if you prefer not to enter prompts.
-   ```
+
 >[!NOTE]
 > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
 
@@ -103,7 +104,7 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 ## Guide for Miners
 
 1. Run `source ./scripts/start_neuron.sh` and follow prompts for miner. You can run this script with flags if you prefer not to enter prompts.
-   ```
+
 >[!NOTE]
 > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
 
