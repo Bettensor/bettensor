@@ -108,60 +108,66 @@ class SportsData:
         return all_games
 
     def get_game_data(self, sport, league="1", season="2024"):
-        bt.logging.trace(
-            f"Getting game data for sport: {sport}, league: {league}, season: {season}"
-        )
-        dates = [datetime.utcnow().date() + timedelta(days=i) for i in range(7)]
+        bt.logging.trace(f"Getting game data for sport: {sport}, league: {league}, season: {season}")
+        
+        start_date = datetime.utcnow().date()
+        end_date = start_date + timedelta(days=6)  # 7 days total
         all_games = []
 
-        for date in dates:
-            date_str = date.strftime("%Y-%m-%d")
-            if sport == "soccer":
-                url = f"https://{self.api_hosts[sport]}/v3/fixtures"
-                querystring = {"league": league, "season": season, "date": date_str}
-            elif sport == "baseball":
-                url = f"https://{self.api_hosts[sport]}/games"
-                querystring = {"league": league, "season": season, "date": date_str}
-
-            headers = {
-                "X-RapidAPI-Key": self.rapid_api_key,
-                "X-RapidAPI-Host": self.api_hosts[sport],
+        if sport == "soccer":
+            url = f"https://{self.api_hosts[sport]}/v3/fixtures"
+            querystring = {
+                "league": league,
+                "season": season,
+                "from": start_date.strftime("%Y-%m-%d"),
+                "to": end_date.strftime("%Y-%m-%d")
+            }
+        elif sport == "baseball":
+            url = f"https://{self.api_hosts[sport]}/games"
+            querystring = {
+                "league": league,
+                "season": season,
+                "date": f"{start_date.strftime('%Y-%m-%d')}-{end_date.strftime('%Y-%m-%d')}"
             }
 
-            try:
-                response = requests.get(url, headers=headers, params=querystring)
-                response.raise_for_status()  # Ensure we handle HTTP errors properly
-                games = response.json()
-            except requests.exceptions.RequestException as e:
-                print(f"HTTP Request failed: {e}")
-                continue  # Skip to the next date if request fails
-            except json.JSONDecodeError as e:
-                print(f"JSON Decode Error: {e}")
-                continue  # Skip to the next date if JSON parsing fails
+        headers = {
+            "X-RapidAPI-Key": self.rapid_api_key,
+            "X-RapidAPI-Host": self.api_hosts[sport],
+        }
 
-            if "response" not in games:
-                print(f"Unexpected response format: {games}")
-                continue
+        try:
+            response = requests.get(url, headers=headers, params=querystring)
+            response.raise_for_status()
+            games = response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"HTTP Request failed: {e}")
+            return []
+        except json.JSONDecodeError as e:
+            print(f"JSON Decode Error: {e}")
+            return []
 
-            try:
-                games_list = [
-                    {
-                        "home": i["teams"]["home"]["name"],
-                        "away": i["teams"]["away"]["name"],
-                        "game_id": i["fixture"]["id"] if sport == "soccer" else i["id"],
-                        "date": i["fixture"]["date"]
-                        if sport == "soccer"
-                        else i["date"],
-                        "odds": self.get_game_odds(
-                            i["fixture"]["id"] if sport == "soccer" else i["id"], sport
-                        ),
-                    }
-                    for i in games["response"]
-                ]
-            except KeyError as e:
-                print(f"Key Error: {e} in game data: {i}")
-                continue  # Skip to the next date if key error occurs
-            all_games.extend(games_list)
+        if "response" not in games:
+            print(f"Unexpected response format: {games}")
+            return []
+
+        try:
+            games_list = [
+                {
+                    "home": i["teams"]["home"]["name"],
+                    "away": i["teams"]["away"]["name"],
+                    "game_id": i["fixture"]["id"] if sport == "soccer" else i["id"],
+                    "date": i["fixture"]["date"] if sport == "soccer" else i["date"],
+                    "odds": self.get_game_odds(
+                        i["fixture"]["id"] if sport == "soccer" else i["id"], sport
+                    )
+                }
+                for i in games["response"]
+            ]
+        except KeyError as e:
+            print(f"Key Error: {e} in game data")
+            return []
+
+        all_games.extend(games_list)
 
         # Filter games with odds less than 1.05; ensure odds are not None; exclude false odds of 1.5/3.0/1.5
         # RapidAPI has known issues around each of these conditions.
