@@ -19,8 +19,7 @@
 
 from datetime import datetime, timedelta, timezone
 import json
-import typing
-from typing import Optional
+from typing import Optional, Dict
 import uuid
 import bittensor as bt
 import bettensor
@@ -41,20 +40,11 @@ class MinerStats(BaseModel):
     miner_uid: str = Field(..., description="Current UID of the miner")
     miner_rank: int = Field(..., description="Current rank of the miner")
     miner_cash: float = Field(..., description="Current cash of the miner")
-    miner_current_incentive: float = Field(
-        ..., description="Current incentive of the miner"
-    )
-    miner_last_prediction_date: Optional[str] = Field(
-        ..., description="Date of the last prediction of the miner",
-        default=None
-    )
-    miner_lifetime_earnings: float = Field(
-        ..., description="Lifetime earnings of the miner"
-    )
+    miner_current_incentive: float = Field(..., description="Current incentive of the miner")
+    miner_last_prediction_date: Optional[str] = Field(None, description="Date of the last prediction of the miner")
+    miner_lifetime_earnings: float = Field(..., description="Lifetime earnings of the miner")
     miner_lifetime_wager: float = Field(..., description="Lifetime wager of the miner")
-    miner_lifetime_predictions: int = Field(
-        ..., description="Lifetime predictions of the miner"
-    )
+    miner_lifetime_predictions: int = Field(..., description="Lifetime predictions of the miner")
     miner_lifetime_wins: int = Field(..., description="Lifetime wins of the miner")
     miner_lifetime_losses: int = Field(..., description="Lifetime losses of the miner")
     miner_win_loss_ratio: float = Field(..., description="Win loss ratio of the miner")
