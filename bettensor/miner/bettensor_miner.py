@@ -63,9 +63,7 @@ class BettensorMiner(BaseNeuron):
 
         args = parser.parse_args()
 
-        self.db_path = args.db_path
-        os.environ[f'MINER_{self.miner_uid}_DB_PATH'] = self.db_path
-        self.db_manager = get_db_manager(self.miner_uid)
+        
 
         # TODO If users want to run a dual miner/vali. Not fully implemented yet.
         if args.miner_set_weights == "False":
@@ -81,6 +79,10 @@ class BettensorMiner(BaseNeuron):
         self.hotkey_blacklisted = False
         self.hotkey = self.wallet.hotkey.ss58_address
         
+        self.db_path = args.db_path
+        os.environ[f'MINER_{self.miner_uid}_DB_PATH'] = self.db_path
+        self.db_manager = get_db_manager(self.miner_uid)
+
         os.environ["DB_PATH"] = self.db_path
         os.environ["HOTKEY"] = self.wallet.hotkey.ss58_address
         os.environ["UID"] = str(self.miner_uid)
