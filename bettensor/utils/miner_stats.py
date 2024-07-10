@@ -25,6 +25,7 @@ class MinerStatsHandler:
         self.db_manager = miner.db_manager
         self.queue = queue.Queue()
         self.thread = Thread(target=self._run, daemon=True)
+        self.create_table()  # Create table on initialization
         self.thread.start()
 
     def _run(self):
