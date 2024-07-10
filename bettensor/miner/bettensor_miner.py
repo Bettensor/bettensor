@@ -657,67 +657,67 @@ class BettensorMiner(BaseNeuron):
             game_dict[game[0]] = single_game
         return game_dict
 
-def update_outcomes(self):
-    bt.logging.info("update_outcomes() | Updating outcomes for all predictions and recalculating miner stats")
-    prediction_dict = self.get_predictions()
-    game_dict = self.get_games()
+    def update_outcomes(self):
+        bt.logging.info("update_outcomes() | Updating outcomes for all predictions and recalculating miner stats")
+        prediction_dict = self.get_predictions()
+        game_dict = self.get_games()
 
-    current_stats = self.stats.return_miner_stats(self.hotkey)
-    for prediction_id, prediction in prediction_dict.items():
-        if prediction.teamGameID in game_dict:
-            outcome = game_dict[prediction.teamGameID].outcome
-            if outcome == "Unfinished":
-                continue
-            if outcome == 0:
-                #teamA wins
-                if prediction.predictedOutcome == prediction.teamA:
-                    prediction.outcome = "Win"
-                    current_stats.miner_lifetime_wins += 1
-                    current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamAodds
-                elif prediction.predictedOutcome == 1:
-                    prediction.outcome = "Loss"
-                    current_stats.miner_lifetime_losses += 1
-            elif outcome == 1:
-                #teamB wins
-                if prediction.predictedOutcome == prediction.teamB:
-                    prediction.outcome = "Win"
-                    current_stats.miner_lifetime_wins += 1
-                    current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamBodds
-                elif prediction.predictedOutcome == 0:
-                    prediction.outcome = "Loss"
-                    current_stats.miner_lifetime_losses += 1
-            elif outcome == 2:
-                #tie
-                if prediction.predictedOutcome == "Tie":
-                    prediction.outcome = "Win"
-                    current_stats.miner_lifetime_wins += 1
-                    current_stats.miner_lifetime_earnings += prediction.wager * prediction.tieOdds
-                elif prediction.predictedOutcome == 0 or prediction.predictedOutcome == 1:
-                    prediction.outcome = "Loss"
-                    current_stats.miner_lifetime_losses += 1
+        current_stats = self.stats.return_miner_stats(self.hotkey)
+        for prediction_id, prediction in prediction_dict.items():
+            if prediction.teamGameID in game_dict:
+                outcome = game_dict[prediction.teamGameID].outcome
+                if outcome == "Unfinished":
+                    continue
+                if outcome == 0:
+                    #teamA wins
+                    if prediction.predictedOutcome == prediction.teamA:
+                        prediction.outcome = "Win"
+                        current_stats.miner_lifetime_wins += 1
+                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamAodds
+                    elif prediction.predictedOutcome == 1:
+                        prediction.outcome = "Loss"
+                        current_stats.miner_lifetime_losses += 1
+                elif outcome == 1:
+                    #teamB wins
+                    if prediction.predictedOutcome == prediction.teamB:
+                        prediction.outcome = "Win"
+                        current_stats.miner_lifetime_wins += 1
+                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamBodds
+                    elif prediction.predictedOutcome == 0:
+                        prediction.outcome = "Loss"
+                        current_stats.miner_lifetime_losses += 1
+                elif outcome == 2:
+                    #tie
+                    if prediction.predictedOutcome == "Tie":
+                        prediction.outcome = "Win"
+                        current_stats.miner_lifetime_wins += 1
+                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.tieOdds
+                    elif prediction.predictedOutcome == 0 or prediction.predictedOutcome == 1:
+                        prediction.outcome = "Loss"
+                        current_stats.miner_lifetime_losses += 1
 
-    #recalculate ratio
-    total_games = current_stats.miner_lifetime_wins + current_stats.miner_lifetime_losses
-    
-    if total_games == 0:
-        current_stats.miner_win_loss_ratio = 0  # No games played
-    else:
-        current_stats.miner_win_loss_ratio = current_stats.miner_lifetime_wins / total_games
+        #recalculate ratio
+        total_games = current_stats.miner_lifetime_wins + current_stats.miner_lifetime_losses
+        
+        if total_games == 0:
+            current_stats.miner_win_loss_ratio = 0  # No games played
+        else:
+            current_stats.miner_win_loss_ratio = current_stats.miner_lifetime_wins / total_games
 
-    # Round to 3 decimal places for precision
-    current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
+        # Round to 3 decimal places for precision
+        current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
 
-    # Get most recent prediction date from prediction dict
-    bt.logging.trace(f"update_outcomes() | Prediction dict: {prediction_dict}")
+        # Get most recent prediction date from prediction dict
+        bt.logging.trace(f"update_outcomes() | Prediction dict: {prediction_dict}")
 
-    if prediction_dict:
-        current_stats.miner_last_prediction_date = max(
-            prediction.predictionDate for prediction in prediction_dict.values()
-        )
-    else:
-        current_stats.miner_last_prediction_date = None
+        if prediction_dict:
+            current_stats.miner_last_prediction_date = max(
+                prediction.predictionDate for prediction in prediction_dict.values()
+            )
+        else:
+            current_stats.miner_last_prediction_date = None
 
-    self.stats.update_miner_row(current_stats)
+        self.stats.update_miner_row(current_stats)
     
    
     
