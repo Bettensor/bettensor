@@ -355,9 +355,6 @@ class BettensorMiner(BaseNeuron):
                 f"Received a synapse from a validator with lower subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version})."
             )
 
-        # Verify schema
-        # self.print_table_schema()
-
         # TODO: METADATA / Signature Verification
 
         game_data_dict = synapse.gamedata_dict
@@ -365,10 +362,10 @@ class BettensorMiner(BaseNeuron):
 
         # check if tables in db are initialized
         # if not, initialize them
-
-        self.cursor.execute("SELECT * FROM games")
-        if not self.cursor.fetchone():
-            self.initialize_database()
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM games")
+            if not cursor.fetchone():
+                self.initialize_database()
 
         # clean up games table and set active field
         self.update_games_data()
@@ -384,15 +381,13 @@ class BettensorMiner(BaseNeuron):
         
 
         # Fetch games that have not started yet
-        self.cursor.execute(
-            "SELECT externalID FROM games WHERE eventStartDate > ?", (current_time,)
-        )
-        games = self.cursor.fetchall()
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(
+                "SELECT externalID FROM games WHERE eventStartDate > ?", (current_time,)
+            )
+            games = cursor.fetchall()
 
         bt.logging.debug(f"Fetched {len(games)} games")
-
-        # Log the fetched games
-        # bt.logging.info(f"Fetched games: {games}")
 
         # Process the fetched games
         bt.logging.info(f"Processing recent predictions")
@@ -402,10 +397,11 @@ class BettensorMiner(BaseNeuron):
             external_game_id = game[0]
             bt.logging.trace(f"Processing Predictions: Game ID: {external_game_id}")
             # Fetch predictions for the game
-            self.cursor.execute(
-                "SELECT * FROM predictions WHERE teamGameID = ?", (external_game_id,)
-            )
-            predictions = self.cursor.fetchall()
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM predictions WHERE teamGameID = ?", (external_game_id,)
+                )
+                predictions = cursor.fetchall()
             bt.logging.trace(f"Predictions: {predictions}")
 
             # Add predictions to prediction_dict
