@@ -73,42 +73,43 @@ class MinerStatsHandler:
             cursor.connection.commit()
         bt.logging.info("miner_stats table created or already exists")
 
-    def update_miner_row(self, stats: MinerStats):
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute(
-                """UPDATE miner_stats SET
-                miner_coldkey = ?,
-                miner_uid = ?,
-                miner_rank = ?,
-                miner_cash = ?,
-                miner_current_incentive = ?,
-                miner_last_prediction_date = ?,
-                miner_lifetime_earnings = ?,
-                miner_lifetime_wager = ?,
-                miner_lifetime_predictions = ?,
-                miner_lifetime_wins = ?,
-                miner_lifetime_losses = ?,
-                miner_win_loss_ratio = ?,
-                miner_status = ?
-                WHERE miner_hotkey = ?""",
-                (
-                    stats.miner_coldkey,
-                    stats.miner_uid,
-                    stats.miner_rank,
-                    stats.miner_cash,
-                    stats.miner_current_incentive,
-                    stats.miner_last_prediction_date,
-                    stats.miner_lifetime_earnings,
-                    stats.miner_lifetime_wager,
-                    stats.miner_lifetime_predictions,
-                    stats.miner_lifetime_wins,
-                    stats.miner_lifetime_losses,
-                    stats.miner_win_loss_ratio,
-                    stats.miner_status,
-                    stats.miner_hotkey
-                )
-            )
-            cursor.connection.commit()
+    def update_miner_row(self, miner_stats: MinerStats):
+        try:
+            with self.miner.db_manager.get_cursor() as cursor:
+                cursor.execute("""
+                    UPDATE miner_stats
+                    SET miner_rank = ?,
+                        miner_cash = ?,
+                        miner_current_incentive = ?,
+                        miner_last_prediction_date = ?,
+                        miner_lifetime_earnings = ?,
+                        miner_lifetime_wager = ?,
+                        miner_lifetime_predictions = ?,
+                        miner_lifetime_wins = ?,
+                        miner_lifetime_losses = ?,
+                        miner_win_loss_ratio = ?,
+                        miner_status = ?
+                    WHERE miner_hotkey = ?
+                """, (
+                    miner_stats.miner_rank,
+                    miner_stats.miner_cash,
+                    miner_stats.miner_current_incentive,
+                    miner_stats.miner_last_prediction_date,
+                    miner_stats.miner_lifetime_earnings,
+                    miner_stats.miner_lifetime_wager,
+                    miner_stats.miner_lifetime_predictions,
+                    miner_stats.miner_lifetime_wins,
+                    miner_stats.miner_lifetime_losses,
+                    miner_stats.miner_win_loss_ratio,
+                    miner_stats.miner_status,
+                    miner_stats.miner_hotkey
+                ))
+                cursor.connection.commit()
+            bt.logging.info(f"Updated miner stats for {miner_stats.miner_hotkey}")
+            return True
+        except Exception as e:
+            bt.logging.error(f"Failed to update miner stats: {e}")
+            return False
 
     def reset_daily_cash_timed(self):
         """

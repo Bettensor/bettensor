@@ -20,6 +20,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 import typing
+from typing import Optional
 import uuid
 import bittensor as bt
 import bettensor
@@ -43,8 +44,9 @@ class MinerStats(BaseModel):
     miner_current_incentive: float = Field(
         ..., description="Current incentive of the miner"
     )
-    miner_last_prediction_date: str = Field(
-        ..., description="Date of the last prediction of the miner"
+    miner_last_prediction_date: Optional[str] = Field(
+        ..., description="Date of the last prediction of the miner",
+        default=None
     )
     miner_lifetime_earnings: float = Field(
         ..., description="Lifetime earnings of the miner"
