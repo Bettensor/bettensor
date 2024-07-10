@@ -514,21 +514,22 @@ class BettensorMiner(BaseNeuron):
                     bt.logging.trace("update_games_data() | Start Date is None, passing")
                     continue
                 
-                event_start_date = datetime.datetime.fromisoformat(game[10])
+                event_start_date = datetime.datetime.fromisoformat(game[10].replace('Z', '+00:00'))
 
-                if datetime.datetime.now(datetime.timezone.utc) > event_start_date:
+                current_time = datetime.datetime.now(datetime.timezone.utc)
+                if current_time > event_start_date:
                     cursor.execute(
                         "UPDATE games SET active = 1 WHERE gameID = ?", (game[0],)
                     )
                     bt.logging.trace(f"update_games_data() | Game {game[0]} is now active")
 
-                if datetime.datetime.now(datetime.timezone.utc) > event_start_date + datetime.timedelta(days=3):
+                if current_time > event_start_date + datetime.timedelta(days=3):
                     cursor.execute("DELETE FROM games WHERE gameID = ?", (game[0],))
                     bt.logging.trace(
                         f"update_games_data() | Game {game[0]} is deleted from db"
                     )
 
-                if datetime.datetime.now(datetime.timezone.utc) < event_start_date:
+                if current_time < event_start_date:
                     cursor.execute(
                         "UPDATE games SET active = 0 WHERE gameID = ?", (game[0],)
                     )
@@ -572,7 +573,6 @@ class BettensorMiner(BaseNeuron):
                             LIMIT 1
                         )
                     """, (external_id, external_id))
-                #TODO: find and remove duplicate predictions
 
                 cursor.execute("""
                     SELECT teamGameID, COUNT(*) as count
@@ -585,16 +585,16 @@ class BettensorMiner(BaseNeuron):
                 for team_game_id, count in prediction_duplicates:
                     bt.logging.debug(f"Found {count} duplicates for teamGameID: {team_game_id}")
                 
-                cursor.execute("""
-                    DELETE FROM predictions
-                    WHERE teamGameID = ? AND rowid NOT IN (
-                        SELECT rowid
-                        FROM predictions
-                        WHERE teamGameID = ?
-                        ORDER BY lastUpdateDate DESC
-                        LIMIT 1
-                    )
-                """, (team_game_id, team_game_id))
+                    cursor.execute("""
+                        DELETE FROM predictions
+                        WHERE teamGameID = ? AND rowid NOT IN (
+                            SELECT rowid
+                            FROM predictions
+                            WHERE teamGameID = ?
+                            ORDER BY predictionDate DESC
+                            LIMIT 1
+                        )
+                    """, (team_game_id, team_game_id))
 
                 cursor.connection.commit()
             bt.logging.trace(f"Removed {len(duplicates)} sets of duplicate games")
