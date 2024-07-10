@@ -177,9 +177,9 @@ class GameData(bt.Synapse):
     This class defines the synapse object for game data, consisting of a dictionary of TeamGame objects with a UUID as key.
     """
 
-    metadata: typing.Optional[Metadata]
-    gamedata_dict: typing.Optional[typing.Dict[str, TeamGame]]
-    prediction_dict: typing.Optional[typing.Dict[str, TeamGamePrediction]]
+    metadata: Optional[Metadata]
+    gamedata_dict: Optional[Dict[str, TeamGame]]
+    prediction_dict: Optional[Dict[str, TeamGamePrediction]]
 
     @classmethod
     def create(
