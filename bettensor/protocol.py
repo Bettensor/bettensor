@@ -189,7 +189,7 @@ class GameData(bt.Synapse):
         subnet_version,
         neuron_uid,
         synapse_type: str,
-        prediction_dict: typing.Dict[str, TeamGamePrediction] = None,
+        prediction_dict: Dict[str, TeamGamePrediction] = None,
     ):
         metadata = Metadata.create(
             wallet=wallet,
@@ -209,7 +209,7 @@ class GameData(bt.Synapse):
         )
 
     @staticmethod
-    def fetch_game_data(current_timestamp, db_path) -> typing.Dict[str, TeamGame]:
+    def fetch_game_data(current_timestamp, db_path) -> Dict[str, TeamGame]:
         connection = sqlite3.connect(db_path)
         cursor = connection.cursor()
 
