@@ -24,6 +24,7 @@ import threading  # Import threading for non-blocking delay
 from prompt_toolkit.layout.containers import Window, HSplit
 import logging
 import os
+from bettensor.utils.database_manager import get_db_manager
 
 log_dir = "./logs"
 if not os.path.exists(log_dir):
@@ -49,12 +50,13 @@ global_style = Style.from_dict(
 class Application:
     def __init__(self):
         parser = ArgumentParser()
-        # User must specify by UID.
         parser.add_argument("--uid", type=str, default=None, help="UID of miner")
         args = parser.parse_args()
 
-        if args.uid:
-            self.miner_uid = args.uid
+        self.miner_uid = args.uid
+        self.db_manager = get_db_manager(self.miner_uid)
+
+        if self.miner_uid:
             with open("data/miner_env.txt", "r") as f:
                 for line in f:
                     parts = line.strip().split(", ")
@@ -76,10 +78,9 @@ class Application:
             f"Miner UID: {self.miner_uid}, Miner Hotkey: {self.miner_hotkey}, DB Path: {self.db_path}"
         )
 
-        self.db, self.cursor = get_database(self.db_path)
-        self.predictions = get_predictions(self.cursor)
-        self.games = get_game_data(self.cursor)
-        self.miner_stats = get_miner_stats(self.cursor, self.miner_uid)
+        self.predictions = self.get_predictions()
+        self.games = self.get_game_data()
+        self.miner_stats = self.get_miner_stats(self.miner_uid)
         
         if self.miner_stats is None:
             print(f"No miner stats found for UID: {self.miner_uid}. Initializing with default values.")
@@ -99,11 +100,7 @@ class Application:
                 "miner_current_incentive": 0,
             }
             # Insert these default stats into the database
-            columns = ", ".join(self.miner_stats.keys())
-            placeholders = ", ".join("?" * len(self.miner_stats))
-            values = tuple(self.miner_stats.values())
-            self.cursor.execute(f"INSERT INTO miner_stats ({columns}) VALUES ({placeholders})", values)
-            self.db.commit()
+            self.insert_miner_stats(self.miner_stats)
 
         self.active_games = {}
         self.unsubmitted_predictions = {}
@@ -115,8 +112,8 @@ class Application:
         self.check_db_init()
 
     def reload_data(self):
-        self.predictions = get_predictions(self.cursor)
-        self.games = get_game_data(self.cursor)
+        self.predictions = self.get_predictions()
+        self.games = self.get_game_data()
 
     def change_view(self, new_view):
         self.current_view = new_view
@@ -134,24 +131,106 @@ class Application:
 
     def check_db_init(self):
         try:
-            self.cursor.execute("SELECT * FROM predictions")
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("SELECT * FROM predictions")
         except Exception as e:
             print(e)
             print("Database not initialized properly, restart your miner first")
 
-        """ miner_stats = {
-        "miner_hotkey": "1234567890",
-        "miner_coldkey": "1234567890",
-        "miner_cash": 750,
-        "miner_status": "active",
-        "miner_last_wager": "2024-06-08 12:00:00",
-        "miner_lifetime_earnings": 2756,
-        "miner_lifetime_wins": 6,
-        "miner_lifetime_losses": 3,
-        "miner_win_loss_ratio": 0.66666666666666666,
-        "miner_rank": 1,
-        "last_reward": 1.5
-        """
+    def submit_predictions(self):
+        with self.db_manager.get_cursor() as cursor:
+            for prediction in self.unsubmitted_predictions.values():
+                cursor.execute(
+                    """INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        prediction["predictionID"],
+                        prediction["teamGameID"],
+                        prediction["minerID"],
+                        prediction["predictionDate"],
+                        prediction["teamA"],
+                        prediction["teamB"],
+                        prediction["teamAodds"],
+                        prediction["teamBodds"],
+                        prediction["tieOdds"],
+                        prediction["predictedOutcome"],
+                        prediction["wager"],
+                        prediction["outcome"],
+                        prediction["canOverwrite"],
+                    ),
+                )
+            cursor.connection.commit()
+
+    def get_predictions(self):
+        predictions = {}
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM predictions")
+            columns = [column[0] for column in cursor.description]
+            for row in cursor.fetchall():
+                predictions[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
+        return predictions
+
+    def get_game_data(self):
+        game_data = {}
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM games WHERE active = 0")
+            columns = [column[0] for column in cursor.description]
+            for row in cursor.fetchall():
+                game_data[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
+        return game_data
+
+    def get_miner_stats(self, uid=None):
+        logging.info(f"Getting miner stats for uid: {uid}")
+
+        if uid is not None:
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = ?", (str(uid),))
+                columns = [column[0] for column in cursor.description]
+                row = cursor.fetchone()
+                if row is None:
+                    logging.warning(f"No miner stats found for uid: {uid}")
+                    return None
+                miner_stats = {columns[i]: row[i] for i in range(len(columns))}
+                logging.info(f"Miner stats: {miner_stats}")
+                return miner_stats
+        else:
+            logging.error("No UID specified")
+            return None
+
+    def insert_miner_stats(self, stats):
+        columns = ", ".join(stats.keys())
+        placeholders = ", ".join("?" * len(stats))
+        values = tuple(stats.values())
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(f"INSERT INTO miner_stats ({columns}) VALUES ({placeholders})", values)
+            cursor.connection.commit()
+
+    def update_miner_stats(self, wager, prediction_date, miner_uid):
+        logging.info(f"Updating miner stats for miner_uid: {miner_uid}")
+        logging.debug(f"Miner stats: {self.miner_stats}")
+        new_miner_cash = self.miner_stats["miner_cash"] - wager
+        new_miner_last_prediction_date = prediction_date
+        new_miner_lifetime_wager = self.miner_stats["miner_lifetime_wager"] + wager
+        new_miner_lifetime_predictions = self.miner_stats["miner_lifetime_predictions"] + 1
+
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(
+                """UPDATE miner_stats SET miner_cash = ?,
+                                miner_last_prediction_date = ?, 
+                                miner_lifetime_wager = ?, 
+                                miner_lifetime_predictions = ? 
+                                WHERE miner_uid = ?""",
+                (
+                    new_miner_cash,
+                    new_miner_last_prediction_date,
+                    new_miner_lifetime_wager,
+                    new_miner_lifetime_predictions,
+                    miner_uid,
+                ),
+            )
+            cursor.connection.commit()
+        self.miner_stats = self.get_miner_stats(miner_uid)
+        logging.info(f"Updated miner stats: {self.miner_stats}")
 
 
 class InteractiveTable:
@@ -807,123 +886,6 @@ def signal_handler(signal, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
-
-
-def submit_predictions(app):
-    for prediction in app.unsubmitted_predictions.values():
-        try:
-            app.cursor.execute(
-                """INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    prediction["predictionID"],
-                    prediction["teamGameID"],
-                    prediction["minerID"],
-                    prediction["predictionDate"],
-                    prediction["teamA"],
-                    prediction["teamB"],
-                    prediction["teamAodds"],
-                    prediction["teamBodds"],
-                    prediction["tieOdds"],
-                    prediction["predictedOutcome"],
-                    prediction["wager"],
-                    prediction["outcome"],
-                    prediction["canOverwrite"],
-                ),
-            )
-            app.db.commit()
-            logging.debug(f"miner_uid: {app.miner_stats['miner_uid']}")
-            update_miner_stats(
-                app,
-                prediction["wager"],
-                prediction["predictionDate"],
-                app.miner_stats["miner_uid"],
-            )
-
-        except Exception as e:
-            logging.error(f"Failed to submit prediction: {e}")
-            print(f"Failed to submit prediction: {e}")
-            print(f"Stacktrace: {traceback.format_exc()}")
-            # Print error to console for immediate feedback
-    # clear unsubmitted_predictions
-    app.unsubmitted_predictions = {}
-
-
-def update_miner_stats(app, wager, prediction_date, miner_uid):
-    # get miner_stats
-    logging.info(f"Updating miner stats for miner_uid: {miner_uid}")
-    logging.debug(f"Miner stats: {app.miner_stats}")
-    new_miner_cash = app.miner_stats["miner_cash"] - wager
-    new_miner_last_prediction_date = prediction_date
-    new_miner_lifetime_wager = app.miner_stats["miner_lifetime_wager"] + wager
-    new_miner_lifetime_predictions = app.miner_stats["miner_lifetime_predictions"] + 1
-
-    app.cursor.execute(
-        """UPDATE miner_stats SET miner_cash = ?,
-                        miner_last_prediction_date = ?, 
-                        miner_lifetime_wager = ?, 
-                        miner_lifetime_predictions = ? 
-                        WHERE miner_uid = ?""",
-        (
-            new_miner_cash,
-            new_miner_last_prediction_date,
-            new_miner_lifetime_wager,
-            new_miner_lifetime_predictions,
-            miner_uid,
-        ),
-    )
-    app.db.commit()
-    app.miner_stats = get_miner_stats(app.cursor, miner_uid)
-    logging.info(f"Updated miner stats: {app.miner_stats}")
-
-
-def get_database(db_path):
-    try:
-        db = sqlite3.connect(db_path)
-        return db, db.cursor()
-    except Exception as e:
-        print(f"Failed to get database: {e}")
-        return None, None
-
-
-def get_predictions(cursor):
-    predictions = {}
-    cursor.execute("SELECT * FROM predictions")
-    columns = [
-        column[0] for column in cursor.description
-    ]  # Get column names from the cursor description
-    for row in cursor.fetchall():
-        predictions[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
-    return predictions
-
-
-def get_game_data(cursor):
-    game_data = {}
-    cursor.execute("SELECT * FROM games WHERE active = 0")
-    columns = [
-        column[0] for column in cursor.description
-    ]  # Get column names from the cursor description
-    for row in cursor.fetchall():
-        game_data[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
-    return game_data
-
-
-def get_miner_stats(cursor, uid=None):
-    logging.info(f"Getting miner stats for uid: {uid}")
-
-    if uid is not None:
-        cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = ?", (str(uid),))
-        columns = [column[0] for column in cursor.description]
-        row = cursor.fetchone()
-        if row is None:
-            logging.warning(f"No miner stats found for uid: {uid}")
-            return None
-        miner_stats = {columns[i]: row[i] for i in range(len(columns))}
-        logging.info(f"Miner stats: {miner_stats}")
-        return miner_stats
-    else:
-        logging.error("No UID specified")
-        return None
 
 
 if __name__ == "__main__":

@@ -130,6 +130,10 @@ while [[ $# -gt 0 ]]; do
             DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.chain_endpoint $2"
             shift 2
             ;;
+        --interface)
+            INTERFACE_TYPE="$2"
+            shift 2
+            ;;
         *)
             DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS $1"
             shift
@@ -192,6 +196,28 @@ if [ "$DISABLE_AUTO_UPDATE" = "false" ]; then
     prompt_yes_no "Do you want to disable auto-update? Warning: this will apply to all running neurons" "DISABLE_AUTO_UPDATE"
 fi
 
+# Prompt for interface type if not specified
+if [ -z "$INTERFACE_TYPE" ]; then
+    prompt_interface_type
+fi
+
+# Validate interface type
+case $INTERFACE_TYPE in
+    local)
+        INTERFACE_ENV="LOCAL_INTERFACE=True CENTRAL_SERVER=False"
+        ;;
+    central)
+        INTERFACE_ENV="LOCAL_INTERFACE=False CENTRAL_SERVER=True"
+        ;;
+    *)
+        echo "Invalid interface type: $INTERFACE_TYPE. Using local interface."
+        INTERFACE_ENV="LOCAL_INTERFACE=True CENTRAL_SERVER=False"
+        ;;
+esac
+
+# Start the miner interface server
+pm2 start bettensor/utils/miner_interface_server.py --name miner_interface_server --interpreter python3 -- --env $INTERFACE_ENV
+
 # Generate a unique name for this instance
 INSTANCE_NUMBER=$(get_next_instance_number $NEURON_TYPE)
 INSTANCE_NAME="${NEURON_TYPE}${INSTANCE_NUMBER}"
@@ -219,5 +245,3 @@ echo "Starting $NEURON_TYPE with arguments: $DEFAULT_NEURON_ARGS"
 pm2 start --name "$INSTANCE_NAME" python -- neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
 
 echo "$NEURON_TYPE started successfully with instance name: $INSTANCE_NAME"
-
-

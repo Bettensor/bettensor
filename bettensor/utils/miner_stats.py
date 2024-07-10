@@ -22,10 +22,10 @@ class MinerStatsHandler:
 
     def __init__(self, miner):
         self.miner = miner
+        self.db_manager = miner.db_manager
         self.queue = queue.Queue()
         self.thread = Thread(target=self._run, daemon=True)
         self.thread.start()
-        self.create_table()  # Add this line to create the table on initialization
 
     def _run(self):
         while True:
@@ -50,8 +50,8 @@ class MinerStatsHandler:
         """
         Creates the miner_stats table if it doesn't exist.
         """
-        with self.miner.db_lock:
-            self.miner.cursor.execute("""
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("""
             CREATE TABLE IF NOT EXISTS miner_stats (
                 miner_hotkey TEXT PRIMARY KEY,
                 miner_coldkey TEXT,
@@ -69,12 +69,12 @@ class MinerStatsHandler:
                 miner_status TEXT
             )
             """)
-            self.miner.db.commit()
+            cursor.connection.commit()
         bt.logging.info("miner_stats table created or already exists")
 
     def update_miner_row(self, stats: MinerStats):
-        with self.miner.db_lock:
-            self.miner.cursor.execute(
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(
                 """UPDATE miner_stats SET
                 miner_coldkey = ?,
                 miner_uid = ?,
@@ -107,20 +107,19 @@ class MinerStatsHandler:
                     stats.miner_hotkey
                 )
             )
-            self.miner.db.commit()
+            cursor.connection.commit()
 
     def reset_daily_cash_timed(self):
         """
         This method resets the daily cash of every miner to 1000, executed at 00:00 UTC
         """
-        with self.miner.db_lock:
-            self.miner.cursor.execute(
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(
                 """
             UPDATE miner_stats
             SET miner_cash = 1000
-            """
-            )
-            self.miner.db.commit()
+            """)
+            cursor.connection.commit()
         bt.logging.info("Daily cash reset for all miners")
 
     def reset_daily_cash_on_startup(self):
@@ -129,9 +128,9 @@ class MinerStatsHandler:
         """
         bt.logging.debug("reset_daily_cash_on_startup() | Resetting daily cash on startup")
         current_date = datetime.datetime.now(pytz.utc).date()
-        with self.miner.db_lock:
-            self.miner.cursor.execute("SELECT miner_hotkey, miner_last_prediction_date FROM miner_stats")
-            miners = self.miner.cursor.fetchall()
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT miner_hotkey, miner_last_prediction_date FROM miner_stats")
+            miners = cursor.fetchall()
             for miner in miners:
                 miner_hotkey = miner[0]
                 last_prediction_date = miner[1]
@@ -139,7 +138,7 @@ class MinerStatsHandler:
                     return
                 # If last_prediction_date is not the current date, reset miner_cash
                 if datetime.datetime.fromisoformat(last_prediction_date).date() != current_date:
-                    self.miner.cursor.execute(
+                    cursor.execute(
                         """
                         UPDATE miner_stats
                         SET miner_cash = 1000
@@ -147,7 +146,7 @@ class MinerStatsHandler:
                         """, (miner_hotkey,)
                     )
                     bt.logging.info(f"Daily cash reset for miner {miner_hotkey}")
-            self.miner.db.commit()
+            cursor.connection.commit()
 
         # TODO: trigger miner_stats update query
 
@@ -176,17 +175,17 @@ class MinerStatsHandler:
         miner_win_loss_ratio = 0
         miner_status = "active"
 
-        with self.miner.db_lock:
-            self.miner.cursor.execute(
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(
                 """
         SELECT * FROM miner_stats
         WHERE miner_hotkey = ?
         """,
                 (miner_hotkey,),
             )
-            if self.miner.cursor.fetchone():
+            if cursor.fetchone():
                 #update UID if necessary
-                self.miner.cursor.execute(
+                cursor.execute(
                     """
                         UPDATE miner_stats
                         SET miner_uid = ?
@@ -194,12 +193,12 @@ class MinerStatsHandler:
                         """,
                         (miner_uid, miner_hotkey),
                         )
-                self.miner.db.commit()
+                cursor.connection.commit()
                 return True
             else:
                 pass
 
-            self.miner.cursor.execute(
+            cursor.execute(
                 """
         INSERT INTO miner_stats VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
@@ -220,7 +219,7 @@ class MinerStatsHandler:
                     miner_status,
                 ),
             )
-            self.miner.db.commit()
+            cursor.connection.commit()
 
         return True
     
@@ -232,15 +231,15 @@ class MinerStatsHandler:
         """
         This method returns the miner row from the database as a MinerStats object, using the create method from the MinerStats class
         """
-        with self.miner.db_lock:
-            self.miner.cursor.execute(
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(
                 """
         SELECT * FROM miner_stats
         WHERE miner_hotkey = ?
         """,
                 (miner_hotkey,),
             )
-            row = self.miner.cursor.fetchone()
+            row = cursor.fetchone()
 
             return MinerStats.create(row)
 
