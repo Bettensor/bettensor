@@ -385,15 +385,15 @@ class PredictionsList(InteractiveTable):
             max_date_len = len("Prediction Date")
         else:
             # Calculate maximum widths for each column
-            max_teamA_len = max(len(pred["teamA"]) for pred in self.sorted_predictions)
-            max_teamB_len = max(len(pred["teamB"]) for pred in self.sorted_predictions)
-            max_teamAodds_len = max(len(str(pred["teamAodds"])) for pred in self.sorted_predictions)
-            max_teamBodds_len = max(len(str(pred["teamBodds"])) for pred in self.sorted_predictions)
-            max_tieOdds_len = max(len(str(pred["tieOdds"])) for pred in self.sorted_predictions)
-            max_prediction_len = max(len(pred["predictedOutcome"]) for pred in self.sorted_predictions)
-            max_wager_amount_len = max(len(str(pred["wager"])) for pred in self.sorted_predictions)
-            max_outcome_len = max(len(str(pred["outcome"])) for pred in self.sorted_predictions)
-            max_date_len = max(len(self.format_prediction_date(pred["predictionDate"])) for pred in self.sorted_predictions)
+            max_teamA_len = max(len("Team A"), max(len(pred["teamA"]) for pred in self.sorted_predictions))
+            max_teamB_len = max(len("Team B"), max(len(pred["teamB"]) for pred in self.sorted_predictions))
+            max_teamAodds_len = max(len("Team A Odds"), max(len(f"{pred['teamAodds']:.2f}") for pred in self.sorted_predictions))
+            max_teamBodds_len = max(len("Team B Odds"), max(len(f"{pred['teamBodds']:.2f}") for pred in self.sorted_predictions))
+            max_tieOdds_len = max(len("Tie Odds"), max(len(f"{pred['tieOdds']:.2f}") for pred in self.sorted_predictions))
+            max_prediction_len = max(len("Prediction"), max(len(pred["predictedOutcome"]) for pred in self.sorted_predictions))
+            max_wager_amount_len = max(len("Wager Amount"), max(len(f"{pred['wager']:.2f}") for pred in self.sorted_predictions))
+            max_outcome_len = max(len("Outcome"), max(len(str(pred["outcome"])) for pred in self.sorted_predictions))
+            max_date_len = max(len("Prediction Date"), max(len(self.format_prediction_date(pred["predictionDate"])) for pred in self.sorted_predictions))
 
         # Define the header with calculated widths
         self.header = Label(
@@ -403,7 +403,7 @@ class PredictionsList(InteractiveTable):
 
         # Generate options for the current page
         self.options = [
-            f"{pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {str(pred['teamAodds']):<{max_teamAodds_len}} | {str(pred['teamBodds']):<{max_teamBodds_len}} | {str(pred['tieOdds']):<{max_tieOdds_len}} | {pred['predictedOutcome']:<{max_prediction_len}} | {str(pred['wager']):<{max_wager_amount_len}} | {str(pred['outcome']):<{max_outcome_len}} | {self.format_prediction_date(pred['predictionDate']):<{max_date_len}}"
+            f"{pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {pred['teamAodds']:<{max_teamAodds_len}.2f} | {pred['teamBodds']:<{max_teamBodds_len}.2f} | {pred['tieOdds']:<{max_tieOdds_len}.2f} | {pred['predictedOutcome']:<{max_prediction_len}} | {pred['wager']:<{max_wager_amount_len}.2f} | {str(pred['outcome']):<{max_outcome_len}} | {self.format_prediction_date(pred['predictionDate']):<{max_date_len}}"
             for pred in self.sorted_predictions[start_idx:end_idx]
         ]
         self.options.append("Go Back")
@@ -707,7 +707,7 @@ class WagerConfirm(InteractiveTable):
                 if wager_amount <= 0 or wager_amount > self.miner_cash:
                     raise ValueError("Invalid wager amount")
                 # Add the prediction to unsubmitted_predictions
-                prediction_id = str(uuid.uuid4())
+                prediction_id = str(uuid.uuid4())  # Generate a new UUID for each prediction
                 self.app.unsubmitted_predictions[prediction_id] = {
                     "predictionID": prediction_id,
                     "teamGameID": self.game_data["externalID"],
