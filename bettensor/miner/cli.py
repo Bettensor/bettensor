@@ -53,21 +53,22 @@ class Application:
         parser.add_argument("--uid", type=str, default=None, help="UID of miner")
         args = parser.parse_args()
         
-        if self.miner_uid:
-            with open("data/miner_env.txt", "r") as f:
-                for line in f:
-                    parts = line.strip().split(", ")
-                    if f"UID={self.miner_uid}" in parts[0]:
-                        self.miner_uid = parts[0].split("=")[1]
-                        self.db_path = parts[1].split("=")[1]
-                        self.miner_hotkey = parts[2].split("=")[1]
-                        break
-        else:
-            print("No UID specified, choosing first miner in list")
-            with open("data/miner_env.txt", "r") as f:
-                line = f.readline().strip()
-                parts = line.split(", ")
-                self.miner_uid = parts[0].split("=")[1]
+        self.miner_uid = args.uid
+
+        with open("data/miner_env.txt", "r") as f:
+            first_line = f.readline().strip()
+            if not self.miner_uid:
+                self.miner_uid = first_line.split(", ")[0].split("=")[1]
+                print(f"No UID specified, using first miner: {self.miner_uid}")
+            
+            for line in f:
+                parts = line.strip().split(", ")
+                if f"UID={self.miner_uid}" in parts[0]:
+                    self.db_path = parts[1].split("=")[1]
+                    self.miner_hotkey = parts[2].split("=")[1]
+                    break
+            else:
+                parts = first_line.split(", ")
                 self.db_path = parts[1].split("=")[1]
                 self.miner_hotkey = parts[2].split("=")[1]
 
@@ -77,7 +78,6 @@ class Application:
 
         
 
-        self.miner_uid = args.uid
         self.db_manager = get_db_manager(self.miner_uid)
 
 
@@ -878,7 +878,7 @@ def graceful_shutdown(app, submit: bool):
     if submit:
         print("Submitting predictions...")
         logging.info("Submitting predictions...")
-        submit_predictions(app)
+        app.submit_predictions()  # Call the method directly on the app instance
     app.app.exit()
 
 
