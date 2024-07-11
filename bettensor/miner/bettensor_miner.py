@@ -396,10 +396,13 @@ class BettensorMiner(BaseNeuron):
             bt.logging.trace(f" Processing Predictions: Game: {game}")
             external_game_id = game[0]
             bt.logging.trace(f"Processing Predictions: Game ID: {external_game_id}")
+
+
+            three_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=3)).isoformat(timespec="minutes")
             # Fetch predictions for the game
             with self.db_manager.get_cursor() as cursor:
                 cursor.execute(
-                    "SELECT * FROM predictions WHERE teamGameID = ?", (external_game_id,)
+                    "SELECT * FROM predictions WHERE teamGameID = ? and predictionDate < ?", (external_game_id, three_days_ago)
                 )
                 predictions = cursor.fetchall()
             bt.logging.trace(f"Predictions: {predictions}")
