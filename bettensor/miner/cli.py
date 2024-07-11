@@ -739,7 +739,7 @@ class WagerConfirm(InteractiveTable):
                     "Wager confirmed! Submitting Prediction to Validators..."
                 )
                 self.update_text_area()
-                submit_predictions(self.app)
+                self.app.submit_predictions()
                 threading.Timer(
                     2.0, lambda: self.app.change_view(self.previous_view)
                 ).start()  # Delay for 2 seconds
