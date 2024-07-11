@@ -148,13 +148,16 @@ prompt_for_input "Enter neuron type (miner/validator)" "miner" "NEURON_TYPE"
 check_existing_neurons
 
 # Prompt for network if not specified
-prompt_for_input "Enter network (local/test/main)" "test" "NETWORK"
+prompt_for_input "Enter network (local/test/finney)" "finney" "NETWORK"
 case $NETWORK in
     test)
         DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network test --netuid 181"
         ;;
-    main)
+    finney)
         DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network finney --netuid 30"
+        ;;
+    local)
+        DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network local --netuid 1 --subtensor.chain_endpoint ws://127.0.0.1:9946"
         ;;
     *)
         DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network $NETWORK"
@@ -173,9 +176,9 @@ DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --wallet.name $WALLET_NAME --wallet.ho
 
 # Prompt for axon port and validator_min_stake if miner and not specified
 if [ "$NEURON_TYPE" = "miner" ]; then
-    prompt_for_input "Enter axon port" "12345" "AXON_PORT"
+    prompt_for_input "Enter axon port (WARNING: make sure to use separate ports for each miner instance!)" "12345" "AXON_PORT"
     AXON_PORT=$(get_available_port $AXON_PORT)
-    prompt_for_input "Enter validator_min_stake" "0" "VALIDATOR_MIN_STAKE"
+    prompt_for_input "Enter validator_min_stake" "1000" "VALIDATOR_MIN_STAKE"
     DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --axon.port $AXON_PORT --validator_min_stake $VALIDATOR_MIN_STAKE"
 fi
 
@@ -245,3 +248,6 @@ echo "Starting $NEURON_TYPE with arguments: $DEFAULT_NEURON_ARGS"
 pm2 start --name "$INSTANCE_NAME" python -- neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
 
 echo "$NEURON_TYPE started successfully with instance name: $INSTANCE_NAME"
+
+# Save the PM2 process list
+pm2 save --force
