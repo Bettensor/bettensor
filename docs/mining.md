@@ -20,7 +20,11 @@ Before you begin, ensure you have the following prerequisites:
 
 - Python 3.8 or higher installed
 - Git installed
-- Basic knowledge of command-line operations
+- Basic knowledge of command-line operations and/or your favorite llm chatbot to guide you along
+
+
+>[!WARNING]
+> This guide is being updated to use the new interfaces. Please ignore any references to the Central Server Interface, for the time being. This functionality is still being developed and will be available in the near future.
 
 Clone the Bettensor repository and install the required dependencies:
 
@@ -50,6 +54,13 @@ pip install -r requirements.txt
 >[!NOTE]
 > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
 
+
+
+
+<details>
+<summary>
+Coming Soon... New Interfaces
+</summary>
 ## Choosing Your Interface
 
 When setting up your miner, you'll be prompted to choose between two interface options:
@@ -76,6 +87,10 @@ The Central Server option connects your miner to our web dashboard, allowing for
 >[!IMPORTANT]
 > The Central Server option provides a more streamlined experience and shows more comprehensive data than the local interface. However, it does require your miner to accept connections from our server.
 
+
+</details>
+
+
 ## Running Your Miner
 
 After setup, your miner will start automatically. You can check the logs to ensure it's running correctly:
@@ -96,13 +111,21 @@ If you chose the Local Interface, use the CLI to submit predictions:
 python bettensor/miner/cli.py
 ```
 
+
+<details>
+<summary>
+Coming Soon... New Interfaces
+</summary>
 ### Central Server
 
-If you chose the Central Server option, log in to our [web dashboard](https://bettensor.com/dashboard) to submit predictions.
+If you chose the Central Server option, log in to our [web dashboard](https://bettensor.com/dashboard) to connect your miner and submit predictions.
+</details>
 
 ## Managing Multiple Miners
 
 ### Local Interface
+
+
 
 When running multiple miners locally, use the `--uid` flag to specify which miner you want to interact with:
 
@@ -129,7 +152,7 @@ If you encounter issues:
 
 1. Check the logs for error messages:
    ```bash
-   pm2 logs miner
+   pm2 logs <miner process name>
    ```
 
 2. Ensure your system meets all prerequisites and dependencies are correctly installed.
