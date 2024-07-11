@@ -46,10 +46,10 @@ def get_db_manager(miner_uid=None):
     use_single_db = os.environ.get('USE_SINGLE_DB', 'True').lower() == 'true'
     
     if use_single_db:
-        db_path = os.environ.get('SINGLE_DB_PATH', './data/bettensor.db')
+        db_path = os.environ.get('SINGLE_DB_PATH', './data/miner.db')
     else:
         if miner_uid is None:
-            db_path = os.environ.get('DEFAULT_DB_PATH', './data/default_miner.db')
+            db_path = os.environ.get('DEFAULT_DB_PATH', './data/miner.db')
         else:
             db_path = os.environ.get(f'MINER_{miner_uid}_DB_PATH', f'./data/miner_{miner_uid}.db')
     
