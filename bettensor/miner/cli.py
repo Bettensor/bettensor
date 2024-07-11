@@ -143,25 +143,28 @@ class Application:
     def submit_predictions(self):
         with self.db_manager.get_cursor() as cursor:
             for prediction in self.unsubmitted_predictions.values():
-                cursor.execute(
-                    """INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        prediction["predictionID"],
-                        prediction["teamGameID"],
-                        prediction["minerID"],
-                        prediction["predictionDate"],
-                        prediction["teamA"],
-                        prediction["teamB"],
-                        prediction["teamAodds"],
-                        prediction["teamBodds"],
-                        prediction["tieOdds"],
-                        prediction["predictedOutcome"],
-                        prediction["wager"],
-                        prediction["outcome"],
-                        prediction["canOverwrite"],
-                    ),
-                )
+                try:
+                    cursor.execute(
+                        """INSERT OR REPLACE INTO predictions (predictionID, teamGameID, minerID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            prediction["predictionID"],
+                            prediction["teamGameID"],
+                            prediction["minerID"],
+                            prediction["predictionDate"],
+                            prediction["teamA"],
+                            prediction["teamB"],
+                            prediction["teamAodds"],
+                            prediction["teamBodds"],
+                            prediction["tieOdds"],
+                            prediction["predictedOutcome"],
+                            prediction["wager"],
+                            prediction["outcome"],
+                            prediction["canOverwrite"],
+                        ),
+                    )
+                except sqlite3.IntegrityError as e:
+                    logging.warning(f"Failed to insert prediction {prediction['predictionID']}: {e}")
             cursor.connection.commit()
 
     def get_predictions(self):
@@ -347,14 +350,29 @@ class PredictionsList(InteractiveTable):
         super().__init__(app)
         app.reload_data()
         self.message = ""
+        self.predictions_per_page = 25
+        self.current_page = 0
+        self.update_sorted_predictions()
+        self.update_total_pages()
         self.update_options()
         self.update_text_area()
 
-    def update_options(self):
-        # Combine predictions and unsubmitted_predictions for formatting calculation
-        all_predictions = self.app.predictions
+    def update_sorted_predictions(self):
+        self.sorted_predictions = sorted(
+            self.app.predictions.values(),
+            key=lambda x: datetime.datetime.fromisoformat(x["predictionDate"]),
+            reverse=True
+        )
 
-        if not all_predictions:
+    def update_total_pages(self):
+        self.total_pages = max(1, (len(self.sorted_predictions) + self.predictions_per_page - 1) // self.predictions_per_page)
+        self.current_page = min(self.current_page, self.total_pages - 1)
+
+    def update_options(self):
+        start_idx = self.current_page * self.predictions_per_page
+        end_idx = min(start_idx + self.predictions_per_page, len(self.sorted_predictions))
+        
+        if not self.sorted_predictions:
             # Set default lengths if there are no predictions
             max_teamA_len = len("Team A")
             max_teamB_len = len("Team B")
@@ -362,74 +380,35 @@ class PredictionsList(InteractiveTable):
             max_teamBodds_len = len("Team B Odds")
             max_tieOdds_len = len("Tie Odds")
             max_prediction_len = len("Prediction")
-            max_status_len = len("Status")
             max_wager_amount_len = len("Wager Amount")
             max_outcome_len = len("Outcome")
+            max_date_len = len("Prediction Date")
         else:
-            # Calculate maximum widths for each column based on data and header
-            max_teamA_len = max(
-                max(len(pred.get("teamA", "")) for pred in all_predictions.values()),
-                len("Team A"),
-            )
-            max_teamB_len = max(
-                max(len(pred.get("teamB", "")) for pred in all_predictions.values()),
-                len("Team B"),
-            )
-            max_teamAodds_len = max(
-                max(
-                    len(str(pred.get("teamAodds", "")))
-                    for pred in all_predictions.values()
-                ),
-                len("Team A Odds"),
-            )
-            max_teamBodds_len = max(
-                max(
-                    len(str(pred.get("teamBodds", "")))
-                    for pred in all_predictions.values()
-                ),
-                len("Team B Odds"),
-            )
-            max_tieOdds_len = max(
-                max(
-                    len(str(pred.get("tieOdds", "")))
-                    for pred in all_predictions.values()
-                ),
-                len("Tie Odds"),
-            )
-            max_prediction_len = max(
-                max(
-                    len(pred.get("predictedOutcome", ""))
-                    for pred in all_predictions.values()
-                ),
-                len("Prediction"),
-            )
-            max_wager_amount_len = max(
-                max(
-                    len(str(pred.get("wager", ""))) for pred in all_predictions.values()
-                ),
-                len("Wager Amount"),
-            )
-            max_outcome_len = max(
-                max(len(pred.get("outcome", "")) for pred in all_predictions.values()),
-                len("Outcome"),
-            )
+            # Calculate maximum widths for each column
+            max_teamA_len = max(len(pred["teamA"]) for pred in self.sorted_predictions)
+            max_teamB_len = max(len(pred["teamB"]) for pred in self.sorted_predictions)
+            max_teamAodds_len = max(len(str(pred["teamAodds"])) for pred in self.sorted_predictions)
+            max_teamBodds_len = max(len(str(pred["teamBodds"])) for pred in self.sorted_predictions)
+            max_tieOdds_len = max(len(str(pred["tieOdds"])) for pred in self.sorted_predictions)
+            max_prediction_len = max(len(pred["predictedOutcome"]) for pred in self.sorted_predictions)
+            max_wager_amount_len = max(len(str(pred["wager"])) for pred in self.sorted_predictions)
+            max_outcome_len = max(len(str(pred["outcome"])) for pred in self.sorted_predictions)
+            max_date_len = max(len(self.format_prediction_date(pred["predictionDate"])) for pred in self.sorted_predictions)
 
         # Define the header with calculated widths
         self.header = Label(
-            f"  {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Team A Odds':<{max_teamAodds_len}} | {'Team B Odds':<{max_teamBodds_len}} | {'Tie Odds':<{max_tieOdds_len}} | {'Prediction':<{max_prediction_len}} | {'Wager Amount':<{max_wager_amount_len}} | {'Outcome':<{max_outcome_len}} ",
+            f"  {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Team A Odds':<{max_teamAodds_len}} | {'Team B Odds':<{max_teamBodds_len}} | {'Tie Odds':<{max_tieOdds_len}} | {'Prediction':<{max_prediction_len}} | {'Wager Amount':<{max_wager_amount_len}} | {'Outcome':<{max_outcome_len}} | {'Prediction Date':<{max_date_len}}",
             style="bold",
         )
 
-        # Generate options for the scrollable list
+        # Generate options for the current page
         self.options = [
-            f"{pred.get('teamA', ''):<{max_teamA_len}} | {pred.get('teamB', ''):<{max_teamB_len}} | {str(pred.get('teamAodds', '')):<{max_teamAodds_len}} | {str(pred.get('teamBodds', '')):<{max_teamBodds_len}} | {str(pred.get('tieOdds', '')):<{max_tieOdds_len}} | {pred.get('predictedOutcome', ''):<{max_prediction_len}} | {str(pred.get('wager', '')):<{max_wager_amount_len}} | {pred.get('outcome', ''):<{max_outcome_len}}"
-            for pred in self.app.predictions.values()
+            f"{pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {str(pred['teamAodds']):<{max_teamAodds_len}} | {str(pred['teamBodds']):<{max_teamBodds_len}} | {str(pred['tieOdds']):<{max_tieOdds_len}} | {pred['predictedOutcome']:<{max_prediction_len}} | {str(pred['wager']):<{max_wager_amount_len}} | {str(pred['outcome']):<{max_outcome_len}} | {self.format_prediction_date(pred['predictionDate']):<{max_date_len}}"
+            for pred in self.sorted_predictions[start_idx:end_idx]
         ]
-
-        self.options.append("Go Back")  # Add "Go Back" option
+        self.options.append("Go Back")
 
     def update_text_area(self):
-        # Update the text area to include the header, divider, options, and space before "Go Back"
         header_text = self.header.text
         divider = "-" * len(header_text)
         if len(self.options) <= 1:  # Only "Go Back" is present
@@ -439,22 +418,19 @@ class PredictionsList(InteractiveTable):
                 f"> {option}" if i == self.selected_index else f"  {option}"
                 for i, option in enumerate(self.options[:-1])
             )
-        go_back_text = (
-            f"\n\n  {self.options[-1]}"
-            if self.selected_index != len(self.options) - 1
-            else f"\n\n> {self.options[-1]}"
-        )
-        self.text_area.text = (
-            f"{header_text}\n{divider}\n{options_text}{go_back_text}\n\n{self.message}"
-        )
+        go_back_text = f"\n\n{'>' if self.selected_index == len(self.options) - 1 else ' '} {self.options[-1]}"
+        page_info = f"\nPage {self.current_page + 1}/{self.total_pages} (Use left/right arrow keys to navigate)"
+        self.text_area.text = f"{header_text}\n{divider}\n{options_text}{go_back_text}{page_info}\n\n{self.message}"
+
+    def format_prediction_date(self, date_string):
+        dt = datetime.datetime.fromisoformat(date_string)
+        return dt.strftime("%Y-%m-%d %H:%M")
 
     def handle_enter(self):
         if self.selected_index == len(self.options) - 1:  # Go Back
             self.app.change_view(MainMenu(self.app))
         else:
-            selected_prediction = list(self.app.predictions.values())[
-                self.selected_index
-            ]
+            selected_prediction = self.sorted_predictions[self.current_page * self.predictions_per_page + self.selected_index]
 
             # Find the corresponding game data
             game_id = selected_prediction.get("teamGameID")
@@ -477,6 +453,20 @@ class PredictionsList(InteractiveTable):
     def move_down(self):
         if self.selected_index < len(self.options) - 1:
             self.selected_index += 1
+            self.update_text_area()
+
+    def move_left(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.selected_index = 0
+            self.update_options()
+            self.update_text_area()
+
+    def move_right(self):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.selected_index = 0
+            self.update_options()
             self.update_text_area()
 
 
@@ -735,17 +725,11 @@ class WagerConfirm(InteractiveTable):
                     "canOverwrite": True,
                     "outcome": "",
                 }
-                self.app.miner_cash -= (
-                    wager_amount  # Deduct wager amount from miner's cash
-                )
-                self.confirmation_message = (
-                    "Wager confirmed! Submitting Prediction to Validators..."
-                )
+                self.app.miner_cash -= wager_amount
+                self.confirmation_message = "Wager confirmed! Submitting Prediction to Validators..."
                 self.update_text_area()
                 self.app.submit_predictions()
-                threading.Timer(
-                    2.0, lambda: self.app.change_view(self.previous_view)
-                ).start()  # Delay for 2 seconds
+                threading.Timer(2.0, lambda: self.app.change_view(self.previous_view)).start()
             except ValueError:
                 self.wager_input.text = "Invalid amount. Try again."
                 self.update_text_area()
