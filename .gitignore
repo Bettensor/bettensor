@@ -174,3 +174,4 @@ games_data.json
 .env
 miner.sh
 validator.sh
+bettensor/utills/print_db.py

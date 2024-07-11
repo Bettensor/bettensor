@@ -52,10 +52,7 @@ class Application:
         parser = ArgumentParser()
         parser.add_argument("--uid", type=str, default=None, help="UID of miner")
         args = parser.parse_args()
-
-        self.miner_uid = args.uid
-        self.db_manager = get_db_manager(self.miner_uid)
-
+        
         if self.miner_uid:
             with open("data/miner_env.txt", "r") as f:
                 for line in f:
@@ -77,6 +74,12 @@ class Application:
         print(
             f"Miner UID: {self.miner_uid}, Miner Hotkey: {self.miner_hotkey}, DB Path: {self.db_path}"
         )
+
+        
+
+        self.miner_uid = args.uid
+        self.db_manager = get_db_manager(self.miner_uid)
+
 
         self.predictions = self.get_predictions()
         self.games = self.get_game_data()
