@@ -394,7 +394,7 @@ class BettensorMiner(BaseNeuron):
         prediction_dict = {}
         for game in games:
             bt.logging.trace(f" Processing Predictions: Game: {game}")
-            external_game_id = game[0]
+            external_game_id = game[7]
             bt.logging.trace(f"Processing Predictions: Game ID: {external_game_id}")
 
 
