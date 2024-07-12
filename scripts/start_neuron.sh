@@ -219,7 +219,7 @@ case $INTERFACE_TYPE in
 esac
 
 # Start the miner interface server
-pm2 start bettensor/utils/miner_interface_server.py --name miner_interface_server --interpreter python3 -- --env $INTERFACE_ENV
+#pm2 start bettensor/utils/miner_interface_server.py --name miner_interface_server --interpreter python3 -- --env $INTERFACE_ENV
 
 # Generate a unique name for this instance
 INSTANCE_NUMBER=$(get_next_instance_number $NEURON_TYPE)
