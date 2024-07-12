@@ -394,7 +394,7 @@ class BettensorMiner(BaseNeuron):
         prediction_dict = {}
         for game in games:
             bt.logging.trace(f" Processing Predictions: Game: {game}")
-            external_game_id = game[7]
+            external_game_id = game[0]
             bt.logging.trace(f"Processing Predictions: Game ID: {external_game_id}")
 
 
@@ -402,7 +402,7 @@ class BettensorMiner(BaseNeuron):
             # Fetch predictions for the game
             with self.db_manager.get_cursor() as cursor:
                 cursor.execute(
-                    "SELECT * FROM predictions WHERE teamGameID = ? and predictionDate < ?", (external_game_id, three_days_ago)
+                    "SELECT * FROM predictions WHERE teamGameID = ? and predictionDate > ?", (external_game_id, three_days_ago)
                 )
                 predictions = cursor.fetchall()
             bt.logging.trace(f"Predictions: {predictions}")
