@@ -130,6 +130,10 @@ while [[ $# -gt 0 ]]; do
             DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.chain_endpoint $2"
             shift 2
             ;;
+        --interface)
+            INTERFACE_TYPE="$2"
+            shift 2
+            ;;
         *)
             DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS $1"
             shift
@@ -144,13 +148,16 @@ prompt_for_input "Enter neuron type (miner/validator)" "miner" "NEURON_TYPE"
 check_existing_neurons
 
 # Prompt for network if not specified
-prompt_for_input "Enter network (local/test/main)" "test" "NETWORK"
+prompt_for_input "Enter network (local/test/finney)" "finney" "NETWORK"
 case $NETWORK in
     test)
         DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network test --netuid 181"
         ;;
-    main)
+    finney)
         DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network finney --netuid 30"
+        ;;
+    local)
+        DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network local --netuid 1 --subtensor.chain_endpoint ws://127.0.0.1:9946"
         ;;
     *)
         DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --subtensor.network $NETWORK"
@@ -169,9 +176,9 @@ DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --wallet.name $WALLET_NAME --wallet.ho
 
 # Prompt for axon port and validator_min_stake if miner and not specified
 if [ "$NEURON_TYPE" = "miner" ]; then
-    prompt_for_input "Enter axon port" "12345" "AXON_PORT"
+    prompt_for_input "Enter axon port (WARNING: make sure to use separate ports for each miner instance!)" "12345" "AXON_PORT"
     AXON_PORT=$(get_available_port $AXON_PORT)
-    prompt_for_input "Enter validator_min_stake" "0" "VALIDATOR_MIN_STAKE"
+    prompt_for_input "Enter validator_min_stake" "1000" "VALIDATOR_MIN_STAKE"
     DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --axon.port $AXON_PORT --validator_min_stake $VALIDATOR_MIN_STAKE"
 fi
 
@@ -191,6 +198,28 @@ esac
 if [ "$DISABLE_AUTO_UPDATE" = "false" ]; then
     prompt_yes_no "Do you want to disable auto-update? Warning: this will apply to all running neurons" "DISABLE_AUTO_UPDATE"
 fi
+
+# Prompt for interface type if not specified
+if [ -z "$INTERFACE_TYPE" ]; then
+    prompt_interface_type
+fi
+
+# Validate interface type
+case $INTERFACE_TYPE in
+    local)
+        INTERFACE_ENV="LOCAL_INTERFACE=True CENTRAL_SERVER=False"
+        ;;
+    central)
+        INTERFACE_ENV="LOCAL_INTERFACE=False CENTRAL_SERVER=True"
+        ;;
+    *)
+        echo "Invalid interface type: $INTERFACE_TYPE. Using local interface."
+        INTERFACE_ENV="LOCAL_INTERFACE=True CENTRAL_SERVER=False"
+        ;;
+esac
+
+# Start the miner interface server
+#pm2 start bettensor/utils/miner_interface_server.py --name miner_interface_server --interpreter python3 -- --env $INTERFACE_ENV
 
 # Generate a unique name for this instance
 INSTANCE_NUMBER=$(get_next_instance_number $NEURON_TYPE)
@@ -220,4 +249,5 @@ pm2 start --name "$INSTANCE_NAME" python -- neurons/$NEURON_TYPE.py $DEFAULT_NEU
 
 echo "$NEURON_TYPE started successfully with instance name: $INSTANCE_NAME"
 
-
+# Save the PM2 process list
+pm2 save --force

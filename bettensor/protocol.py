@@ -19,7 +19,7 @@
 
 from datetime import datetime, timedelta, timezone
 import json
-import typing
+from typing import Optional, Dict
 import uuid
 import bittensor as bt
 import bettensor
@@ -40,19 +40,11 @@ class MinerStats(BaseModel):
     miner_uid: str = Field(..., description="Current UID of the miner")
     miner_rank: int = Field(..., description="Current rank of the miner")
     miner_cash: float = Field(..., description="Current cash of the miner")
-    miner_current_incentive: float = Field(
-        ..., description="Current incentive of the miner"
-    )
-    miner_last_prediction_date: str = Field(
-        ..., description="Date of the last prediction of the miner"
-    )
-    miner_lifetime_earnings: float = Field(
-        ..., description="Lifetime earnings of the miner"
-    )
+    miner_current_incentive: float = Field(..., description="Current incentive of the miner")
+    miner_last_prediction_date: Optional[str] = Field(None, description="Date of the last prediction of the miner")
+    miner_lifetime_earnings: float = Field(..., description="Lifetime earnings of the miner")
     miner_lifetime_wager: float = Field(..., description="Lifetime wager of the miner")
-    miner_lifetime_predictions: int = Field(
-        ..., description="Lifetime predictions of the miner"
-    )
+    miner_lifetime_predictions: int = Field(..., description="Lifetime predictions of the miner")
     miner_lifetime_wins: int = Field(..., description="Lifetime wins of the miner")
     miner_lifetime_losses: int = Field(..., description="Lifetime losses of the miner")
     miner_win_loss_ratio: float = Field(..., description="Win loss ratio of the miner")
@@ -185,9 +177,9 @@ class GameData(bt.Synapse):
     This class defines the synapse object for game data, consisting of a dictionary of TeamGame objects with a UUID as key.
     """
 
-    metadata: typing.Optional[Metadata]
-    gamedata_dict: typing.Optional[typing.Dict[str, TeamGame]]
-    prediction_dict: typing.Optional[typing.Dict[str, TeamGamePrediction]]
+    metadata: Optional[Metadata]
+    gamedata_dict: Optional[Dict[str, TeamGame]]
+    prediction_dict: Optional[Dict[str, TeamGamePrediction]]
 
     @classmethod
     def create(
@@ -197,7 +189,7 @@ class GameData(bt.Synapse):
         subnet_version,
         neuron_uid,
         synapse_type: str,
-        prediction_dict: typing.Dict[str, TeamGamePrediction] = None,
+        prediction_dict: Dict[str, TeamGamePrediction] = None,
     ):
         metadata = Metadata.create(
             wallet=wallet,
@@ -217,7 +209,7 @@ class GameData(bt.Synapse):
         )
 
     @staticmethod
-    def fetch_game_data(current_timestamp, db_path) -> typing.Dict[str, TeamGame]:
+    def fetch_game_data(current_timestamp, db_path) -> Dict[str, TeamGame]:
         connection = sqlite3.connect(db_path)
         cursor = connection.cursor()
 

@@ -85,44 +85,33 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 
 ## Guide for Validators
 
-1. Obtain API key(s) from [this games API](https://rapidapi.com/search/Sports) (currently using API-FOOTBALL and API-BASEBALL).
+For detailed instructions on setting up and running a Bettensor validator, please refer to our [Validator Guide](docs/validating.md). This document covers:
 
-2. Create a `.env` file in the top-level directory: 
+- Obtaining necessary API keys
+- Setting up the environment
+- Running the validator
+- Recommended logging settings
 
-```bash
-RAPID_API_KEY=<YOUR_API_KEY>
- ```
-
-3. Run `source ./scripts/start_neuron.sh` and follow prompts for validator. You can run this script with flags if you prefer not to enter prompts.
-
->[!NOTE]
-> We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
+Whether you're new to Bettensor or an experienced validator, the Validator Guide provides all the information you need to participate in the network effectively.
 
 
 
 
 ## Guide for Miners
 
-1. Run `source ./scripts/start_neuron.sh` and follow prompts for miner. You can run this script with flags if you prefer not to enter prompts.
+For detailed instructions on setting up and running a Bettensor miner, please refer to our [Miner Guide](docs/mining.md). This comprehensive document covers:
 
->[!NOTE]
-> We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to pinpoint and fix any issues more quickly.
+- Miner setup and configuration
+- Choosing between Local and Central Server interfaces
+- Submitting predictions
+- Managing multiple miners
+- Security considerations
+- Troubleshooting and FAQs
 
-2. Check logs for Success and wait for some game data:
-   ```bash
-   pm2 logs miner
-   ```
+Whether you're new to Bettensor or an experienced miner, the Miner Guide provides all the information you need to participate in the network effectively.
 
-3. Submit predictions with our Beta User Interface:
-   ```bash
-   python bettensor/miner/cli.py
-   ```
-4. If you're running more than one miner, you can specify with the `--uid` flag. (this is your network UID for the miner). You can reference `./data/miner_env.txt` to find your NETUIDs
-    ```bash
-    python bettensor/miner/cli.py --uid <UID>
-    ```
 
- 
+
 
 ## Incentive Mechanism and Scoring
 - In the current version, our scoring system is quite simple. 

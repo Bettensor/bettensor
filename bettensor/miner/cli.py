@@ -24,6 +24,7 @@ import threading  # Import threading for non-blocking delay
 from prompt_toolkit.layout.containers import Window, HSplit
 import logging
 import os
+from bettensor.utils.database_manager import get_db_manager
 
 log_dir = "./logs"
 if not os.path.exists(log_dir):
@@ -49,26 +50,25 @@ global_style = Style.from_dict(
 class Application:
     def __init__(self):
         parser = ArgumentParser()
-        # User must specify by UID.
         parser.add_argument("--uid", type=str, default=None, help="UID of miner")
         args = parser.parse_args()
+        
+        self.miner_uid = args.uid
 
-        if args.uid:
-            self.miner_uid = args.uid
-            with open("data/miner_env.txt", "r") as f:
-                for line in f:
-                    parts = line.strip().split(", ")
-                    if f"UID={self.miner_uid}" in parts[0]:
-                        self.miner_uid = parts[0].split("=")[1]
-                        self.db_path = parts[1].split("=")[1]
-                        self.miner_hotkey = parts[2].split("=")[1]
-                        break
-        else:
-            print("No UID specified, choosing first miner in list")
-            with open("data/miner_env.txt", "r") as f:
-                line = f.readline().strip()
-                parts = line.split(", ")
-                self.miner_uid = parts[0].split("=")[1]
+        with open("data/miner_env.txt", "r") as f:
+            first_line = f.readline().strip()
+            if not self.miner_uid:
+                self.miner_uid = first_line.split(", ")[0].split("=")[1]
+                print(f"No UID specified, using first miner: {self.miner_uid}")
+            
+            for line in f:
+                parts = line.strip().split(", ")
+                if f"UID={self.miner_uid}" in parts[0]:
+                    self.db_path = parts[1].split("=")[1]
+                    self.miner_hotkey = parts[2].split("=")[1]
+                    break
+            else:
+                parts = first_line.split(", ")
                 self.db_path = parts[1].split("=")[1]
                 self.miner_hotkey = parts[2].split("=")[1]
 
@@ -76,10 +76,14 @@ class Application:
             f"Miner UID: {self.miner_uid}, Miner Hotkey: {self.miner_hotkey}, DB Path: {self.db_path}"
         )
 
-        self.db, self.cursor = get_database(self.db_path)
-        self.predictions = get_predictions(self.cursor)
-        self.games = get_game_data(self.cursor)
-        self.miner_stats = get_miner_stats(self.cursor, self.miner_uid)
+        
+
+        self.db_manager = get_db_manager(self.miner_uid)
+
+
+        self.predictions = self.get_predictions()
+        self.games = self.get_game_data()
+        self.miner_stats = self.get_miner_stats(self.miner_uid)
         
         if self.miner_stats is None:
             print(f"No miner stats found for UID: {self.miner_uid}. Initializing with default values.")
@@ -99,11 +103,7 @@ class Application:
                 "miner_current_incentive": 0,
             }
             # Insert these default stats into the database
-            columns = ", ".join(self.miner_stats.keys())
-            placeholders = ", ".join("?" * len(self.miner_stats))
-            values = tuple(self.miner_stats.values())
-            self.cursor.execute(f"INSERT INTO miner_stats ({columns}) VALUES ({placeholders})", values)
-            self.db.commit()
+            self.insert_miner_stats(self.miner_stats)
 
         self.active_games = {}
         self.unsubmitted_predictions = {}
@@ -115,8 +115,8 @@ class Application:
         self.check_db_init()
 
     def reload_data(self):
-        self.predictions = get_predictions(self.cursor)
-        self.games = get_game_data(self.cursor)
+        self.predictions = self.get_predictions()
+        self.games = self.get_game_data()
 
     def change_view(self, new_view):
         self.current_view = new_view
@@ -134,24 +134,109 @@ class Application:
 
     def check_db_init(self):
         try:
-            self.cursor.execute("SELECT * FROM predictions")
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("SELECT * FROM predictions")
         except Exception as e:
             print(e)
             print("Database not initialized properly, restart your miner first")
 
-        """ miner_stats = {
-        "miner_hotkey": "1234567890",
-        "miner_coldkey": "1234567890",
-        "miner_cash": 750,
-        "miner_status": "active",
-        "miner_last_wager": "2024-06-08 12:00:00",
-        "miner_lifetime_earnings": 2756,
-        "miner_lifetime_wins": 6,
-        "miner_lifetime_losses": 3,
-        "miner_win_loss_ratio": 0.66666666666666666,
-        "miner_rank": 1,
-        "last_reward": 1.5
-        """
+    def submit_predictions(self):
+        with self.db_manager.get_cursor() as cursor:
+            for prediction in self.unsubmitted_predictions.values():
+                try:
+                    cursor.execute(
+                        """INSERT OR REPLACE INTO predictions (predictionID, teamGameID, minerID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            prediction["predictionID"],
+                            prediction["teamGameID"],
+                            prediction["minerID"],
+                            prediction["predictionDate"],
+                            prediction["teamA"],
+                            prediction["teamB"],
+                            prediction["teamAodds"],
+                            prediction["teamBodds"],
+                            prediction["tieOdds"],
+                            prediction["predictedOutcome"],
+                            prediction["wager"],
+                            prediction["outcome"],
+                            prediction["canOverwrite"],
+                        ),
+                    )
+                except sqlite3.IntegrityError as e:
+                    logging.warning(f"Failed to insert prediction {prediction['predictionID']}: {e}")
+            cursor.connection.commit()
+
+    def get_predictions(self):
+        predictions = {}
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM predictions")
+            columns = [column[0] for column in cursor.description]
+            for row in cursor.fetchall():
+                predictions[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
+        return predictions
+
+    def get_game_data(self):
+        game_data = {}
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM games WHERE active = 0")
+            columns = [column[0] for column in cursor.description]
+            for row in cursor.fetchall():
+                game_data[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
+        return game_data
+
+    def get_miner_stats(self, uid=None):
+        logging.info(f"Getting miner stats for uid: {uid}")
+
+        if uid is not None:
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = ?", (str(uid),))
+                columns = [column[0] for column in cursor.description]
+                row = cursor.fetchone()
+                if row is None:
+                    logging.warning(f"No miner stats found for uid: {uid}")
+                    return None
+                miner_stats = {columns[i]: row[i] for i in range(len(columns))}
+                logging.info(f"Miner stats: {miner_stats}")
+                return miner_stats
+        else:
+            logging.error("No UID specified")
+            return None
+
+    def insert_miner_stats(self, stats):
+        columns = ", ".join(stats.keys())
+        placeholders = ", ".join("?" * len(stats))
+        values = tuple(stats.values())
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(f"INSERT INTO miner_stats ({columns}) VALUES ({placeholders})", values)
+            cursor.connection.commit()
+
+    def update_miner_stats(self, wager, prediction_date, miner_uid):
+        logging.info(f"Updating miner stats for miner_uid: {miner_uid}")
+        logging.debug(f"Miner stats: {self.miner_stats}")
+        new_miner_cash = self.miner_stats["miner_cash"] - wager
+        new_miner_last_prediction_date = prediction_date
+        new_miner_lifetime_wager = self.miner_stats["miner_lifetime_wager"] + wager
+        new_miner_lifetime_predictions = self.miner_stats["miner_lifetime_predictions"] + 1
+
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(
+                """UPDATE miner_stats SET miner_cash = ?,
+                                miner_last_prediction_date = ?, 
+                                miner_lifetime_wager = ?, 
+                                miner_lifetime_predictions = ? 
+                                WHERE miner_uid = ?""",
+                (
+                    new_miner_cash,
+                    new_miner_last_prediction_date,
+                    new_miner_lifetime_wager,
+                    new_miner_lifetime_predictions,
+                    miner_uid,
+                ),
+            )
+            cursor.connection.commit()
+        self.miner_stats = self.get_miner_stats(miner_uid)
+        logging.info(f"Updated miner stats: {self.miner_stats}")
 
 
 class InteractiveTable:
@@ -265,14 +350,29 @@ class PredictionsList(InteractiveTable):
         super().__init__(app)
         app.reload_data()
         self.message = ""
+        self.predictions_per_page = 25
+        self.current_page = 0
+        self.update_sorted_predictions()
+        self.update_total_pages()
         self.update_options()
         self.update_text_area()
 
-    def update_options(self):
-        # Combine predictions and unsubmitted_predictions for formatting calculation
-        all_predictions = self.app.predictions
+    def update_sorted_predictions(self):
+        self.sorted_predictions = sorted(
+            self.app.predictions.values(),
+            key=lambda x: datetime.datetime.fromisoformat(x["predictionDate"]),
+            reverse=True
+        )
 
-        if not all_predictions:
+    def update_total_pages(self):
+        self.total_pages = max(1, (len(self.sorted_predictions) + self.predictions_per_page - 1) // self.predictions_per_page)
+        self.current_page = min(self.current_page, self.total_pages - 1)
+
+    def update_options(self):
+        start_idx = self.current_page * self.predictions_per_page
+        end_idx = min(start_idx + self.predictions_per_page, len(self.sorted_predictions))
+        
+        if not self.sorted_predictions:
             # Set default lengths if there are no predictions
             max_teamA_len = len("Team A")
             max_teamB_len = len("Team B")
@@ -280,74 +380,35 @@ class PredictionsList(InteractiveTable):
             max_teamBodds_len = len("Team B Odds")
             max_tieOdds_len = len("Tie Odds")
             max_prediction_len = len("Prediction")
-            max_status_len = len("Status")
             max_wager_amount_len = len("Wager Amount")
             max_outcome_len = len("Outcome")
+            max_date_len = len("Prediction Date")
         else:
-            # Calculate maximum widths for each column based on data and header
-            max_teamA_len = max(
-                max(len(pred.get("teamA", "")) for pred in all_predictions.values()),
-                len("Team A"),
-            )
-            max_teamB_len = max(
-                max(len(pred.get("teamB", "")) for pred in all_predictions.values()),
-                len("Team B"),
-            )
-            max_teamAodds_len = max(
-                max(
-                    len(str(pred.get("teamAodds", "")))
-                    for pred in all_predictions.values()
-                ),
-                len("Team A Odds"),
-            )
-            max_teamBodds_len = max(
-                max(
-                    len(str(pred.get("teamBodds", "")))
-                    for pred in all_predictions.values()
-                ),
-                len("Team B Odds"),
-            )
-            max_tieOdds_len = max(
-                max(
-                    len(str(pred.get("tieOdds", "")))
-                    for pred in all_predictions.values()
-                ),
-                len("Tie Odds"),
-            )
-            max_prediction_len = max(
-                max(
-                    len(pred.get("predictedOutcome", ""))
-                    for pred in all_predictions.values()
-                ),
-                len("Prediction"),
-            )
-            max_wager_amount_len = max(
-                max(
-                    len(str(pred.get("wager", ""))) for pred in all_predictions.values()
-                ),
-                len("Wager Amount"),
-            )
-            max_outcome_len = max(
-                max(len(pred.get("outcome", "")) for pred in all_predictions.values()),
-                len("Outcome"),
-            )
+            # Calculate maximum widths for each column
+            max_teamA_len = max(len("Team A"), max(len(pred["teamA"]) for pred in self.sorted_predictions))
+            max_teamB_len = max(len("Team B"), max(len(pred["teamB"]) for pred in self.sorted_predictions))
+            max_teamAodds_len = max(len("Team A Odds"), max(len(f"{pred['teamAodds']:.2f}") for pred in self.sorted_predictions))
+            max_teamBodds_len = max(len("Team B Odds"), max(len(f"{pred['teamBodds']:.2f}") for pred in self.sorted_predictions))
+            max_tieOdds_len = max(len("Tie Odds"), max(len(f"{pred['tieOdds']:.2f}") for pred in self.sorted_predictions))
+            max_prediction_len = max(len("Prediction"), max(len(pred["predictedOutcome"]) for pred in self.sorted_predictions))
+            max_wager_amount_len = max(len("Wager Amount"), max(len(f"{pred['wager']:.2f}") for pred in self.sorted_predictions))
+            max_outcome_len = max(len("Outcome"), max(len(str(pred["outcome"])) for pred in self.sorted_predictions))
+            max_date_len = max(len("Prediction Date"), max(len(self.format_prediction_date(pred["predictionDate"])) for pred in self.sorted_predictions))
 
         # Define the header with calculated widths
         self.header = Label(
-            f"  {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Team A Odds':<{max_teamAodds_len}} | {'Team B Odds':<{max_teamBodds_len}} | {'Tie Odds':<{max_tieOdds_len}} | {'Prediction':<{max_prediction_len}} | {'Wager Amount':<{max_wager_amount_len}} | {'Outcome':<{max_outcome_len}} ",
+            f"  {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Team A Odds':<{max_teamAodds_len}} | {'Team B Odds':<{max_teamBodds_len}} | {'Tie Odds':<{max_tieOdds_len}} | {'Prediction':<{max_prediction_len}} | {'Wager Amount':<{max_wager_amount_len}} | {'Outcome':<{max_outcome_len}} | {'Prediction Date':<{max_date_len}}",
             style="bold",
         )
 
-        # Generate options for the scrollable list
+        # Generate options for the current page
         self.options = [
-            f"{pred.get('teamA', ''):<{max_teamA_len}} | {pred.get('teamB', ''):<{max_teamB_len}} | {str(pred.get('teamAodds', '')):<{max_teamAodds_len}} | {str(pred.get('teamBodds', '')):<{max_teamBodds_len}} | {str(pred.get('tieOdds', '')):<{max_tieOdds_len}} | {pred.get('predictedOutcome', ''):<{max_prediction_len}} | {str(pred.get('wager', '')):<{max_wager_amount_len}} | {pred.get('outcome', ''):<{max_outcome_len}}"
-            for pred in self.app.predictions.values()
+            f"{pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {pred['teamAodds']:<{max_teamAodds_len}.2f} | {pred['teamBodds']:<{max_teamBodds_len}.2f} | {pred['tieOdds']:<{max_tieOdds_len}.2f} | {pred['predictedOutcome']:<{max_prediction_len}} | {pred['wager']:<{max_wager_amount_len}.2f} | {str(pred['outcome']):<{max_outcome_len}} | {self.format_prediction_date(pred['predictionDate']):<{max_date_len}}"
+            for pred in self.sorted_predictions[start_idx:end_idx]
         ]
-
-        self.options.append("Go Back")  # Add "Go Back" option
+        self.options.append("Go Back")
 
     def update_text_area(self):
-        # Update the text area to include the header, divider, options, and space before "Go Back"
         header_text = self.header.text
         divider = "-" * len(header_text)
         if len(self.options) <= 1:  # Only "Go Back" is present
@@ -357,22 +418,19 @@ class PredictionsList(InteractiveTable):
                 f"> {option}" if i == self.selected_index else f"  {option}"
                 for i, option in enumerate(self.options[:-1])
             )
-        go_back_text = (
-            f"\n\n  {self.options[-1]}"
-            if self.selected_index != len(self.options) - 1
-            else f"\n\n> {self.options[-1]}"
-        )
-        self.text_area.text = (
-            f"{header_text}\n{divider}\n{options_text}{go_back_text}\n\n{self.message}"
-        )
+        go_back_text = f"\n\n{'>' if self.selected_index == len(self.options) - 1 else ' '} {self.options[-1]}"
+        page_info = f"\nPage {self.current_page + 1}/{self.total_pages} (Use left/right arrow keys to navigate)"
+        self.text_area.text = f"{header_text}\n{divider}\n{options_text}{go_back_text}{page_info}\n\n{self.message}"
+
+    def format_prediction_date(self, date_string):
+        dt = datetime.datetime.fromisoformat(date_string)
+        return dt.strftime("%Y-%m-%d %H:%M")
 
     def handle_enter(self):
         if self.selected_index == len(self.options) - 1:  # Go Back
             self.app.change_view(MainMenu(self.app))
         else:
-            selected_prediction = list(self.app.predictions.values())[
-                self.selected_index
-            ]
+            selected_prediction = self.sorted_predictions[self.current_page * self.predictions_per_page + self.selected_index]
 
             # Find the corresponding game data
             game_id = selected_prediction.get("teamGameID")
@@ -395,6 +453,20 @@ class PredictionsList(InteractiveTable):
     def move_down(self):
         if self.selected_index < len(self.options) - 1:
             self.selected_index += 1
+            self.update_text_area()
+
+    def move_left(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.selected_index = 0
+            self.update_options()
+            self.update_text_area()
+
+    def move_right(self):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.selected_index = 0
+            self.update_options()
             self.update_text_area()
 
 
@@ -635,7 +707,7 @@ class WagerConfirm(InteractiveTable):
                 if wager_amount <= 0 or wager_amount > self.miner_cash:
                     raise ValueError("Invalid wager amount")
                 # Add the prediction to unsubmitted_predictions
-                prediction_id = str(uuid.uuid4())
+                prediction_id = str(uuid.uuid4())  # Generate a new UUID for each prediction
                 self.app.unsubmitted_predictions[prediction_id] = {
                     "predictionID": prediction_id,
                     "teamGameID": self.game_data["externalID"],
@@ -653,17 +725,11 @@ class WagerConfirm(InteractiveTable):
                     "canOverwrite": True,
                     "outcome": "",
                 }
-                self.app.miner_cash -= (
-                    wager_amount  # Deduct wager amount from miner's cash
-                )
-                self.confirmation_message = (
-                    "Wager confirmed! Submitting Prediction to Validators..."
-                )
+                self.app.miner_cash -= wager_amount
+                self.confirmation_message = "Wager confirmed! Submitting Prediction to Validators..."
                 self.update_text_area()
-                submit_predictions(self.app)
-                threading.Timer(
-                    2.0, lambda: self.app.change_view(self.previous_view)
-                ).start()  # Delay for 2 seconds
+                self.app.submit_predictions()
+                threading.Timer(2.0, lambda: self.app.change_view(self.previous_view)).start()
             except ValueError:
                 self.wager_input.text = "Invalid amount. Try again."
                 self.update_text_area()
@@ -796,7 +862,7 @@ def graceful_shutdown(app, submit: bool):
     if submit:
         print("Submitting predictions...")
         logging.info("Submitting predictions...")
-        submit_predictions(app)
+        app.submit_predictions()  # Call the method directly on the app instance
     app.app.exit()
 
 
@@ -807,123 +873,6 @@ def signal_handler(signal, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
-
-
-def submit_predictions(app):
-    for prediction in app.unsubmitted_predictions.values():
-        try:
-            app.cursor.execute(
-                """INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    prediction["predictionID"],
-                    prediction["teamGameID"],
-                    prediction["minerID"],
-                    prediction["predictionDate"],
-                    prediction["teamA"],
-                    prediction["teamB"],
-                    prediction["teamAodds"],
-                    prediction["teamBodds"],
-                    prediction["tieOdds"],
-                    prediction["predictedOutcome"],
-                    prediction["wager"],
-                    prediction["outcome"],
-                    prediction["canOverwrite"],
-                ),
-            )
-            app.db.commit()
-            logging.debug(f"miner_uid: {app.miner_stats['miner_uid']}")
-            update_miner_stats(
-                app,
-                prediction["wager"],
-                prediction["predictionDate"],
-                app.miner_stats["miner_uid"],
-            )
-
-        except Exception as e:
-            logging.error(f"Failed to submit prediction: {e}")
-            print(f"Failed to submit prediction: {e}")
-            print(f"Stacktrace: {traceback.format_exc()}")
-            # Print error to console for immediate feedback
-    # clear unsubmitted_predictions
-    app.unsubmitted_predictions = {}
-
-
-def update_miner_stats(app, wager, prediction_date, miner_uid):
-    # get miner_stats
-    logging.info(f"Updating miner stats for miner_uid: {miner_uid}")
-    logging.debug(f"Miner stats: {app.miner_stats}")
-    new_miner_cash = app.miner_stats["miner_cash"] - wager
-    new_miner_last_prediction_date = prediction_date
-    new_miner_lifetime_wager = app.miner_stats["miner_lifetime_wager"] + wager
-    new_miner_lifetime_predictions = app.miner_stats["miner_lifetime_predictions"] + 1
-
-    app.cursor.execute(
-        """UPDATE miner_stats SET miner_cash = ?,
-                        miner_last_prediction_date = ?, 
-                        miner_lifetime_wager = ?, 
-                        miner_lifetime_predictions = ? 
-                        WHERE miner_uid = ?""",
-        (
-            new_miner_cash,
-            new_miner_last_prediction_date,
-            new_miner_lifetime_wager,
-            new_miner_lifetime_predictions,
-            miner_uid,
-        ),
-    )
-    app.db.commit()
-    app.miner_stats = get_miner_stats(app.cursor, miner_uid)
-    logging.info(f"Updated miner stats: {app.miner_stats}")
-
-
-def get_database(db_path):
-    try:
-        db = sqlite3.connect(db_path)
-        return db, db.cursor()
-    except Exception as e:
-        print(f"Failed to get database: {e}")
-        return None, None
-
-
-def get_predictions(cursor):
-    predictions = {}
-    cursor.execute("SELECT * FROM predictions")
-    columns = [
-        column[0] for column in cursor.description
-    ]  # Get column names from the cursor description
-    for row in cursor.fetchall():
-        predictions[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
-    return predictions
-
-
-def get_game_data(cursor):
-    game_data = {}
-    cursor.execute("SELECT * FROM games WHERE active = 0")
-    columns = [
-        column[0] for column in cursor.description
-    ]  # Get column names from the cursor description
-    for row in cursor.fetchall():
-        game_data[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
-    return game_data
-
-
-def get_miner_stats(cursor, uid=None):
-    logging.info(f"Getting miner stats for uid: {uid}")
-
-    if uid is not None:
-        cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = ?", (str(uid),))
-        columns = [column[0] for column in cursor.description]
-        row = cursor.fetchone()
-        if row is None:
-            logging.warning(f"No miner stats found for uid: {uid}")
-            return None
-        miner_stats = {columns[i]: row[i] for i in range(len(columns))}
-        logging.info(f"Miner stats: {miner_stats}")
-        return miner_stats
-    else:
-        logging.error("No UID specified")
-        return None
 
 
 if __name__ == "__main__":

@@ -10,7 +10,8 @@ from bettensor.utils.miner_stats import MinerStatsHandler
 import datetime
 import os
 import threading
-
+from contextlib import contextmanager
+from bettensor.utils.database_manager import get_db_manager
 
 class BettensorMiner(BaseNeuron):
     """
@@ -62,7 +63,7 @@ class BettensorMiner(BaseNeuron):
 
         args = parser.parse_args()
 
-        self.db_path = args.db_path
+        
 
         # TODO If users want to run a dual miner/vali. Not fully implemented yet.
         if args.miner_set_weights == "False":
@@ -78,15 +79,15 @@ class BettensorMiner(BaseNeuron):
         self.hotkey_blacklisted = False
         self.hotkey = self.wallet.hotkey.ss58_address
         
+        self.db_path = args.db_path
+        os.environ[f'MINER_{self.miner_uid}_DB_PATH'] = self.db_path
+        self.db_manager = get_db_manager(self.miner_uid)
+
         os.environ["DB_PATH"] = self.db_path
         os.environ["HOTKEY"] = self.wallet.hotkey.ss58_address
         os.environ["UID"] = str(self.miner_uid)
 
         # Initialize local sqlite
-        self.db_lock = threading.Lock()
-        self.db = None
-        self.cursor = None
-        self.initialize_db_connection()
         self.ensure_db_directory_exists()
         self.initialize_database()
 
@@ -119,63 +120,59 @@ class BettensorMiner(BaseNeuron):
         bt.logging.debug(f"init_stats: {init_stats}")
         self.stats.reset_daily_cash_on_startup()
 
-    def initialize_db_connection(self):
-        with self.db_lock:
-            if self.db is None:
-                self.db = sqlite3.connect(self.db_path, check_same_thread=False)
-                self.cursor = self.db.cursor()
-
     def ensure_db_directory_exists(self):
         db_dir = os.path.dirname(self.db_path)
         if not os.path.exists(db_dir):
             os.makedirs(db_dir)
 
     def print_table_schema(self):
-        self.cursor.execute("PRAGMA table_info(games)")
-        schema = self.cursor.fetchall()
-        for column in schema:
-            print(column)
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("PRAGMA table_info(games)")
+            schema = cursor.fetchall()
+            for column in schema:
+                print(column)
 
     def initialize_database(self):
         bt.logging.debug(f"Initializing database at {self.db_path}")
         try:
-            self.cursor.execute(
-                """CREATE TABLE IF NOT EXISTS predictions (
-                               predictionID TEXT PRIMARY KEY, 
-                               teamGameID TEXT, 
-                               minerID TEXT, 
-                               predictionDate TEXT, 
-                               predictedOutcome TEXT,
-                               teamA TEXT,
-                               teamB TEXT,
-                               wager REAL,
-                               teamAodds REAL,
-                               teamBodds REAL,
-                               tieOdds REAL,
-                               canOverwrite BOOLEAN,
-                               outcome TEXT
-                               )"""
-            )
-            self.cursor.execute(
-                """CREATE TABLE IF NOT EXISTS games (
-                               gameID TEXT PRIMARY KEY, 
-                               teamA TEXT,
-                               teamAodds REAL,
-                               teamB TEXT,
-                               teamBodds REAL,
-                               sport TEXT, 
-                               league TEXT, 
-                               externalID TEXT, 
-                               createDate TEXT, 
-                               lastUpdateDate TEXT, 
-                               eventStartDate TEXT, 
-                               active INTEGER, 
-                               outcome TEXT,
-                               tieOdds REAL,
-                               canTie BOOLEAN
-                               )"""
-            )
-            self.db.commit()
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS predictions (
+                                   predictionID TEXT PRIMARY KEY, 
+                                   teamGameID TEXT, 
+                                   minerID TEXT, 
+                                   predictionDate TEXT, 
+                                   predictedOutcome TEXT,
+                                   teamA TEXT,
+                                   teamB TEXT,
+                                   wager REAL,
+                                   teamAodds REAL,
+                                   teamBodds REAL,
+                                   tieOdds REAL,
+                                   canOverwrite BOOLEAN,
+                                   outcome TEXT
+                                   )"""
+                )
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS games (
+                                   gameID TEXT PRIMARY KEY, 
+                                   teamA TEXT,
+                                   teamAodds REAL,
+                                   teamB TEXT,
+                                   teamBodds REAL,
+                                   sport TEXT, 
+                                   league TEXT, 
+                                   externalID TEXT, 
+                                   createDate TEXT, 
+                                   lastUpdateDate TEXT, 
+                                   eventStartDate TEXT, 
+                                   active INTEGER, 
+                                   outcome TEXT,
+                                   tieOdds REAL,
+                                   canTie BOOLEAN
+                                   )"""
+                )
+                cursor.connection.commit()
         except sqlite3.Error as e:
             bt.logging.error(f"Failed to initialize local database: {e}")
             raise Exception("Failed to initialize local database")
@@ -358,9 +355,6 @@ class BettensorMiner(BaseNeuron):
                 f"Received a synapse from a validator with lower subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version})."
             )
 
-        # Verify schema
-        # self.print_table_schema()
-
         # TODO: METADATA / Signature Verification
 
         game_data_dict = synapse.gamedata_dict
@@ -368,10 +362,10 @@ class BettensorMiner(BaseNeuron):
 
         # check if tables in db are initialized
         # if not, initialize them
-
-        self.cursor.execute("SELECT * FROM games")
-        if not self.cursor.fetchone():
-            self.initialize_database()
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM games")
+            if not cursor.fetchone():
+                self.initialize_database()
 
         # clean up games table and set active field
         self.update_games_data()
@@ -387,15 +381,13 @@ class BettensorMiner(BaseNeuron):
         
 
         # Fetch games that have not started yet
-        self.cursor.execute(
-            "SELECT externalID FROM games WHERE eventStartDate > ?", (current_time,)
-        )
-        games = self.cursor.fetchall()
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute(
+                "SELECT externalID FROM games WHERE eventStartDate > ?", (current_time,)
+            )
+            games = cursor.fetchall()
 
         bt.logging.debug(f"Fetched {len(games)} games")
-
-        # Log the fetched games
-        # bt.logging.info(f"Fetched games: {games}")
 
         # Process the fetched games
         bt.logging.info(f"Processing recent predictions")
@@ -404,31 +396,38 @@ class BettensorMiner(BaseNeuron):
             bt.logging.trace(f" Processing Predictions: Game: {game}")
             external_game_id = game[0]
             bt.logging.trace(f"Processing Predictions: Game ID: {external_game_id}")
-            # Fetch predictions for the game
-            self.cursor.execute(
-                "SELECT * FROM predictions WHERE teamGameID = ?", (external_game_id,)
-            )
-            predictions = self.cursor.fetchall()
+
+            # Fetch predictions for the game from the last 3 days
+            three_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=3)).isoformat(timespec="minutes")
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM predictions WHERE teamGameID = ? AND predictionDate > ?", 
+                    (external_game_id, three_days_ago)
+                )
+                predictions = cursor.fetchall()
             bt.logging.trace(f"Predictions: {predictions}")
 
             # Add predictions to prediction_dict
             for prediction in predictions:
-                single_prediction = TeamGamePrediction(
-                    predictionID=prediction[0],
-                    teamGameID=prediction[1],
-                    minerID=str(self.miner_uid),
-                    predictionDate=prediction[3],
-                    predictedOutcome=prediction[4],
-                    teamA=prediction[5],
-                    teamB=prediction[6],
-                    wager=prediction[7],
-                    teamAodds=prediction[8],
-                    teamBodds=prediction[9],
-                    tieOdds=prediction[10],
-                    can_overwrite=prediction[11],
-                    outcome=prediction[12],
-                )
-                prediction_dict[prediction[0]] = single_prediction
+                if len(prediction) >= 13:
+                    single_prediction = TeamGamePrediction(
+                        predictionID=prediction[0],
+                        teamGameID=prediction[1],
+                        minerID=str(self.miner_uid),
+                        predictionDate=prediction[3],
+                        predictedOutcome=prediction[4],
+                        teamA=prediction[5],
+                        teamB=prediction[6],
+                        wager=prediction[7],
+                        teamAodds=prediction[8],
+                        teamBodds=prediction[9],
+                        tieOdds=prediction[10],
+                        can_overwrite=prediction[11],
+                        outcome=prediction[12],
+                    )
+                    prediction_dict[prediction[0]] = single_prediction
+                else:
+                    bt.logging.warning(f"Skipping prediction due to insufficient data: {prediction}")
 
         bt.logging.trace(f"prediction_dict: {prediction_dict}")
         synapse.prediction_dict = prediction_dict
@@ -449,109 +448,103 @@ class BettensorMiner(BaseNeuron):
             bt.logging.trace(
                 f"add_game_data() | Number of games to add: {number_of_games}"
             )
-            # Check games table, add games that are not in the table
-            for game_id, game_data in game_data_dict.items():
-                external_id = game_data.externalId
-                self.cursor.execute("SELECT * FROM games WHERE externalID = ?", (external_id,))
-                if not self.cursor.fetchone():
-                    # Game is not in the table, add it
-                    self.cursor.execute(
-                        """INSERT INTO games (
-                        gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, createDate, lastUpdateDate, 
-                        eventStartDate, active, outcome, tieOdds, canTie
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            game_id,
-                            game_data.teamA,
-                            game_data.teamAodds,
-                            game_data.teamB,
-                            game_data.teamBodds,
-                            game_data.sport,
-                            game_data.league,
-                            game_data.externalId,
-                            game_data.createDate,
-                            game_data.lastUpdateDate,
-                            game_data.eventStartDate,
-                            game_data.active,
-                            game_data.outcome,
-                            game_data.tieOdds,
-                            game_data.canTie,
-                        ),
-                    )
-                    self.db.commit()
-                else:
-                    bt.logging.trace(
-                        f"add_game_data() | Game {external_id} already in the table, updating."
-                    )
-                    self.cursor.execute(
-                        """UPDATE games SET teamA = ?, teamAodds = ?, teamB = ?, teamBodds = ?, sport = ?, league = ?, externalID = ?, 
-                                   createDate = ?, lastUpdateDate = ?, eventStartDate = ?, active = ?, outcome = ?, tieOdds = ?, canTie = ? WHERE gameID = ?""",
-                        (
-                            game_data.teamA,
-                            game_data.teamAodds,
-                            game_data.teamB,
-                            game_data.teamBodds,
-                            game_data.sport,
-                            game_data.league,
-                            game_data.externalId,
-                            game_data.createDate,
-                            game_data.lastUpdateDate,
-                            game_data.eventStartDate,
-                            game_data.active,
-                            game_data.outcome,
-                            game_data.tieOdds,
-                            game_data.canTie,
-                            game_id,
-                        ),
-                    )
-                    self.db.commit()
-
+            with self.db_manager.get_cursor() as cursor:
+                for game_id, game_data in game_data_dict.items():
+                    external_id = game_data.externalId
+                    cursor.execute("SELECT * FROM games WHERE externalID = ?", (external_id,))
+                    if not cursor.fetchone():
+                        cursor.execute(
+                            """INSERT INTO games (
+                            gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, createDate, lastUpdateDate, 
+                            eventStartDate, active, outcome, tieOdds, canTie
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                game_id,
+                                game_data.teamA,
+                                game_data.teamAodds,
+                                game_data.teamB,
+                                game_data.teamBodds,
+                                game_data.sport,
+                                game_data.league,
+                                game_data.externalId,
+                                game_data.createDate,
+                                game_data.lastUpdateDate,
+                                game_data.eventStartDate,
+                                game_data.active,
+                                game_data.outcome,
+                                game_data.tieOdds,
+                                game_data.canTie,
+                            ),
+                        )
+                    else:
+                        bt.logging.trace(
+                            f"add_game_data() | Game {external_id} already in the table, updating."
+                        )
+                        cursor.execute(
+                            """UPDATE games SET teamA = ?, teamAodds = ?, teamB = ?, teamBodds = ?, sport = ?, league = ?, externalID = ?, 
+                                       createDate = ?, lastUpdateDate = ?, eventStartDate = ?, active = ?, outcome = ?, tieOdds = ?, canTie = ? WHERE gameID = ?""",
+                            (
+                                game_data.teamA,
+                                game_data.teamAodds,
+                                game_data.teamB,
+                                game_data.teamBodds,
+                                game_data.sport,
+                                game_data.league,
+                                game_data.externalId,
+                                game_data.createDate,
+                                game_data.lastUpdateDate,
+                                game_data.eventStartDate,
+                                game_data.active,
+                                game_data.outcome,
+                                game_data.tieOdds,
+                                game_data.canTie,
+                                game_id,
+                            ),
+                        )
+                cursor.connection.commit()
         except Exception as e:
             bt.logging.error(f"Failed to add game data: {e}")
 
     def update_games_data(self):
         bt.logging.trace(f"update_games_data() | Updating games data")
-        # go through games table. If current time UTC is greater than eventStartDate, set active to 1
-
-        # if current time UTC is 3 days past event start date, remove the row
-
-        self.cursor.execute("SELECT * FROM games")
-        games = self.cursor.fetchall()
-        for game in games:
-            bt.logging.trace(
-                f"Current time: {datetime.datetime.now(datetime.timezone.utc)}"
-            )
-            bt.logging.trace(f"update_games_data() | Game: {game}")
-
-            # check if game[10] (eventStartDate) is None
-            if game[10] is None:
-                bt.logging.trace("update_games_data() | Start Date is None, passing")
-                continue
-            
-            event_start_date = datetime.datetime.fromisoformat(game[10])
-
-            if datetime.datetime.now(datetime.timezone.utc) > event_start_date:
-                self.cursor.execute(
-                    "UPDATE games SET active = 1 WHERE gameID = ?", (game[0],)
-                )
-                bt.logging.trace(f"update_games_data() | Game {game[0]} is now active")
-
-            if datetime.datetime.now(datetime.timezone.utc) > event_start_date + datetime.timedelta(days=3):
-                self.cursor.execute("DELETE FROM games WHERE gameID = ?", (game[0],))
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM games")
+            games = cursor.fetchall()
+            for game in games:
                 bt.logging.trace(
-                    f"update_games_data() | Game {game[0]} is deleted from db"
+                    f"Current time: {datetime.datetime.now(datetime.timezone.utc)}"
                 )
+                bt.logging.trace(f"update_games_data() | Game: {game}")
 
-            if datetime.datetime.now(datetime.timezone.utc) < event_start_date:
-                self.cursor.execute(
-                    "UPDATE games SET active = 0 WHERE gameID = ?", (game[0],)
-                )
-                bt.logging.trace(
-                    f"update_games_data() | Game {game[0]} is now inactive"
-                )
+                if game[10] is None:
+                    bt.logging.trace("update_games_data() | Start Date is None, passing")
+                    continue
+                
+                event_start_date = datetime.datetime.fromisoformat(game[10].replace('Z', '+00:00'))
 
-            self.db.commit()
-            
+                current_time = datetime.datetime.now(datetime.timezone.utc)
+                if current_time > event_start_date:
+                    cursor.execute(
+                        "UPDATE games SET active = 1 WHERE gameID = ?", (game[0],)
+                    )
+                    bt.logging.trace(f"update_games_data() | Game {game[0]} is now active")
+
+                if current_time > event_start_date + datetime.timedelta(days=3):
+                    cursor.execute("DELETE FROM games WHERE gameID = ?", (game[0],))
+                    bt.logging.trace(
+                        f"update_games_data() | Game {game[0]} is deleted from db"
+                    )
+
+                if current_time < event_start_date:
+                    cursor.execute(
+                        "UPDATE games SET active = 0 WHERE gameID = ?", (game[0],)
+                    )
+                    bt.logging.trace(
+                        f"update_games_data() | Game {game[0]} is now inactive"
+                    )
+
+            cursor.connection.commit()
+
     def hotkey_exists_in_file(self, file_path, hotkey):
         if not os.path.exists(file_path):
             return False
@@ -562,78 +555,94 @@ class BettensorMiner(BaseNeuron):
         return False
 
     def remove_duplicate_games(self):
-        bt.logging.trace("Removing duplicate games from the database")
+        bt.logging.trace("Removing duplicate games and predictions from the database")
         try:
-            # Find duplicate games
-            self.cursor.execute("""
-                SELECT externalID, COUNT(*) as count
-                FROM games
-                GROUP BY externalID
-                HAVING count > 1
-            """)
-            duplicates = self.cursor.fetchall()
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("""
+                    SELECT externalID, COUNT(*) as count
+                    FROM games
+                    GROUP BY externalID
+                    HAVING count > 1
+                """)
+                duplicates = cursor.fetchall()
 
-            for external_id, count in duplicates:
-                bt.logging.debug(f"Found {count} duplicates for externalID: {external_id}")
+                for external_id, count in duplicates:
+                    bt.logging.debug(f"Found {count} duplicates for externalID: {external_id}")
+                    
+                    cursor.execute("""
+                        DELETE FROM games
+                        WHERE externalID = ? AND rowid NOT IN (
+                            SELECT rowid
+                            FROM games
+                            WHERE externalID = ?
+                            ORDER BY lastUpdateDate DESC
+                            LIMIT 1
+                        )
+                    """, (external_id, external_id))
+
+                cursor.execute("""
+                    SELECT teamGameID, COUNT(*) as count
+                    FROM predictions
+                    GROUP BY teamGameID
+                    HAVING count > 1
+                """)
+
+                prediction_duplicates = cursor.fetchall()
+                for team_game_id, count in prediction_duplicates:
+                    bt.logging.debug(f"Found {count} duplicates for teamGameID: {team_game_id}")
                 
-                # Keep the most recently updated record
-                self.cursor.execute("""
-                    DELETE FROM games
-                    WHERE externalID = ? AND rowid NOT IN (
-                        SELECT rowid
-                        FROM games
-                        WHERE externalID = ?
-                        ORDER BY lastUpdateDate DESC
-                        LIMIT 1
-                    )
-                """, (external_id, external_id))
+                    cursor.execute("""
+                        DELETE FROM predictions
+                        WHERE teamGameID = ? AND rowid NOT IN (
+                            SELECT rowid
+                            FROM predictions
+                            WHERE teamGameID = ?
+                            ORDER BY predictionDate DESC
+                            LIMIT 1
+                        )
+                    """, (team_game_id, team_game_id))
 
-            self.db.commit()
+                cursor.connection.commit()
             bt.logging.trace(f"Removed {len(duplicates)} sets of duplicate games")
+            bt.logging.trace(f"Removed {len(prediction_duplicates)} sets of duplicate predictions")
         except sqlite3.Error as e:
-            bt.logging.error(f"Error removing duplicate games: {e}")
-            self.db.rollback()
+            bt.logging.error(f"Error removing duplicate games or predictions: {e}")
 
     def get_predictions(self):
-        # get predictions from db
-        self.cursor.execute("SELECT * FROM predictions")
-        predictions_raw = self.cursor.fetchall()
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM predictions")
+            predictions_raw = cursor.fetchall()
 
         prediction_dict = {}
-        # convert predictions_raw to prediction_dict
         for prediction in predictions_raw:
             bt.logging.trace(f"get_predictions() | Prediction: {prediction}")
             single_prediction = TeamGamePrediction(
                 predictionID=prediction[0],
-                        teamGameID=prediction[1],
-                        minerID=prediction[2] or self.miner_uid,
-                        predictionDate=prediction[3],
-                        predictedOutcome=prediction[4],
-                        teamA=prediction[5],
-                        teamB=prediction[6],
-                        wager=prediction[7],
-                        teamAodds=prediction[8],
-                        teamBodds=prediction[9],
-                        tieOdds=prediction[10],
-                        can_overwrite=prediction[11],
-                        outcome=prediction[12],
-                    )   
+                teamGameID=prediction[1],
+                minerID=prediction[2] or self.miner_uid,
+                predictionDate=prediction[3],
+                predictedOutcome=prediction[4],
+                teamA=prediction[5],
+                teamB=prediction[6],
+                wager=prediction[7],
+                teamAodds=prediction[8],
+                teamBodds=prediction[9],
+                tieOdds=prediction[10],
+                can_overwrite=prediction[11],
+                outcome=prediction[12],
+            )   
             prediction_dict[prediction[0]] = single_prediction
-        #sort prediction_dict by predictionDate
         prediction_dict = dict(sorted(prediction_dict.items(), key=lambda item: item[1].predictionDate, reverse=True))
 
         return prediction_dict
 
     def get_games(self):
-        # get games from db
-        self.cursor.execute("SELECT * FROM games")
-        games_raw = self.cursor.fetchall()
-        #bt.logging.info(f"get_games() | Games: {games_raw}")
-        # convert games_raw to game_dict
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM games")
+            games_raw = cursor.fetchall()
+
         game_dict = {}
         for game in games_raw:
-            #bt.logging.info(f"get_games() | Game: {game}")
-            #bt.logging.info(f"get_games() | Game[7]: {game[7]}")
             single_game = TeamGame(
                 id=game[0],
                 teamA=game[1],
@@ -654,58 +663,42 @@ class BettensorMiner(BaseNeuron):
             game_dict[game[0]] = single_game
         return game_dict
 
-
     def update_outcomes(self):
-        '''
-        Update outcomes for all predictions and recalculate miner stats
-
-        Args:
-            None
-        Returns:
-            None
-        '''
         bt.logging.info("update_outcomes() | Updating outcomes for all predictions and recalculating miner stats")
         prediction_dict = self.get_predictions()
         game_dict = self.get_games()
 
+        current_time = datetime.datetime.now(datetime.timezone.utc)
         current_stats = self.stats.return_miner_stats(self.hotkey)
-        #bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
+        
         for prediction_id, prediction in prediction_dict.items():
             if prediction.teamGameID in game_dict:
-                outcome = game_dict[prediction.teamGameID].outcome
-                if outcome == "Unfinished":
-                    continue
-                if outcome == 0:
-                    #teamA wins
-                    if prediction.predictedOutcome == prediction.teamA:
-                        prediction.outcome = "Win"
-                        current_stats.miner_lifetime_wins += 1
-                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamAodds
+                game = game_dict[prediction.teamGameID]
+                game_start_time = datetime.datetime.fromisoformat(game.eventStartDate.replace('Z', '+00:00'))
+                
+                # Only process games that have already started
+                if current_time > game_start_time:
+                    outcome = game.outcome
+                    if outcome == "Unfinished":
+                        continue
+                
+                    if outcome == 0:  # teamA wins
+                        if prediction.predictedOutcome == prediction.teamA:
+                            self.update_prediction_outcome(prediction, "Win", current_stats, prediction.teamAodds)
+                        else:
+                            self.update_prediction_outcome(prediction, "Loss", current_stats)
+                    elif outcome == 1:  # teamB wins
+                        if prediction.predictedOutcome == prediction.teamB:
+                            self.update_prediction_outcome(prediction, "Win", current_stats, prediction.teamBodds)
+                        else:
+                            self.update_prediction_outcome(prediction, "Loss", current_stats)
+                    elif outcome == 2:  # tie
+                        if prediction.predictedOutcome == "Tie":
+                            self.update_prediction_outcome(prediction, "Win", current_stats, prediction.tieOdds)
+                        else:
+                            self.update_prediction_outcome(prediction, "Loss", current_stats)
 
-                    elif prediction.predictedOutcome == 1:
-                        prediction.outcome = "Loss"
-                        current_stats.miner_lifetime_losses += 1
-                elif outcome == 1:
-                    #teamB wins
-                    if prediction.predictedOutcome == prediction.teamB:
-                        prediction.outcome = "Win"
-                        current_stats.miner_lifetime_wins += 1
-                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamBodds
-                    elif prediction.predictedOutcome == 0:
-                        prediction.outcome = "Loss"
-                        current_stats.miner_lifetime_losses += 1
-                elif outcome == 2:
-                    #tie
-                    if prediction.predictedOutcome == "Tie":
-                        prediction.outcome = "Win"
-                        current_stats.miner_lifetime_wins += 1
-                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.tieOdds
-                    elif prediction.predictedOutcome == 0 or prediction.predictedOutcome == 1:
-                        prediction.outcome = "Loss"
-                        current_stats.miner_lifetime_losses += 1
-
-
-        #recalculate ratio
+        # Recalculate ratio
         total_games = current_stats.miner_lifetime_wins + current_stats.miner_lifetime_losses
         
         if total_games == 0:
@@ -716,10 +709,7 @@ class BettensorMiner(BaseNeuron):
         # Round to 3 decimal places for precision
         current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
 
-
         # Get most recent prediction date from prediction dict
-        bt.logging.trace(f"update_outcomes() | Prediction dict: {prediction_dict}")
-
         if prediction_dict:
             current_stats.miner_last_prediction_date = max(
                 prediction.predictionDate for prediction in prediction_dict.values()
@@ -727,12 +717,23 @@ class BettensorMiner(BaseNeuron):
         else:
             current_stats.miner_last_prediction_date = None
 
-        #bt.logging.info(f"update_outcomes() | Current stats: {current_stats}")
-        #update miner stats table
         self.stats.update_miner_row(current_stats)
     
-   
-    
-    def stop(self):
-        self.stats.stop()
+    def update_prediction_outcome(self, prediction, outcome, current_stats, odds=None):
+        if prediction.outcome != outcome:  # Only update if the outcome has changed
+            prediction.outcome = outcome
+            if outcome == "Win":
+                current_stats.miner_lifetime_wins += 1
+                if odds:
+                    current_stats.miner_lifetime_earnings += prediction.wager * odds
+            else:  # Loss
+                current_stats.miner_lifetime_losses += 1
+            
+            # Update the prediction in the database
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute(
+                    "UPDATE predictions SET outcome = ? WHERE predictionID = ?",
+                    (outcome, prediction.predictionID)
+                )
+                cursor.connection.commit()
         
