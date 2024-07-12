@@ -397,34 +397,37 @@ class BettensorMiner(BaseNeuron):
             external_game_id = game[0]
             bt.logging.trace(f"Processing Predictions: Game ID: {external_game_id}")
 
-
+            # Fetch predictions for the game from the last 3 days
             three_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=3)).isoformat(timespec="minutes")
-            # Fetch predictions for the game
             with self.db_manager.get_cursor() as cursor:
                 cursor.execute(
-                    "SELECT * FROM predictions WHERE teamGameID = ? and predictionDate > ?", (external_game_id, three_days_ago)
+                    "SELECT * FROM predictions WHERE teamGameID = ? AND predictionDate > ?", 
+                    (external_game_id, three_days_ago)
                 )
                 predictions = cursor.fetchall()
             bt.logging.trace(f"Predictions: {predictions}")
 
             # Add predictions to prediction_dict
             for prediction in predictions:
-                single_prediction = TeamGamePrediction(
-                    predictionID=prediction[0],
-                    teamGameID=prediction[1],
-                    minerID=str(self.miner_uid),
-                    predictionDate=prediction[3],
-                    predictedOutcome=prediction[4],
-                    teamA=prediction[5],
-                    teamB=prediction[6],
-                    wager=prediction[7],
-                    teamAodds=prediction[8],
-                    teamBodds=prediction[9],
-                    tieOdds=prediction[10],
-                    can_overwrite=prediction[11],
-                    outcome=prediction[12],
-                )
-                prediction_dict[prediction[0]] = single_prediction
+                if len(prediction) >= 13:
+                    single_prediction = TeamGamePrediction(
+                        predictionID=prediction[0],
+                        teamGameID=prediction[1],
+                        minerID=str(self.miner_uid),
+                        predictionDate=prediction[3],
+                        predictedOutcome=prediction[4],
+                        teamA=prediction[5],
+                        teamB=prediction[6],
+                        wager=prediction[7],
+                        teamAodds=prediction[8],
+                        teamBodds=prediction[9],
+                        tieOdds=prediction[10],
+                        can_overwrite=prediction[11],
+                        outcome=prediction[12],
+                    )
+                    prediction_dict[prediction[0]] = single_prediction
+                else:
+                    bt.logging.warning(f"Skipping prediction due to insufficient data: {prediction}")
 
         bt.logging.trace(f"prediction_dict: {prediction_dict}")
         synapse.prediction_dict = prediction_dict
@@ -665,41 +668,37 @@ class BettensorMiner(BaseNeuron):
         prediction_dict = self.get_predictions()
         game_dict = self.get_games()
 
+        current_time = datetime.datetime.now(datetime.timezone.utc)
         current_stats = self.stats.return_miner_stats(self.hotkey)
+        
         for prediction_id, prediction in prediction_dict.items():
             if prediction.teamGameID in game_dict:
-                outcome = game_dict[prediction.teamGameID].outcome
-                if outcome == "Unfinished":
-                    continue
-                if outcome == 0:
-                    #teamA wins
-                    if prediction.predictedOutcome == prediction.teamA:
-                        prediction.outcome = "Win"
-                        current_stats.miner_lifetime_wins += 1
-                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamAodds
-                    elif prediction.predictedOutcome == 1:
-                        prediction.outcome = "Loss"
-                        current_stats.miner_lifetime_losses += 1
-                elif outcome == 1:
-                    #teamB wins
-                    if prediction.predictedOutcome == prediction.teamB:
-                        prediction.outcome = "Win"
-                        current_stats.miner_lifetime_wins += 1
-                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.teamBodds
-                    elif prediction.predictedOutcome == 0:
-                        prediction.outcome = "Loss"
-                        current_stats.miner_lifetime_losses += 1
-                elif outcome == 2:
-                    #tie
-                    if prediction.predictedOutcome == "Tie":
-                        prediction.outcome = "Win"
-                        current_stats.miner_lifetime_wins += 1
-                        current_stats.miner_lifetime_earnings += prediction.wager * prediction.tieOdds
-                    elif prediction.predictedOutcome == 0 or prediction.predictedOutcome == 1:
-                        prediction.outcome = "Loss"
-                        current_stats.miner_lifetime_losses += 1
+                game = game_dict[prediction.teamGameID]
+                game_start_time = datetime.datetime.fromisoformat(game.eventStartDate.replace('Z', '+00:00'))
+                
+                # Only process games that have already started
+                if current_time > game_start_time:
+                    outcome = game.outcome
+                    if outcome == "Unfinished":
+                        continue
+                
+                    if outcome == 0:  # teamA wins
+                        if prediction.predictedOutcome == prediction.teamA:
+                            self.update_prediction_outcome(prediction, "Win", current_stats, prediction.teamAodds)
+                        else:
+                            self.update_prediction_outcome(prediction, "Loss", current_stats)
+                    elif outcome == 1:  # teamB wins
+                        if prediction.predictedOutcome == prediction.teamB:
+                            self.update_prediction_outcome(prediction, "Win", current_stats, prediction.teamBodds)
+                        else:
+                            self.update_prediction_outcome(prediction, "Loss", current_stats)
+                    elif outcome == 2:  # tie
+                        if prediction.predictedOutcome == "Tie":
+                            self.update_prediction_outcome(prediction, "Win", current_stats, prediction.tieOdds)
+                        else:
+                            self.update_prediction_outcome(prediction, "Loss", current_stats)
 
-        #recalculate ratio
+        # Recalculate ratio
         total_games = current_stats.miner_lifetime_wins + current_stats.miner_lifetime_losses
         
         if total_games == 0:
@@ -711,8 +710,6 @@ class BettensorMiner(BaseNeuron):
         current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
 
         # Get most recent prediction date from prediction dict
-        bt.logging.trace(f"update_outcomes() | Prediction dict: {prediction_dict}")
-
         if prediction_dict:
             current_stats.miner_last_prediction_date = max(
                 prediction.predictionDate for prediction in prediction_dict.values()
@@ -722,8 +719,21 @@ class BettensorMiner(BaseNeuron):
 
         self.stats.update_miner_row(current_stats)
     
-   
-    
-    def stop(self):
-        self.stats.stop()
+    def update_prediction_outcome(self, prediction, outcome, current_stats, odds=None):
+        if prediction.outcome != outcome:  # Only update if the outcome has changed
+            prediction.outcome = outcome
+            if outcome == "Win":
+                current_stats.miner_lifetime_wins += 1
+                if odds:
+                    current_stats.miner_lifetime_earnings += prediction.wager * odds
+            else:  # Loss
+                current_stats.miner_lifetime_losses += 1
+            
+            # Update the prediction in the database
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute(
+                    "UPDATE predictions SET outcome = ? WHERE predictionID = ?",
+                    (outcome, prediction.predictionID)
+                )
+                cursor.connection.commit()
         
