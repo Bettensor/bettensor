@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# Check and set working directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+REPO_ROOT="$( dirname "$SCRIPT_DIR" )"
+
+if [ "$PWD" != "$REPO_ROOT" ]; then
+    echo "Changing working directory to $REPO_ROOT"
+    cd "$REPO_ROOT" || { echo "Failed to change directory. Exiting."; exit 1; }
+fi
+
 # Default neuron arguments
 DEFAULT_NEURON_ARGS=""
 DISABLE_AUTO_UPDATE="false"
