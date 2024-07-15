@@ -52,24 +52,18 @@ class BettensorMiner(BaseNeuron):
             None
         """
         super().__init__(parser=parser, profile="miner")
-
         # Allow user to specify db path, if they want to.
         parser.add_argument("--db_path", type=str, default=self.default_db_path)
-
         # Neuron configuration
         self.neuron_config = self.config(
             bt_classes=[bt.subtensor, bt.logging, bt.wallet, bt.axon]
         )
-
         args = parser.parse_args()
-
-        
-
         # TODO If users want to run a dual miner/vali. Not fully implemented yet.
-        if args.miner_set_weights == "False":
-            self.miner_set_weights = False
-        else:
-            self.miner_set_weights = True
+        # if args.miner_set_weights == "False":
+        #     self.miner_set_weights = False
+        # else:
+        #     self.miner_set_weights = True
 
         # Minimum stake for validator whitelist
         self.validator_min_stake = args.validator_min_stake
@@ -91,7 +85,7 @@ class BettensorMiner(BaseNeuron):
         self.ensure_db_directory_exists()
         self.initialize_database()
 
-        # Ensure the data directory exists
+        # TODO: Refactor to use miner_stats table, no need for txt file
         os.makedirs(os.path.dirname("data/miner_env.txt"), exist_ok=True)
 
         # Check if the miner's hotkey is already in the file
@@ -116,7 +110,6 @@ class BettensorMiner(BaseNeuron):
             bt.logging.error(
                 f"Failed to initialize miner stats. Submitting predictions will not work properly"
             )
-
         bt.logging.debug(f"init_stats: {init_stats}")
         self.stats.reset_daily_cash_on_startup()
 
@@ -178,7 +171,7 @@ class BettensorMiner(BaseNeuron):
             raise Exception("Failed to initialize local database")
 
     def setup(self) -> Tuple[bt.wallet, bt.subtensor, bt.metagraph, str]:
-        """This function sets up the neuron.
+        """
 
         The setup function initializes the neuron by registering the
         configuration.

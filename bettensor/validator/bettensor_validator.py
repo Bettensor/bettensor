@@ -439,7 +439,7 @@ class BettensorValidator(BaseNeuron):
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
         if self.hotkeys:
-            # check if known state len matches with current metagraph hotkey length
+            # check if known state len matches with current metagraph hotkey lengt
             if len(self.hotkeys) == len(self.metagraph.hotkeys):
                 current_hotkeys = self.metagraph.hotkeys
                 for i, hotkey in enumerate(current_hotkeys):
@@ -451,7 +451,7 @@ class BettensorValidator(BaseNeuron):
                         self.scores[i] = 0.0
                         bt.logging.debug(f"score after reset: {self.scores[i]}")
             else:
-                # init default scores
+                # TODO: Here, instead of resetting to default scores, we should just 
                 bt.logging.info(
                     f"init default scores because of state and metagraph hotkey length mismatch. expected: {len(self.metagraph.hotkeys)} had: {len(self.hotkeys)}"
                 )
@@ -990,16 +990,22 @@ class BettensorValidator(BaseNeuron):
         # Check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
+
+        
         if stake < 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
         else:
-            result = self.subtensor.set_weights(
-                netuid=self.neuron_config.netuid,  # subnet to set weights on
-                wallet=self.wallet,  # wallet to sign set weights using hotkey
-                uids=self.metagraph.uids,  # uids of the miners to set weights for
-                weights=weights,  # weights to set for the miners
-                wait_for_inclusion=False,
-            )
+            NUM_RETRIES = 3 
+            for i in range(NUM_RETRIES):
+                bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
+                result = self.subtensor.set_weights(
+                    netuid=self.neuron_config.netuid,  # subnet to set weights on
+                    wallet=self.wallet,  # wallet to sign set weights using hotkey
+                    uids=self.metagraph.uids,  # uids of the miners to set weights for
+                    weights=weights,  # weights to set for the miners
+                    wait_for_inclusion=False,
+                    wait_for_finalization=False,
+                )
             bt.logging.info(f"Printing weights: {weights}")
             if result:
                 bt.logging.info("Successfully set weights.")
