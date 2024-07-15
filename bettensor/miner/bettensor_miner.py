@@ -172,7 +172,6 @@ class BettensorMiner(BaseNeuron):
                                    canTie BOOLEAN
                                    )"""
                 )
-                cursor.connection.commit()
         except sqlite3.Error as e:
             bt.logging.error(f"Failed to initialize local database: {e}")
             raise Exception("Failed to initialize local database")
@@ -361,12 +360,18 @@ class BettensorMiner(BaseNeuron):
 
         # check if tables in db are initialized
         # if not, initialize them
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT * FROM games")
-            if not cursor.fetchone():
-                self.initialize_database()
+        try:
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("SELECT * FROM games")
+                if not cursor.fetchone():
+                    bt.logging.info(f"Initializing database")
+                    self.initialize_database()
+        except Exception as e:
+            bt.logging.error(f"Error checking/initializing database: {e}")
+            return synapse  # Return early if there's a database error
 
         game_data_dict = synapse.gamedata_dict
+        bt.logging.info(f"Forward() | Adding game data to local database: {len(game_data_dict)} games")
         self.add_game_data(game_data_dict)
 
         # clean up games table and set active field
@@ -379,15 +384,17 @@ class BettensorMiner(BaseNeuron):
         current_time = datetime.datetime.now(datetime.timezone.utc).isoformat(
             timespec="minutes"
         )
-        # Update outcomes for all predictions and recalculate miner stats
-        
 
         # Fetch games that have not started yet
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute(
-                "SELECT externalID FROM games WHERE eventStartDate > ?", (current_time,)
-            )
-            games = cursor.fetchall()
+        try:
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute(
+                    "SELECT externalID FROM games WHERE eventStartDate > ?", (current_time,)
+                )
+                games = cursor.fetchall()
+        except Exception as e:
+            bt.logging.error(f"Error fetching games: {e}")
+            return synapse  # Return early if there's a database error
 
         bt.logging.debug(f"Fetched {len(games)} games")
 
@@ -504,7 +511,6 @@ class BettensorMiner(BaseNeuron):
                                 game_id,
                             ),
                         )
-                cursor.connection.commit()
         except Exception as e:
             bt.logging.error(f"Failed to add game data: {e}")
 
@@ -545,8 +551,6 @@ class BettensorMiner(BaseNeuron):
                     bt.logging.trace(
                         f"update_games_data() | Game {game[0]} is now inactive"
                     )
-
-            cursor.connection.commit()
 
     def hotkey_exists_in_file(self, file_path, hotkey):
         if not os.path.exists(file_path):
@@ -605,7 +609,6 @@ class BettensorMiner(BaseNeuron):
                         )
                     """, (team_game_id, team_game_id))
 
-                cursor.connection.commit()
             bt.logging.trace(f"Removed {len(duplicates)} sets of duplicate games")
             bt.logging.trace(f"Removed {len(prediction_duplicates)} sets of duplicate predictions")
         except sqlite3.Error as e:
@@ -668,60 +671,64 @@ class BettensorMiner(BaseNeuron):
 
     def update_outcomes(self):
         bt.logging.info("update_outcomes() | Updating outcomes for all predictions and recalculating miner stats")
-        prediction_dict = self.get_predictions()
-        game_dict = self.get_games()
+        try:
+            prediction_dict = self.get_predictions()
+            game_dict = self.get_games()
 
-        current_time = datetime.datetime.now(datetime.timezone.utc)
-        current_stats = self.stats.return_miner_stats(self.hotkey)
-        
-        for prediction_id, prediction in prediction_dict.items():
-            if prediction.teamGameID in game_dict:
-                game = game_dict[prediction.teamGameID]
-                game_start_time = datetime.datetime.fromisoformat(game.eventStartDate.replace('Z', '+00:00'))
+            current_time = datetime.datetime.now(datetime.timezone.utc)
+            current_stats = self.stats.return_miner_stats(self.hotkey)
+            
+            with self.db_manager.get_cursor() as cursor:
+                for prediction_id, prediction in prediction_dict.items():
+                    if prediction.teamGameID in game_dict:
+                        game = game_dict[prediction.teamGameID]
+                        game_start_time = datetime.datetime.fromisoformat(game.eventStartDate.replace('Z', '+00:00'))
+                        
+                        # Only process games that have already started
+                        if current_time > game_start_time:
+                            outcome = game.outcome
+                            if outcome == "Unfinished":
+                                continue
+                        
+                            if outcome == 0:  # teamA wins
+                                if prediction.predictedOutcome == prediction.teamA:
+                                    self.update_prediction_outcome(prediction, "Win", current_stats, prediction.teamAodds)
+                                else:
+                                    self.update_prediction_outcome(prediction, "Loss", current_stats)
+                            elif outcome == 1:  # teamB wins
+                                if prediction.predictedOutcome == prediction.teamB:
+                                    self.update_prediction_outcome(prediction, "Win", current_stats, prediction.teamBodds)
+                                else:
+                                    self.update_prediction_outcome(prediction, "Loss", current_stats)
+                            elif outcome == 2:  # tie
+                                if prediction.predictedOutcome == "Tie":
+                                    self.update_prediction_outcome(prediction, "Win", current_stats, prediction.tieOdds)
+                                else:
+                                    self.update_prediction_outcome(prediction, "Loss", current_stats)
+
+                # Recalculate ratio
+                total_games = current_stats.miner_lifetime_wins + current_stats.miner_lifetime_losses
                 
-                # Only process games that have already started
-                if current_time > game_start_time:
-                    outcome = game.outcome
-                    if outcome == "Unfinished":
-                        continue
-                
-                    if outcome == 0:  # teamA wins
-                        if prediction.predictedOutcome == prediction.teamA:
-                            self.update_prediction_outcome(prediction, "Win", current_stats, prediction.teamAodds)
-                        else:
-                            self.update_prediction_outcome(prediction, "Loss", current_stats)
-                    elif outcome == 1:  # teamB wins
-                        if prediction.predictedOutcome == prediction.teamB:
-                            self.update_prediction_outcome(prediction, "Win", current_stats, prediction.teamBodds)
-                        else:
-                            self.update_prediction_outcome(prediction, "Loss", current_stats)
-                    elif outcome == 2:  # tie
-                        if prediction.predictedOutcome == "Tie":
-                            self.update_prediction_outcome(prediction, "Win", current_stats, prediction.tieOdds)
-                        else:
-                            self.update_prediction_outcome(prediction, "Loss", current_stats)
+                if total_games == 0:
+                    current_stats.miner_win_loss_ratio = 0  # No games played
+                else:
+                    current_stats.miner_win_loss_ratio = current_stats.miner_lifetime_wins / total_games
 
-        # Recalculate ratio
-        total_games = current_stats.miner_lifetime_wins + current_stats.miner_lifetime_losses
-        
-        if total_games == 0:
-            current_stats.miner_win_loss_ratio = 0  # No games played
-        else:
-            current_stats.miner_win_loss_ratio = current_stats.miner_lifetime_wins / total_games
+                # Round to 3 decimal places for precision
+                current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
 
-        # Round to 3 decimal places for precision
-        current_stats.miner_win_loss_ratio = round(current_stats.miner_win_loss_ratio, 3)
+                # Get most recent prediction date from prediction dict
+                if prediction_dict:
+                    current_stats.miner_last_prediction_date = max(
+                        prediction.predictionDate for prediction in prediction_dict.values()
+                    )
+                else:
+                    current_stats.miner_last_prediction_date = None
 
-        # Get most recent prediction date from prediction dict
-        if prediction_dict:
-            current_stats.miner_last_prediction_date = max(
-                prediction.predictionDate for prediction in prediction_dict.values()
-            )
-        else:
-            current_stats.miner_last_prediction_date = None
+                self.stats.update_miner_row(current_stats)
+        except Exception as e:
+            bt.logging.error(f"Error in update_outcomes: {e}")
 
-        self.stats.update_miner_row(current_stats)
-    
     def update_prediction_outcome(self, prediction, outcome, current_stats, odds=None):
         if prediction.outcome != outcome:  # Only update if the outcome has changed
             prediction.outcome = outcome
@@ -732,13 +739,14 @@ class BettensorMiner(BaseNeuron):
             else:  # Loss
                 current_stats.miner_lifetime_losses += 1
             
-            # Update the prediction in the database
-            with self.db_manager.get_cursor() as cursor:
-                cursor.execute(
-                    "UPDATE predictions SET outcome = ? WHERE predictionID = ?",
-                    (outcome, prediction.predictionID)
-                )
-                cursor.connection.commit()
+            try:
+                with self.db_manager.get_cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE predictions SET outcome = ? WHERE predictionID = ?",
+                        (outcome, prediction.predictionID)
+                    )
+            except Exception as e:
+                bt.logging.error(f"Error updating prediction outcome: {e}")
         
 
 

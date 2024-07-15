@@ -3,6 +3,8 @@ from contextlib import contextmanager
 from threading import Lock
 import os
 import bittensor as bt
+from sqlite3 import OperationalError
+import time
 
 class DatabaseManager:
     _instances = {}
@@ -18,26 +20,37 @@ class DatabaseManager:
         bt.logging.trace(f"__init__() | Initializing database manager for {db_path}")
         self.db_path = db_path
         self.lock = Lock()
+        self.connection_pool = []
 
-    @contextmanager
     def get_connection(self):
         bt.logging.trace(f"get_connection() | Getting connection for {self.db_path}")
         with self.lock:
-            conn = sqlite3.connect(self.db_path)
-            try:
-                yield conn
-            finally:
-                conn.close()
+            if self.connection_pool:
+                return self.connection_pool.pop()
+            else:
+                return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def release_connection(self, conn):
+        with self.lock:
+            self.connection_pool.append(conn)
 
     @contextmanager
     def get_cursor(self):
         bt.logging.trace(f"get_cursor() | Getting cursor for {self.db_path}")
-        with self.get_connection() as conn:
+        conn = self.get_connection()
+        try:
             cursor = conn.cursor()
-            try:
-                yield cursor
-            finally:
-                cursor.close()
+            yield cursor
+            conn.commit()
+        except OperationalError as e:
+            bt.logging.error(f"Database error: {e}. Retrying...")
+            time.sleep(1)  # Wait for a second before retrying
+            cursor = conn.cursor()
+            yield cursor
+            conn.commit()
+        finally:
+            cursor.close()
+            self.release_connection(conn)
 
 def get_db_manager(miner_uid=None):
     '''
