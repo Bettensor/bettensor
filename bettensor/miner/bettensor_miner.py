@@ -345,13 +345,12 @@ class BettensorMiner(BaseNeuron):
             )
         if synapse.metadata.subnet_version < self.subnet_version:
             bt.logging.warning(
-                f"Received a synapse from a validator with lower subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version})."
+                f"Received a synapse from a validator with lower subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version}). You can safely ignore this warning."
             )
 
         # TODO: METADATA / Signature Verification
 
-        game_data_dict = synapse.gamedata_dict
-        self.add_game_data(game_data_dict)
+        
 
         # check if tables in db are initialized
         # if not, initialize them
@@ -359,6 +358,9 @@ class BettensorMiner(BaseNeuron):
             cursor.execute("SELECT * FROM games")
             if not cursor.fetchone():
                 self.initialize_database()
+
+        game_data_dict = synapse.gamedata_dict
+        self.add_game_data(game_data_dict)
 
         # clean up games table and set active field
         self.update_games_data()
@@ -469,6 +471,7 @@ class BettensorMiner(BaseNeuron):
                                 game_data.canTie,
                             ),
                         )
+                        bt.logging.trace(f"add_game_data() | Game {external_id} added to the table.")
                     else:
                         bt.logging.trace(
                             f"add_game_data() | Game {external_id} already in the table, updating."
@@ -730,3 +733,6 @@ class BettensorMiner(BaseNeuron):
                 )
                 cursor.connection.commit()
         
+
+
+
