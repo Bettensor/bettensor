@@ -149,7 +149,7 @@ def send_predictions(predictions, db_path):
             "minerHotKey": hotkey,
             "minerColdKey": coldkey,
             "predictionDate": prediction["predictionDate"],
-            "predictedOutcome": 0,
+            "predictedOutcome": prediction["predictedOutcome"],
             "wager": prediction["wager"],
         }
 

@@ -978,7 +978,7 @@ class BettensorValidator(BaseNeuron):
         bt.logging.trace(miner_performance)
 
         return earnings
-
+        
     def set_weights(self):
         """Sets the weights for the miners based on their calculated scores"""
         # Calculate miner scores
@@ -994,6 +994,27 @@ class BettensorValidator(BaseNeuron):
         
         if stake < 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
+            return
+
+        NUM_RETRIES = 3 
+        for i in range(NUM_RETRIES):
+            bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
+            result = self.subtensor.set_weights(
+                netuid=self.neuron_config.netuid,  # subnet to set weights on
+                wallet=self.wallet,  # wallet to sign set weights using hotkey
+                uids=self.metagraph.uids,  # uids of the miners to set weights for
+                weights=weights,  # weights to set for the miners
+                wait_for_inclusion=False,
+                wait_for_finalization=False,
+            )
+            bt.logging.trace(f"result: {result}")
+            
+            if isinstance(result, tuple) and len(result) >= 1:
+                success = result[0]
+                if success:
+                    bt.logging.info("Successfully set weights.")
+                    bt.logging.info(f"Weights: {weights}")
+                    return
         else:
             NUM_RETRIES = 3 
             for i in range(NUM_RETRIES):
@@ -1010,4 +1031,7 @@ class BettensorValidator(BaseNeuron):
             if result:
                 bt.logging.info("Successfully set weights.")
             else:
-                bt.logging.error("Failed to set weights.")
+                bt.logging.warning(f"Unexpected result format in setting weights: {result}")
+            
+            if i == NUM_RETRIES - 1:
+                bt.logging.error("Failed to set weights after all attempts.")

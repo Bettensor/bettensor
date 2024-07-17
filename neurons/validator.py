@@ -144,10 +144,6 @@ def main(validator: BettensorValidator):
             if not uids_to_query:
                 bt.logging.warning(f"UIDs to query is empty: {uids_to_query}")
 
-            # Get data and populate DB
-            if validator.step % 200 == 0:
-                validator.set_weights()
-
             # Broadcast query to valid Axons
             current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
             # metadata = Metadata.create(validator.wallet, validator.subnet_version, validator.uid)
