@@ -575,7 +575,7 @@ class BettensorValidator(BaseNeuron):
         )
 
         # sync the metagraph
-        metagraph.sync(subtensor=subtensor)
+        metagraph.sync(subtensor=subtensor, lite=True)
 
         return metagraph
 
