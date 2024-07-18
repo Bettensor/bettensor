@@ -575,7 +575,7 @@ class BettensorValidator(BaseNeuron):
         )
 
         # sync the metagraph
-        metagraph.sync(subtensor=subtensor)
+        metagraph.sync(subtensor=subtensor, lite=True)
 
         return metagraph
 
@@ -1003,7 +1003,7 @@ class BettensorValidator(BaseNeuron):
                 uids=self.metagraph.uids,  # uids of the miners to set weights for
                 weights=weights,  # weights to set for the miners
                 wait_for_inclusion=False,
-                wait_for_finalization=False,
+                wait_for_finalization=True,
             )
             bt.logging.trace(f"result: {result}")
             
