@@ -122,14 +122,79 @@ class SportsData:
                 "from": start_date.strftime("%Y-%m-%d"),
                 "to": end_date.strftime("%Y-%m-%d")
             }
+            all_games.extend(self._fetch_games(url, querystring, sport))
         elif sport == "baseball":
             url = f"https://{self.api_hosts[sport]}/games"
-            querystring = {
-                "league": league,
-                "season": season,
-                "date": f"{start_date.strftime('%Y-%m-%d')}-{end_date.strftime('%Y-%m-%d')}"
-            }
+            for single_date in (start_date + timedelta(n) for n in range(7)):
+                querystring = {
+                    "league": league,
+                    "season": season,
+                    "date": single_date.strftime("%Y-%m-%d")
+                }
+                all_games.extend(self._fetch_games(url, querystring, sport))
 
+        bt.logging.debug(f"Initially fetched {len(all_games)} games")
+
+        # Filter games with odds less than 1.05; ensure odds are not None; exclude false odds of 1.5/3.0/1.5
+        filtered_games = []
+        for game in all_games:
+            if game["odds"]["average_home_odds"] is None or game["odds"]["average_away_odds"] is None:
+                bt.logging.debug(f"Excluding game {game['game_id']} due to None odds: Home odds: {game['odds']['average_home_odds']}, Away odds: {game['odds']['average_away_odds']}")
+                continue
+            
+            if game["odds"]["average_home_odds"] < 1.05 or game["odds"]["average_away_odds"] < 1.05:
+                bt.logging.debug(f"Excluding game {game['game_id']} due to odds < 1.05: Home odds: {game['odds']['average_home_odds']}, Away odds: {game['odds']['average_away_odds']}")
+                continue
+            
+            if (game["odds"]["average_home_odds"] == 1.5 and
+                game["odds"]["average_away_odds"] == 3.0 and
+                game["odds"].get("average_tie_odds") == 1.5):
+                bt.logging.debug(f"Excluding game {game['game_id']} due to false odds of 1.5/3.0/1.5")
+                continue
+            
+            filtered_games.append(game)
+
+        bt.logging.info(f"Filtered {len(all_games) - len(filtered_games)} games out of {len(all_games)} total games")
+        all_games = filtered_games
+
+        # Append the fetched games to the overall all_games list
+        self.all_games.extend(all_games)
+
+        # Insert or update the data in the database
+        for game in all_games:
+            try:
+                externalId = game["game_id"]
+                teamAodds = game["odds"]["average_home_odds"]
+                teamBodds = game["odds"]["average_away_odds"]
+                tieOdds = game["odds"].get("average_tie_odds") if sport == "soccer" else None
+
+                if self.external_id_exists(externalId):
+                    self.update_odds_in_database(externalId, teamAodds, teamBodds, tieOdds)
+                else:
+                    game_id = str(uuid.uuid4())
+                    teamA = game["home"]
+                    teamB = game["away"]
+                    sport_type = sport
+                    createDate = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+                    lastUpdateDate = createDate
+                    eventStartDate = game["date"]
+                    active = 0 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 1
+                    outcome = "Unfinished"
+                    canTie = sport == "soccer"
+
+                    game_data = (
+                        game_id, teamA, teamB, sport_type, league, externalId, createDate, lastUpdateDate,
+                        eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds if canTie else 0, canTie,
+                    )
+                    self.insert_into_database(game_data)
+            except KeyError as e:
+                bt.logging.error(f"Key Error during database insertion: {e} in game data: {game}")
+            except Exception as e:
+                bt.logging.error(f"Unexpected error during database insertion: {e}")
+
+        return all_games
+
+    def _fetch_games(self, url, querystring, sport):
         headers = {
             "X-RapidAPI-Key": self.rapid_api_key,
             "X-RapidAPI-Host": self.api_hosts[sport],
@@ -139,114 +204,28 @@ class SportsData:
             response = requests.get(url, headers=headers, params=querystring)
             response.raise_for_status()
             games = response.json()
+            
+            if "response" in games:
+                games_list = [
+                    {
+                        "home": i["teams"]["home"]["name"],
+                        "away": i["teams"]["away"]["name"],
+                        "game_id": i["fixture"]["id"] if sport == "soccer" else i["id"],
+                        "date": i["fixture"]["date"] if sport == "soccer" else i["date"],
+                        "odds": self.get_game_odds(i["fixture"]["id"] if sport == "soccer" else i["id"], sport)
+                    }
+                    for i in games["response"]
+                ]
+                return games_list
+            else:
+                bt.logging.warning(f"Unexpected response format: {games}")
+                return []
         except requests.exceptions.RequestException as e:
-            print(f"HTTP Request failed: {e}")
+            bt.logging.error(f"HTTP Request failed: {e}")
             return []
         except json.JSONDecodeError as e:
-            print(f"JSON Decode Error: {e}")
+            bt.logging.error(f"JSON Decode Error: {e}")
             return []
-
-        if "response" not in games:
-            print(f"Unexpected response format: {games}")
-            return []
-
-        try:
-            games_list = [
-                {
-                    "home": i["teams"]["home"]["name"],
-                    "away": i["teams"]["away"]["name"],
-                    "game_id": i["fixture"]["id"] if sport == "soccer" else i["id"],
-                    "date": i["fixture"]["date"] if sport == "soccer" else i["date"],
-                    "odds": self.get_game_odds(
-                        i["fixture"]["id"] if sport == "soccer" else i["id"], sport
-                    )
-                }
-                for i in games["response"]
-            ]
-        except KeyError as e:
-            print(f"Key Error: {e} in game data")
-            return []
-
-        all_games.extend(games_list)
-
-        # Filter games with odds less than 1.05; ensure odds are not None; exclude false odds of 1.5/3.0/1.5
-        # RapidAPI has known issues around each of these conditions.
-        all_games = [
-            game
-            for game in all_games
-            if game["odds"]["average_home_odds"] is not None
-            and game["odds"]["average_away_odds"] is not None
-            and game["odds"]["average_home_odds"] >= 1.05
-            and game["odds"]["average_away_odds"] >= 1.05
-            and not (
-                game["odds"]["average_home_odds"] == 1.5
-                and game["odds"]["average_away_odds"] == 3.0
-                and game["odds"]["average_tie_odds"] == 1.5 
-    )
-]
-
-        # Append the fetched games to the overall all_games list
-        self.all_games.extend(all_games)
-        bt.logging.trace(f"GAME DATA: {all_games}")
-        # Insert or update the data in the database
-        for game in all_games:
-            try:
-                externalId = game["game_id"]
-                teamAodds = game["odds"]["average_home_odds"]
-                teamBodds = game["odds"]["average_away_odds"]
-                tieOdds = (
-                    game["odds"].get("average_tie_odds") if sport == "soccer" else None
-                )
-
-                if self.external_id_exists(externalId):
-                    # Update the existing record with new odds
-                    self.update_odds_in_database(
-                        externalId, teamAodds, teamBodds, tieOdds
-                    )
-                else:
-                    # Insert a new record
-                    game_id = str(uuid.uuid4())
-                    teamA = game["home"]
-                    teamB = game["away"]
-                    sport_type = sport
-                    createDate = (
-                        datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-                    )
-                    lastUpdateDate = createDate
-                    eventStartDate = game["date"]
-                    active = (
-                        0
-                        if parser.isoparse(eventStartDate)
-                        > datetime.utcnow().replace(tzinfo=timezone.utc)
-                        else 1
-                    )
-                    outcome = "Unfinished"
-                    canTie = sport == "soccer"
-
-                    game_data = (
-                        game_id,
-                        teamA,
-                        teamB,
-                        sport_type,
-                        league,
-                        externalId,
-                        createDate,
-                        lastUpdateDate,
-                        eventStartDate,
-                        active,
-                        outcome,
-                        teamAodds,
-                        teamBodds,
-                        tieOdds if canTie else 0,
-                        canTie,
-                    )
-                    self.insert_into_database(game_data)
-            except KeyError as e:
-                print(f"Key Error during database insertion: {e} in game data: {game}")
-            except Exception as e:
-                print(f"Unexpected error during database insertion: {e}")
-
-        return all_games
 
     def get_game_odds(self, game_id, sport):
         if sport == "soccer":
