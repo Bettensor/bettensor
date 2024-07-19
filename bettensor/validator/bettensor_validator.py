@@ -90,6 +90,11 @@ class BettensorValidator(BaseNeuron):
 
         return True
 
+    async def initialize_connection(self):
+        if self.subtensor is None:
+            self.subtensor = bt.subtensor(config=self.neuron_config)
+            bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+
     def check_vali_reg(self, metagraph, wallet, subtensor) -> bool:
         """validates the validator has registered correctly"""
         if wallet.hotkey.ss58_address not in metagraph.hotkeys:
@@ -1013,7 +1018,7 @@ class BettensorValidator(BaseNeuron):
         # Check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
-        if stake < 1000.0:
+        if stake 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
             return
 
@@ -1021,15 +1026,17 @@ class BettensorValidator(BaseNeuron):
         for i in range(NUM_RETRIES):
             bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
             try:
-                async with asyncio.timeout(90):  # 90 second timeout
-                    result = await self.run_sync_in_async(lambda: self.subtensor.set_weights(
+                result = await asyncio.wait_for(
+                    self.run_sync_in_async(lambda: self.subtensor.set_weights(
                         netuid=self.neuron_config.netuid,
                         wallet=self.wallet,
                         uids=self.metagraph.uids,
                         weights=weights,
                         wait_for_inclusion=False,
                         wait_for_finalization=True,
-                    ))
+                    )),
+                    timeout=90  # 90 second timeout
+                )
                 bt.logging.trace(f"Set weights result: {result}")
                 
                 if isinstance(result, tuple) and len(result) >= 1:

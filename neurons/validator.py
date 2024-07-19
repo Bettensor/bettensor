@@ -73,6 +73,7 @@ async def main(validator: BettensorValidator):
     last_api_call = datetime.now()
 
     validator.serve_axon()
+    await validator.initialize_connection()
 
     while True:
 
@@ -246,7 +247,9 @@ async def main(validator: BettensorValidator):
             #bt.logging.warning(f"TESTING AUTO UPDATE!!")
 
         except TimeoutError as e:
-            bt.logging.debug("Validator timed out")
+            bt.logging.error(f"Error in main loop: {str(e)}")
+            # Attempt to reconnect if necessary
+            await self.initialize_connection()
 
 
 # The main function parses the configuration and runs the validator.
