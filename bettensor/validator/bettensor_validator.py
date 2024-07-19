@@ -1006,7 +1006,7 @@ class BettensorValidator(BaseNeuron):
         for i in range(NUM_RETRIES):
             bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
             try:
-                async with asyncio.timeout(30):  # 30 second timeout
+                async with asyncio.timeout(90):  # 90 second timeout
                     result = await self.run_sync_in_async(lambda: self.subtensor.set_weights(
                         netuid=self.neuron_config.netuid,
                         wallet=self.wallet,
