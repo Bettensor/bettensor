@@ -72,6 +72,8 @@ async def main(validator: BettensorValidator):
     all_games =  await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
     last_api_call = datetime.now()
 
+    validator.serve_axon()
+
     while True:
 
         try:
@@ -251,12 +253,15 @@ async def main(validator: BettensorValidator):
 if __name__ == "__main__":
     parser = ArgumentParser()
 
+    parser.add_argument('--subtensor.network', type=str, help="The subtensor network to connect to")
+    parser.add_argument('--wallet.name', type=str, help="The name of the wallet to use")
+    parser.add_argument('--wallet.hotkey', type=str, help="The hotkey of the wallet to use")
+    parser.add_argument('--logging.trace', action='store_true', help="Enable trace logging")
     parser.add_argument(
         "--alpha", type=float, default=0.9, help="The alpha value for the validator."
     )
-
     parser.add_argument("--netuid", type=int, default=30, help="The chain subnet uid.")
-
+    parser.add_argument('--axon.port', type=int, help="The port this axon endpoint is serving on.")
     parser.add_argument(
         "--max_targets",
         type=int,
@@ -269,6 +274,8 @@ if __name__ == "__main__":
         default="True",
         help="WARNING: Setting this value to False clears the old state.",
     )
+    args = parser.parse_args()
+    print("Parsed arguments:", args)
     validator = BettensorValidator(parser=parser)
 
     if (

@@ -53,6 +53,8 @@ class BettensorValidator(BaseNeuron):
             help="Path to the validator database",
         )
 
+        args = parser.parse_args()
+
         self.timeout = 12
         self.neuron_config = None
         self.wallet = None
@@ -70,6 +72,7 @@ class BettensorValidator(BaseNeuron):
         self.uid = None
         self.loop = asyncio.get_event_loop()
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
+        self.axon_port = getattr(args, 'axon.port', None) 
 
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
@@ -113,6 +116,18 @@ class BettensorValidator(BaseNeuron):
         self.hotkeys = copy.deepcopy(metagraph.hotkeys)
 
         return wallet, subtensor, dendrite, metagraph
+
+    def serve_axon(self):
+        """Serve the axon to the network"""
+        bt.logging.info("Serving axon...")
+        
+        if self.axon_port is None:
+            raise ValueError("Axon port must be specified with --axon.port in the startup command.")
+        
+        self.axon = bt.axon(wallet=self.wallet, port=self.axon_port)
+
+        self.axon.serve(netuid=self.neuron_config.netuid, subtensor=self.subtensor)
+        bt.logging.info(f"Axon served on port {self.axon_port}")
 
     def initialize_neuron(self) -> bool:
         """initializes the neuron
