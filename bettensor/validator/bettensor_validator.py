@@ -18,6 +18,8 @@ import requests
 import time
 from dotenv import load_dotenv
 import os
+import asyncio
+import concurrent.futures
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -66,6 +68,8 @@ class BettensorValidator(BaseNeuron):
         self.load_validator_state = None
         self.data_entry = None
         self.uid = None
+        self.loop = asyncio.get_event_loop()
+        self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
 
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
@@ -894,6 +898,9 @@ class BettensorValidator(BaseNeuron):
 
         bt.logging.info("Recent games and predictions update process completed")
 
+    async def run_sync_in_async(self, fn):
+        return await self.loop.run_in_executor(self.thread_executor, fn)
+
     def calculate_miner_scores(self):
         """Calculates the scores for miners based on their performance in the last 48 hours"""
         # initialize the earnings tensor
@@ -979,32 +986,43 @@ class BettensorValidator(BaseNeuron):
 
         return earnings
         
-    def set_weights(self):
+    async def set_weights(self):
         """Sets the weights for the miners based on their calculated scores"""
         # Calculate miner scores
         earnings = self.calculate_miner_scores()
 
         # Normalize the earnings tensor to get weights
         weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
+        bt.logging.trace(f"Number of UIDs: {len(self.metagraph.uids)}")
+        bt.logging.trace(f"Length of weights vector: {len(weights)}")
+        bt.logging.debug(f"Min weight: {weights.min()}, Max weight: {weights.max()}")
+        bt.logging.debug(weights)
+        if torch.all(earnings == 0):
+            bt.logging.info("All weights are zero. Setting artificial non-zero weights.")
+            # Set the first two weights to non-zero values
+            earnings[0] = 0.7  # You can adjust these values
+            earnings[1] = 0.3  # Make sure they sum to 1 or less
+            weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
+        bt.logging.debug(weights)
 
         # Check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
-        if stake < 1000.0:
+        if stake < 0.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
             return
 
         NUM_RETRIES = 3 
         for i in range(NUM_RETRIES):
             bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
-            result = self.subtensor.set_weights(
-                netuid=self.neuron_config.netuid,  # subnet to set weights on
-                wallet=self.wallet,  # wallet to sign set weights using hotkey
-                uids=self.metagraph.uids,  # uids of the miners to set weights for
-                weights=weights,  # weights to set for the miners
+            result = await self.run_sync_in_async(lambda: self.subtensor.set_weights(
+                netuid=self.neuron_config.netuid,
+                wallet=self.wallet,
+                uids=self.metagraph.uids,
+                weights=weights,
                 wait_for_inclusion=False,
                 wait_for_finalization=True,
-            )
+            ))
             bt.logging.trace(f"result: {result}")
             
             if isinstance(result, tuple) and len(result) >= 1:
@@ -1016,5 +1034,7 @@ class BettensorValidator(BaseNeuron):
             else:
                 bt.logging.warning(f"Unexpected result format in setting weights: {result}")
             
-            if i == NUM_RETRIES - 1:
-                bt.logging.error("Failed to set weights after all attempts.")
+            if i < NUM_RETRIES - 1:
+                await asyncio.sleep(1)  # Wait before retrying
+        
+        bt.logging.error("Failed to set weights after all attempts.")
