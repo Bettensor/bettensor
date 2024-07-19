@@ -993,17 +993,6 @@ class BettensorValidator(BaseNeuron):
 
         # Normalize the earnings tensor to get weights
         weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
-        bt.logging.trace(f"Number of UIDs: {len(self.metagraph.uids)}")
-        bt.logging.trace(f"Length of weights vector: {len(weights)}")
-        bt.logging.debug(f"Min weight: {weights.min()}, Max weight: {weights.max()}")
-        bt.logging.debug(weights)
-        if torch.all(earnings == 0):
-            bt.logging.info("All weights are zero. Setting artificial non-zero weights.")
-            # Set the first two weights to non-zero values
-            earnings[0] = 0.7  # You can adjust these values
-            earnings[1] = 0.3  # Make sure they sum to 1 or less
-            weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
-        bt.logging.debug(weights)
 
         # Check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
