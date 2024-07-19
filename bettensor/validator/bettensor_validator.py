@@ -408,7 +408,7 @@ class BettensorValidator(BaseNeuron):
                     if prediction_dict is not None and any(prediction_dict.values()):
                         predictions_dict[uid] = prediction_dict
                     else:
-                        bt.logging.warning(
+                        bt.logging.trace(
                             f"prediction from miner {uid} is none and will be skipped."
                         )
                 else:
@@ -851,7 +851,7 @@ class BettensorValidator(BaseNeuron):
                         new_outcome = result[0]
 
                         if new_outcome == "Unfinished":
-                            bt.logging.info(f"Game {externalId} is still unfinished")
+                            bt.logging.trace(f"Game {externalId} is still unfinished")
                             break
 
                         # Update predictions table where outcome is 'Unfinished' and matches teamGameID
@@ -994,34 +994,40 @@ class BettensorValidator(BaseNeuron):
         # Normalize the earnings tensor to get weights
         weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
 
+        bt.logging.info(f"Normalized weights: {weights}")
         # Check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
-        if stake < 0.0:
+        if stake < 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
             return
 
         NUM_RETRIES = 3 
         for i in range(NUM_RETRIES):
             bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
-            result = await self.run_sync_in_async(lambda: self.subtensor.set_weights(
-                netuid=self.neuron_config.netuid,
-                wallet=self.wallet,
-                uids=self.metagraph.uids,
-                weights=weights,
-                wait_for_inclusion=False,
-                wait_for_finalization=True,
-            ))
-            bt.logging.trace(f"result: {result}")
-            
-            if isinstance(result, tuple) and len(result) >= 1:
-                success = result[0]
-                if success:
-                    bt.logging.info("Successfully set weights.")
-                    bt.logging.info(f"Weights: {weights}")
-                    return
-            else:
-                bt.logging.warning(f"Unexpected result format in setting weights: {result}")
+            try:
+                async with asyncio.timeout(30):  # 30 second timeout
+                    result = await self.run_sync_in_async(lambda: self.subtensor.set_weights(
+                        netuid=self.neuron_config.netuid,
+                        wallet=self.wallet,
+                        uids=self.metagraph.uids,
+                        weights=weights,
+                        wait_for_inclusion=False,
+                        wait_for_finalization=True,
+                    ))
+                bt.logging.trace(f"Set weights result: {result}")
+                
+                if isinstance(result, tuple) and len(result) >= 1:
+                    success = result[0]
+                    if success:
+                        bt.logging.info("Successfully set weights.")
+                        return
+                else:
+                    bt.logging.warning(f"Unexpected result format in setting weights: {result}")
+            except asyncio.TimeoutError:
+                bt.logging.error("Timeout occurred while setting weights.")
+            except Exception as e:
+                bt.logging.error(f"Error setting weights: {str(e)}")
             
             if i < NUM_RETRIES - 1:
                 await asyncio.sleep(1)  # Wait before retrying
