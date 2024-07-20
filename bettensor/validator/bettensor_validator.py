@@ -1018,7 +1018,7 @@ class BettensorValidator(BaseNeuron):
         # Check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
-        if stake 1000.0:
+        if stake < 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
             return
 
@@ -1046,7 +1046,7 @@ class BettensorValidator(BaseNeuron):
                         return
                 else:
                     bt.logging.warning(f"Unexpected result format in setting weights: {result}")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 bt.logging.error("Timeout occurred while setting weights.")
             except Exception as e:
                 bt.logging.error(f"Error setting weights: {str(e)}")
