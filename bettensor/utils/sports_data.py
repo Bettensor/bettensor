@@ -98,6 +98,7 @@ class SportsData:
         return exists
 
     def get_multiple_game_data(self, sports_config):
+        bt.logging.info("Fetching games frmo RapidAPI")
         all_games = []
         for sport, leagues in sports_config.items():
             for league_info in leagues:

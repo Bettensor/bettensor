@@ -285,9 +285,6 @@ class BettensorValidator(BaseNeuron):
                 result = cursor.fetchone()
 
                 if not result:
-                    bt.logging.debug(
-                        f"No game data found for teamGameID: {teamGameID}. Skipping this prediction."
-                    )
                     continue
 
                 (
@@ -795,7 +792,6 @@ class BettensorValidator(BaseNeuron):
             game_responses = data.get("response", [])
 
             if not game_responses:
-                bt.logging.trace(f"No game data found for externalId {externalId}")
                 return
 
             game_response = game_responses[0]
