@@ -210,7 +210,6 @@ async def main(validator: BettensorValidator):
                 print("No responses received. Sleeping for 18 seconds.")
                 time.sleep(18)
 
-            bt.logging.trace(f"Received responses: {responses}")
             # Process the responses
             if responses and any(responses):
                 validator.process_prediction(

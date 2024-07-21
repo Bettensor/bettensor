@@ -139,17 +139,14 @@ class SportsData:
         filtered_games = []
         for game in all_games:
             if game["odds"]["average_home_odds"] is None or game["odds"]["average_away_odds"] is None:
-                bt.logging.debug(f"Excluding game {game['game_id']} due to None odds: Home odds: {game['odds']['average_home_odds']}, Away odds: {game['odds']['average_away_odds']}")
                 continue
             
             if game["odds"]["average_home_odds"] < 1.05 or game["odds"]["average_away_odds"] < 1.05:
-                bt.logging.debug(f"Excluding game {game['game_id']} due to odds < 1.05: Home odds: {game['odds']['average_home_odds']}, Away odds: {game['odds']['average_away_odds']}")
                 continue
             
             if (game["odds"]["average_home_odds"] == 1.5 and
                 game["odds"]["average_away_odds"] == 3.0 and
                 game["odds"].get("average_tie_odds") == 1.5):
-                bt.logging.debug(f"Excluding game {game['game_id']} due to false odds of 1.5/3.0/1.5")
                 continue
             
             filtered_games.append(game)

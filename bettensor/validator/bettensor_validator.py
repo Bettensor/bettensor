@@ -448,7 +448,7 @@ class BettensorValidator(BaseNeuron):
         adds new miners to the database, if there are new hotkeys in the metagraph
         """
         if self.hotkeys:
-            uids_with_stake = self.metagraph.total_stake >= 1000.0
+            uids_with_stake = self.metagraph.total_stake >= 0.0
             for i, hotkey in enumerate(self.metagraph.hotkeys):
                 if (hotkey not in self.hotkeys) and (i not in uids_with_stake):
                     coldkey = self.metagraph.coldkeys[i]
@@ -871,7 +871,6 @@ class BettensorValidator(BaseNeuron):
                         new_outcome = result[0]
 
                         if new_outcome == "Unfinished":
-                            bt.logging.trace(f"Game {externalId} is still unfinished")
                             break
 
                         # Update predictions table where outcome is 'Unfinished' and matches teamGameID
