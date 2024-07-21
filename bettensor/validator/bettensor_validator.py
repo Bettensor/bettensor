@@ -126,13 +126,9 @@ class BettensorValidator(BaseNeuron):
         """Serve the axon to the network"""
         bt.logging.info("Serving axon...")
         
-        if self.axon_port is None:
-            raise ValueError("Axon port must be specified with --axon.port in the startup command.")
-        
-        self.axon = bt.axon(wallet=self.wallet, port=self.axon_port)
+        self.axon = bt.axon(wallet=self.wallet)
 
         self.axon.serve(netuid=self.neuron_config.netuid, subtensor=self.subtensor)
-        bt.logging.info(f"Axon served on port {self.axon_port}")
 
     def initialize_neuron(self) -> bool:
         """initializes the neuron

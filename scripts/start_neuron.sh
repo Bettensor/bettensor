@@ -183,16 +183,15 @@ prompt_for_input "Enter wallet name" "default" "WALLET_NAME"
 prompt_for_input "Enter wallet hotkey" "default" "WALLET_HOTKEY"
 DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --wallet.name $WALLET_NAME --wallet.hotkey $WALLET_HOTKEY"
 
-# Prompt for axon port for both miner and validator
-prompt_for_input "Enter axon port (WARNING: make sure to use separate ports for each instance!)" "12345" "AXON_PORT"
-AXON_PORT=$(get_available_port $AXON_PORT)
-DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --axon.port $AXON_PORT"
-
 # Prompt for validator_min_stake if miner
 if [ "$NEURON_TYPE" = "miner" ]; then
     prompt_for_input "Enter validator_min_stake" "1000" "VALIDATOR_MIN_STAKE"
     DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --validator_min_stake $VALIDATOR_MIN_STAKE"
+    prompt_for_input "Enter axon port (WARNING: make sure to use separate ports for each instance!)" "12345" "AXON_PORT"
+    AXON_PORT=$(get_available_port $AXON_PORT)
+    DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --axon.port $AXON_PORT"
 fi
+
 # Prompt for logging level if not specified
 prompt_for_input "Enter logging level (info/debug/trace)" "debug" "LOGGING_LEVEL"
 case $LOGGING_LEVEL in
