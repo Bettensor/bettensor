@@ -65,7 +65,11 @@ async def main(validator: BettensorValidator):
             {"id": "78", "season": "2024"},   # Bundesliga
             {"id": "262", "season": "2024"},  # Liga MX
             {"id": "4", "season": "2024"},     # Euro Cup
-            {"id": "9", "season": "2024"}     # Copa America
+            {"id": "9", "season": "2024"},    # Copa America
+            {"id": "71", "season": "2024"},  # Brasileirão Série A
+            {"id": "98", "season": "2024"}, # J1 League
+            {"id": "480", "season": "2024"}, # Olympics mens
+            {"id": "524", "season": "2024"} # Olympics womens
         ]
     }
 
