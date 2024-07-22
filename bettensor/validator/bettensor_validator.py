@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-from bettensor.utils.miner_stats import MinerStatsHandler
+from bettensor.miner.utils.miner_stats import MinerStatsHandler
 import bittensor as bt
 import json
 from typing import Tuple
