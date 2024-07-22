@@ -226,11 +226,11 @@ async def main(validator: BettensorValidator):
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
 
-            if current_block - validator.last_updated_block > 199:
+            if current_block - validator.last_updated_block > 298:
                 # Update results before setting weights next block
                 await validator.run_sync_in_async(validator.update_recent_games)
                 
-            if current_block - validator.last_updated_block > 200:
+            if current_block - validator.last_updated_block > 300:
 
                 # Periodically update the weights on the Bittensor blockchain.
                 try:
