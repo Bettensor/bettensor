@@ -18,6 +18,8 @@ import requests
 import time
 from dotenv import load_dotenv
 import os
+import asyncio
+import concurrent.futures
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -51,6 +53,8 @@ class BettensorValidator(BaseNeuron):
             help="Path to the validator database",
         )
 
+        args = parser.parse_args()
+
         self.timeout = 12
         self.neuron_config = None
         self.wallet = None
@@ -66,6 +70,9 @@ class BettensorValidator(BaseNeuron):
         self.load_validator_state = None
         self.data_entry = None
         self.uid = None
+        self.loop = asyncio.get_event_loop()
+        self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
+        self.axon_port = getattr(args, 'axon.port', None) 
 
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
@@ -82,6 +89,11 @@ class BettensorValidator(BaseNeuron):
             raise OSError from e
 
         return True
+
+    async def initialize_connection(self):
+        if self.subtensor is None:
+            self.subtensor = bt.subtensor(config=self.neuron_config)
+            bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
 
     def check_vali_reg(self, metagraph, wallet, subtensor) -> bool:
         """validates the validator has registered correctly"""
@@ -109,6 +121,14 @@ class BettensorValidator(BaseNeuron):
         self.hotkeys = copy.deepcopy(metagraph.hotkeys)
 
         return wallet, subtensor, dendrite, metagraph
+
+    def serve_axon(self):
+        """Serve the axon to the network"""
+        bt.logging.info("Serving axon...")
+        
+        self.axon = bt.axon(wallet=self.wallet)
+
+        self.axon.serve(netuid=self.neuron_config.netuid, subtensor=self.subtensor)
 
     def initialize_neuron(self) -> bool:
         """initializes the neuron
@@ -261,9 +281,6 @@ class BettensorValidator(BaseNeuron):
                 result = cursor.fetchone()
 
                 if not result:
-                    bt.logging.debug(
-                        f"No game data found for teamGameID: {teamGameID}. Skipping this prediction."
-                    )
                     continue
 
                 (
@@ -404,7 +421,7 @@ class BettensorValidator(BaseNeuron):
                     if prediction_dict is not None and any(prediction_dict.values()):
                         predictions_dict[uid] = prediction_dict
                     else:
-                        bt.logging.warning(
+                        bt.logging.trace(
                             f"prediction from miner {uid} is none and will be skipped."
                         )
                 else:
@@ -575,7 +592,7 @@ class BettensorValidator(BaseNeuron):
         )
 
         # sync the metagraph
-        metagraph.sync(subtensor=subtensor)
+        metagraph.sync(subtensor=subtensor, lite=True)
 
         return metagraph
 
@@ -771,7 +788,6 @@ class BettensorValidator(BaseNeuron):
             game_responses = data.get("response", [])
 
             if not game_responses:
-                bt.logging.trace(f"No game data found for externalId {externalId}")
                 return
 
             game_response = game_responses[0]
@@ -847,7 +863,6 @@ class BettensorValidator(BaseNeuron):
                         new_outcome = result[0]
 
                         if new_outcome == "Unfinished":
-                            bt.logging.info(f"Game {externalId} is still unfinished")
                             break
 
                         # Update predictions table where outcome is 'Unfinished' and matches teamGameID
@@ -893,6 +908,9 @@ class BettensorValidator(BaseNeuron):
                         break
 
         bt.logging.info("Recent games and predictions update process completed")
+
+    async def run_sync_in_async(self, fn):
+        return await self.loop.run_in_executor(self.thread_executor, fn)
 
     def calculate_miner_scores(self):
         """Calculates the scores for miners based on their performance in the last 48 hours"""
@@ -979,7 +997,7 @@ class BettensorValidator(BaseNeuron):
 
         return earnings
         
-    def set_weights(self):
+    async def set_weights(self):
         """Sets the weights for the miners based on their calculated scores"""
         # Calculate miner scores
         earnings = self.calculate_miner_scores()
@@ -987,6 +1005,7 @@ class BettensorValidator(BaseNeuron):
         # Normalize the earnings tensor to get weights
         weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
 
+        bt.logging.info(f"Normalized weights: {weights}")
         # Check stake and set weights
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
@@ -999,39 +1018,33 @@ class BettensorValidator(BaseNeuron):
         NUM_RETRIES = 3 
         for i in range(NUM_RETRIES):
             bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
-            result = self.subtensor.set_weights(
-                netuid=self.neuron_config.netuid,  # subnet to set weights on
-                wallet=self.wallet,  # wallet to sign set weights using hotkey
-                uids=self.metagraph.uids,  # uids of the miners to set weights for
-                weights=weights,  # weights to set for the miners
-                wait_for_inclusion=False,
-                wait_for_finalization=False,
-            )
-            bt.logging.trace(f"result: {result}")
-            
-            if isinstance(result, tuple) and len(result) >= 1:
-                success = result[0]
-                if success:
-                    bt.logging.info("Successfully set weights.")
-                    bt.logging.info(f"Weights: {weights}")
-                    return
-        else:
-            NUM_RETRIES = 3 
-            for i in range(NUM_RETRIES):
-                bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
-                result = self.subtensor.set_weights(
-                    netuid=self.neuron_config.netuid,  # subnet to set weights on
-                    wallet=self.wallet,  # wallet to sign set weights using hotkey
-                    uids=self.metagraph.uids,  # uids of the miners to set weights for
-                    weights=weights,  # weights to set for the miners
-                    wait_for_inclusion=False,
-                    wait_for_finalization=False,
+            try:
+                result = await asyncio.wait_for(
+                    self.run_sync_in_async(lambda: self.subtensor.set_weights(
+                        netuid=self.neuron_config.netuid,
+                        wallet=self.wallet,
+                        uids=self.metagraph.uids,
+                        weights=weights,
+                        wait_for_inclusion=False,
+                        wait_for_finalization=True,
+                    )),
+                    timeout=90  # 90 second timeout
                 )
-            bt.logging.info(f"Printing weights: {weights}")
-            if result:
-                bt.logging.info("Successfully set weights.")
-            else:
-                bt.logging.warning(f"Unexpected result format in setting weights: {result}")
+                bt.logging.trace(f"Set weights result: {result}")
+                
+                if isinstance(result, tuple) and len(result) >= 1:
+                    success = result[0]
+                    if success:
+                        bt.logging.info("Successfully set weights.")
+                        return
+                else:
+                    bt.logging.warning(f"Unexpected result format in setting weights: {result}")
+            except TimeoutError:
+                bt.logging.error("Timeout occurred while setting weights.")
+            except Exception as e:
+                bt.logging.error(f"Error setting weights: {str(e)}")
             
-            if i == NUM_RETRIES - 1:
-                bt.logging.error("Failed to set weights after all attempts.")
+            if i < NUM_RETRIES - 1:
+                await asyncio.sleep(1)  # Wait before retrying
+        
+        bt.logging.error("Failed to set weights after all attempts.")

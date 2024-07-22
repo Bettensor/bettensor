@@ -22,7 +22,6 @@ import sys
 import os
 
 
-from bettensor.protocol import GameData
 from bettensor.protocol import GameData, Metadata
 
 from bettensor.utils.sports_data import SportsData
@@ -38,7 +37,8 @@ from uuid import UUID
 from argparse import ArgumentParser
 import sqlite3
 from dotenv import load_dotenv
-import os
+import asyncio
+
 
 # need to import the right protocol(s) here
 from bettensor.validator.bettensor_validator import BettensorValidator
@@ -49,7 +49,7 @@ from bettensor.miner.utils.miner_stats import MinerStatsHandler
 from datetime import datetime, timezone, timedelta
 from bettensor.utils.website_handler import fetch_and_send_predictions
 
-def main(validator: BettensorValidator):
+async def main(validator: BettensorValidator):
     # load rapid API key
     load_dotenv()
     rapid_api_key = os.getenv('RAPID_API_KEY')
@@ -69,8 +69,11 @@ def main(validator: BettensorValidator):
         ]
     }
 
-    all_games = sports_data.get_multiple_game_data(sports_config)
+    all_games =  await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
     last_api_call = datetime.now()
+
+    validator.serve_axon()
+    await validator.initialize_connection()
 
     while True:
 
@@ -78,15 +81,15 @@ def main(validator: BettensorValidator):
             current_time = datetime.now()
             if current_time - last_api_call >= timedelta(hours=1):
                 # Update games every hour
-                all_games = sports_data.get_multiple_game_data(sports_config)
+                all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
                 last_api_call = current_time
 
             # Periodically sync subtensor status and save the state file
             if validator.step % 5 == 0:
                 # Sync metagraph
                 try:
-                    validator.metagraph = validator.sync_metagraph(
-                        validator.metagraph, validator.subtensor
+                    validator.metagraph = await validator.run_sync_in_async(
+                        lambda: validator.sync_metagraph(validator.metagraph, validator.subtensor)
                     )
                     bt.logging.debug(f"Metagraph synced: {validator.metagraph}")
                 except TimeoutError as e:
@@ -100,7 +103,9 @@ def main(validator: BettensorValidator):
 
             if validator.step % 150 == 0:
                 # Sends data to the website
-                result = fetch_and_send_predictions(db_path="data/validator.db")
+                result = await validator.run_sync_in_async(
+                    lambda: fetch_and_send_predictions(db_path="data/validator.db")
+                )
                 bt.logging.trace(f"result status: {result}")
                 if result:
                     bt.logging.debug(
@@ -205,14 +210,13 @@ def main(validator: BettensorValidator):
                 print("No responses received. Sleeping for 18 seconds.")
                 time.sleep(18)
 
-            bt.logging.trace(f"Received responses: {responses}")
             # Process the responses
             if responses and any(responses):
                 validator.process_prediction(
                     processed_uids=list_of_uids, predictions=responses
                 )
 
-            current_block = validator.subtensor.block
+            current_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
 
             bt.logging.debug(
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
@@ -220,14 +224,15 @@ def main(validator: BettensorValidator):
 
             if current_block - validator.last_updated_block > 199:
                 # Update results before setting weights next block
-                validator.update_recent_games()
+                await validator.run_sync_in_async(validator.update_recent_games)
                 
             if current_block - validator.last_updated_block > 200:
+
                 # Periodically update the weights on the Bittensor blockchain.
                 try:
-                    validator.set_weights()
+                    await validator.set_weights()
                     # Update validators knowledge of the last updated block
-                    validator.last_updated_block = validator.subtensor.block
+                    validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                 except TimeoutError as e:
                     bt.logging.error(f"Setting weights timed out: {e}")
 
@@ -236,24 +241,29 @@ def main(validator: BettensorValidator):
 
             # Sleep for a duration equivalent to the block time (i.e., time between successive blocks).
             bt.logging.debug("Sleeping for: 18 seconds")
-            time.sleep(18)
+            await asyncio.sleep(18)
 
             #bt.logging.warning(f"TESTING AUTO UPDATE!!")
 
         except TimeoutError as e:
-            bt.logging.debug("Validator timed out")
+            bt.logging.error(f"Error in main loop: {str(e)}")
+            # Attempt to reconnect if necessary
+            await self.initialize_connection()
 
 
 # The main function parses the configuration and runs the validator.
 if __name__ == "__main__":
     parser = ArgumentParser()
 
+    parser.add_argument('--subtensor.network', type=str, help="The subtensor network to connect to")
+    parser.add_argument('--wallet.name', type=str, help="The name of the wallet to use")
+    parser.add_argument('--wallet.hotkey', type=str, help="The hotkey of the wallet to use")
+    parser.add_argument('--logging.trace', action='store_true', help="Enable trace logging")
     parser.add_argument(
         "--alpha", type=float, default=0.9, help="The alpha value for the validator."
     )
-
     parser.add_argument("--netuid", type=int, default=30, help="The chain subnet uid.")
-
+    parser.add_argument('--axon.port', type=int, help="The port this axon endpoint is serving on.")
     parser.add_argument(
         "--max_targets",
         type=int,
@@ -266,6 +276,8 @@ if __name__ == "__main__":
         default="True",
         help="WARNING: Setting this value to False clears the old state.",
     )
+    args = parser.parse_args()
+    print("Parsed arguments:", args)
     validator = BettensorValidator(parser=parser)
 
     if (
@@ -275,4 +287,4 @@ if __name__ == "__main__":
         bt.logging.error("Unable to initialize Validator. Exiting.")
         sys.exit()
 
-    main(validator)
+    asyncio.get_event_loop().run_until_complete(main(validator))
