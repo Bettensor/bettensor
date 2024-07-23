@@ -20,6 +20,10 @@ from dotenv import load_dotenv
 import os
 import asyncio
 import concurrent.futures
+import math
+import numpy as np
+import torch
+from bettensor.utils.weights_functions import WeightSetter
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -73,9 +77,12 @@ class BettensorValidator(BaseNeuron):
         self.loop = asyncio.get_event_loop()
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
         self.axon_port = getattr(args, 'axon.port', None) 
+        self.db_path = "data/validator.db"
 
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
+
+        self.weight_setter = None
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -203,6 +210,16 @@ class BettensorValidator(BaseNeuron):
 
         # self.miner_stats = MinerStatsHandler(self.db_path, "validator")
         self.create_table()
+
+        self.weight_setter = WeightSetter(
+            metagraph=self.metagraph,
+            wallet=self.wallet,
+            subtensor=self.subtensor,
+            neuron_config=self.neuron_config,
+            loop=self.loop,
+            thread_executor=self.thread_executor
+        )
+        
         return True
 
     def _parse_args(self, parser):
@@ -912,137 +929,5 @@ class BettensorValidator(BaseNeuron):
     async def run_sync_in_async(self, fn):
         return await self.loop.run_in_executor(self.thread_executor, fn)
 
-    def calculate_miner_scores(self):
-        """Calculates the scores for miners based on their performance in the last 48 hours"""
-        # initialize the earnings tensor
-        earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
-
-        # connect to the sqlite database
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        # get the current timestamp
-        now = datetime.now(timezone.utc)
-
-        # calculate the timestamp for 48 hours ago
-        forty_eight_hours_ago = now - timedelta(hours=48)
-
-        # fetch the relevant data from game_data for the last 48 hours
-        cursor.execute(
-            "SELECT externalId, eventStartDate FROM game_data WHERE eventStartDate BETWEEN ? AND ?",
-            (forty_eight_hours_ago.isoformat(), now.isoformat()),
-        )
-        game_data_rows = cursor.fetchall()
-
-        # create a mapping from teamGameID to eventStartDate
-        game_date_map = {row[0]: row[1] for row in game_data_rows}
-
-        # fetch all the relevant data from predictions
-        cursor.execute(
-            "SELECT predictionID, teamGameID, minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds FROM predictions"
-        )
-        prediction_rows = cursor.fetchall()
-
-        # close the database connection
-        conn.close()
-
-        # process the data
-        miner_performance = {}
-        miner_id_to_index = {
-            miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)
-        }
-
-        for row in prediction_rows:
-            (
-                prediction_id,
-                team_game_id,
-                miner_id,
-                predicted_outcome,
-                outcome,
-                team_a,
-                team_b,
-                wager,
-                team_a_odds,
-                team_b_odds,
-                tie_odds,
-            ) = row
-
-            if team_game_id in game_date_map:
-                event_date = datetime.fromisoformat(game_date_map[team_game_id])
-                if event_date >= forty_eight_hours_ago:
-                    if miner_id not in miner_performance:
-                        miner_performance[miner_id] = 0.0
-
-                    if predicted_outcome == outcome:
-                        if predicted_outcome == "0":
-                            earned = wager * team_a_odds
-                        elif predicted_outcome == "1":
-                            earned = wager * team_b_odds
-                        elif predicted_outcome == "Tie":
-                            earned = wager * tie_odds
-                        else:
-                            bt.logging.warning(
-                                f"outcome for {team_game_id} not found. Please notify Bettensor Developers, as this is likely a larger API issue."
-                            )
-                        miner_performance[miner_id] += earned
-
-        # update the earnings tensor
-        for miner_id, total_earned in miner_performance.items():
-            if miner_id in miner_id_to_index:
-                idx = miner_id_to_index[miner_id]
-                earnings[idx] = total_earned
-
-        bt.logging.trace("Miner performance calculated")
-        bt.logging.trace(miner_performance)
-
-        return earnings
-        
     async def set_weights(self):
-        """Sets the weights for the miners based on their calculated scores"""
-        # Calculate miner scores
-        earnings = self.calculate_miner_scores()
-
-        # Normalize the earnings tensor to get weights
-        weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
-
-        bt.logging.info(f"Normalized weights: {weights}")
-        # Check stake and set weights
-        uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
-        stake = float(self.metagraph.S[uid])
-        if stake < 1000.0:
-            bt.logging.error("Insufficient stake. Failed in setting weights.")
-            return
-
-        NUM_RETRIES = 3 
-        for i in range(NUM_RETRIES):
-            bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
-            try:
-                result = await asyncio.wait_for(
-                    self.run_sync_in_async(lambda: self.subtensor.set_weights(
-                        netuid=self.neuron_config.netuid,
-                        wallet=self.wallet,
-                        uids=self.metagraph.uids,
-                        weights=weights,
-                        wait_for_inclusion=False,
-                        wait_for_finalization=True,
-                    )),
-                    timeout=90  # 90 second timeout
-                )
-                bt.logging.trace(f"Set weights result: {result}")
-                
-                if isinstance(result, tuple) and len(result) >= 1:
-                    success = result[0]
-                    if success:
-                        bt.logging.info("Successfully set weights.")
-                        return
-                else:
-                    bt.logging.warning(f"Unexpected result format in setting weights: {result}")
-            except TimeoutError:
-                bt.logging.error("Timeout occurred while setting weights.")
-            except Exception as e:
-                bt.logging.error(f"Error setting weights: {str(e)}")
-            
-            if i < NUM_RETRIES - 1:
-                await asyncio.sleep(1)  # Wait before retrying
-        
-        bt.logging.error("Failed to set weights after all attempts.")
+        await self.weight_setter.set_weights(self.db_path)
