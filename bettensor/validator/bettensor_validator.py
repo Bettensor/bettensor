@@ -99,8 +99,23 @@ class BettensorValidator(BaseNeuron):
 
     async def initialize_connection(self):
         if self.subtensor is None:
+            try:
+                self.subtensor = bt.subtensor(config=self.neuron_config)
+                bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+            except Exception as e:
+                bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
+                self.subtensor = None
+        return self.subtensor
+
+    async def get_subtensor(self):
+        if self.subtensor_connection is None:
             self.subtensor = bt.subtensor(config=self.neuron_config)
-            bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+        return self.subtensor_connection
+
+    async def sync_metagraph(self):
+        subtensor = await self.get_subtensor()
+        self.metagraph.sync(subtensor=subtensor, lite=True)
+        return self.metagraph
 
     def check_vali_reg(self, metagraph, wallet, subtensor) -> bool:
         """validates the validator has registered correctly"""
@@ -600,20 +615,6 @@ class BettensorValidator(BaseNeuron):
 
         else:
             self.init_default_scores()
-
-    def sync_metagraph(self, metagraph, subtensor):
-        """syncs the metagraph"""
-
-        bt.logging.debug(
-            f"syncing metagraph: {self.metagraph} with subtensor: {self.subtensor}"
-        )
-
-        # sync the metagraph
-        metagraph.sync(subtensor=subtensor, lite=True)
-
-        return metagraph
-
-    # need func to set weights; dont think i should take fans?
 
     def _get_local_miner_blacklist(self) -> list:
         """returns the blacklisted miners hotkeys from the local file"""
