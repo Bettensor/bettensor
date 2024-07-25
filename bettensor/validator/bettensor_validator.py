@@ -1000,58 +1000,52 @@ class BettensorValidator(BaseNeuron):
         return earnings
         
     async def set_weights(self):
-        """Sets the weights for the miners based on their calculated scores"""
-        # Calculate miner scores
+        bt.logging.info("Entering set_weights method")
+        # Calculate miner scores and normalize weights as before
         earnings = self.calculate_miner_scores()
-
-        # Normalize the earnings tensor to get weights
         weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
-
         bt.logging.info(f"Normalized weights: {weights}")
-        # Check stake and set weights
+
+        # Check stake
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
         if stake < 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
-            return
+            return False
 
         if self.subtensor is None:
             bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
             self.subtensor = await self.initialize_connection()
             if self.subtensor is None:
                 bt.logging.error("Failed to reinitialize subtensor. Cannot set weights.")
-                return
+                return False
 
-        NUM_RETRIES = 3
-        for i in range(NUM_RETRIES):
-            bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
-            try:
-                result = await asyncio.wait_for(
-                    self.run_sync_in_async(lambda: self.subtensor.set_weights(
-                        netuid=self.neuron_config.netuid,
-                        wallet=self.wallet,
-                        uids=self.metagraph.uids,
-                        weights=weights,
-                        wait_for_inclusion=False,
-                        wait_for_finalization=True,
-                    )),
-                    timeout=90  # 90 second timeout
-                )
-                bt.logging.trace(f"Set weights result: {result}")
-
-                if isinstance(result, tuple) and len(result) >= 1:
-                    success = result[0]
-                    if success:
-                        bt.logging.info("Successfully set weights.")
-                        return
-                else:
-                    bt.logging.warning(f"Unexpected result format in setting weights: {result}")
-            except TimeoutError:
-                bt.logging.error("Timeout occurred while setting weights.")
-            except Exception as e:
-                bt.logging.error(f"Error setting weights: {str(e)}")
-
-            if i < NUM_RETRIES - 1:
-                await asyncio.sleep(1)  # Wait before retrying
-
-        bt.logging.error("Failed to set weights after all attempts.")
+        try:
+            bt.logging.info("Attempting to set weights with 120 second timeout")
+            result = await asyncio.wait_for(
+                self.run_sync_in_async(lambda: self.subtensor.set_weights(
+                    netuid=self.neuron_config.netuid,
+                    wallet=self.wallet,
+                    uids=self.metagraph.uids,
+                    weights=weights,
+                    wait_for_inclusion=False,
+                    wait_for_finalization=True,
+                )),
+                timeout=120  # 120 second timeout
+            )
+            bt.logging.trace(f"Set weights result: {result}")
+            
+            if isinstance(result, tuple) and len(result) >= 1:
+                success = result[0]
+                if success:
+                    bt.logging.info("Successfully set weights.")
+                    return True
+            else:
+                bt.logging.warning(f"Unexpected result format in setting weights: {result}")
+        except asyncio.TimeoutError:
+            bt.logging.error("Timeout occurred while setting weights (120 seconds elapsed).")
+        except Exception as e:
+            bt.logging.error(f"Error setting weights: {str(e)}")
+        
+        bt.logging.error("Failed to set weights.")
+        return False
