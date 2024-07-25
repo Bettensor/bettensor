@@ -103,6 +103,12 @@ async def main(validator: BettensorValidator):
                 # Save state
                 validator.save_state()
 
+            # Update daily stats at the end of each day
+            current_date = datetime.now(timezone.utc).date()
+            if current_date > validator.last_stats_update:
+                await validator.run_sync_in_async(lambda: validator.update_daily_stats(current_date - timedelta(days=1)))
+                validator.last_stats_update = current_date
+
             if validator.step % 150 == 0:
                 # Sends data to the website
                 result = await validator.run_sync_in_async(

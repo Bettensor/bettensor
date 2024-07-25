@@ -15,6 +15,47 @@ class WeightSetter:
         self.loop = loop
         self.thread_executor = thread_executor
         self.decay_factors = self.compute_decay_factors()
+        self.db_path = db_path
+    
+    def connect_db(self):
+        return sqlite3.connect(self.db_path)
+
+    def update_daily_stats(self, date):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Calculate daily stats
+            cursor.execute("""
+                INSERT INTO daily_miner_stats (date, minerId, total_predictions, correct_predictions, total_wager, total_earnings)
+                SELECT 
+                    DATE(p.predictionDate) as date,
+                    p.minerId,
+                    COUNT(*) as total_predictions,
+                    SUM(CASE WHEN p.predictedOutcome = p.outcome THEN 1 ELSE 0 END) as correct_predictions,
+                    SUM(p.wager) as total_wager,
+                    SUM(CASE 
+                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '0' THEN p.wager * p.teamAodds
+                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '1' THEN p.wager * p.teamBodds
+                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '2' THEN p.wager * p.tieOdds
+                        ELSE 0
+                    END) as total_earnings
+                FROM predictions p
+                WHERE DATE(p.predictionDate) = DATE(?)
+                GROUP BY DATE(p.predictionDate), p.minerId
+                ON CONFLICT(date, minerId) DO UPDATE SET
+                    total_predictions = excluded.total_predictions,
+                    correct_predictions = excluded.correct_predictions,
+                    total_wager = excluded.total_wager,
+                    total_earnings = excluded.total_earnings
+            """, (date,))
+            
+            conn.commit()
+        except Exception as e:
+            bt.logging.error(f"Error updating daily stats: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
 
     def logarithmic_penalty(self, count, min_count):
         if count >= min_count:
@@ -54,50 +95,33 @@ class WeightSetter:
         cursor = conn.cursor()
 
         now = datetime.now(timezone.utc)
-
-        cursor.execute("SELECT externalId, eventStartDate FROM game_data")
-        game_data_rows = cursor.fetchall()
-        game_date_map = {row[0]: datetime.fromisoformat(row[1]) for row in game_data_rows}
-
-        cursor.execute(
-            "SELECT predictionID, teamGameID, minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds FROM predictions"
-        )
-        prediction_rows = cursor.fetchall()
-
-        conn.close()
-
+        
+        cursor.execute("""
+            SELECT minerId, date, total_predictions, correct_predictions, total_wager, total_earnings
+            FROM daily_miner_stats
+            WHERE date >= DATE(?, '-365 days')
+        """, (now.date().isoformat(),))
+        
+        daily_stats = cursor.fetchall()
+        
         miner_performance = {}
         miner_prediction_counts = {}
         miner_id_to_index = {miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)}
 
         min_prediction_count = 1
 
-        for row in prediction_rows:
-            (prediction_id, team_game_id, miner_id, predicted_outcome, outcome, team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds) = row
-
-            if team_game_id in game_date_map:
-                event_date = game_date_map[team_game_id]
-                age_days = max((now - event_date).days, 0)
-                decay_factor = self.decay_factors[min(age_days, 365)]
-
-                if miner_id not in miner_performance:
-                    miner_performance[miner_id] = 0.0
-                    miner_prediction_counts[miner_id] = 0
-
-                miner_prediction_counts[miner_id] += 1
-
-                if predicted_outcome == outcome:
-                    if predicted_outcome == "0":
-                        earned = wager * team_a_odds
-                    elif predicted_outcome == "1":
-                        earned = wager * team_b_odds
-                    elif predicted_outcome == "Tie":
-                        earned = wager * tie_odds
-                    else:
-                        bt.logging.warning(f"Outcome for {team_game_id} not found. Please notify Bettensor Developers, as this is likely a larger API issue.")
-                        continue
-
-                    miner_performance[miner_id] += earned * decay_factor
+        for row in daily_stats:
+            miner_id, date, total_predictions, correct_predictions, total_wager, total_earnings = row
+            
+            age_days = (now.date() - datetime.strptime(date, '%Y-%m-%d').date()).days
+            decay_factor = self.decay_factors[min(age_days, 365)]
+            
+            if miner_id not in miner_performance:
+                miner_performance[miner_id] = 0.0
+                miner_prediction_counts[miner_id] = 0
+            
+            miner_prediction_counts[miner_id] += total_predictions
+            miner_performance[miner_id] += total_earnings * decay_factor
 
         for miner_id, total_earned in miner_performance.items():
             prediction_count = miner_prediction_counts[miner_id]

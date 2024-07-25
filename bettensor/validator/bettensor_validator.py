@@ -75,6 +75,7 @@ class BettensorValidator(BaseNeuron):
         self.load_validator_state = None
         self.data_entry = None
         self.uid = None
+        self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
         self.loop = asyncio.get_event_loop()
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
         self.axon_port = getattr(args, 'axon.port', None) 
@@ -144,6 +145,32 @@ class BettensorValidator(BaseNeuron):
         self.hotkeys = copy.deepcopy(metagraph.hotkeys)
 
         return wallet, subtensor, dendrite, metagraph
+
+    def initialize_database(self):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Create the daily_miner_stats table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_miner_stats (
+                    date DATE,
+                    minerId TEXT,
+                    total_predictions INT,
+                    correct_predictions INT,
+                    total_wager REAL,
+                    total_earnings REAL,
+                    PRIMARY KEY (date, minerId)
+                )
+            """)
+            
+            conn.commit()
+            bt.logging.info("Daily miner stats table initialized successfully")
+        except Exception as e:
+            bt.logging.error(f"Error initializing database: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
 
     def serve_axon(self):
         """Serve the axon to the network"""
@@ -234,7 +261,10 @@ class BettensorValidator(BaseNeuron):
             neuron_config=self.neuron_config,
             loop=self.loop,
             thread_executor=self.thread_executor
+            db_path=self.db_path
         )
+
+        self.initialize_database()
         
         return True
 
