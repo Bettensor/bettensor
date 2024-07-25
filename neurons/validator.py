@@ -229,6 +229,7 @@ async def main(validator: BettensorValidator):
                 await validator.run_sync_in_async(validator.update_recent_games)
                 
             if current_block - validator.last_updated_block > 300:
+
                 try:
                     bt.logging.info("Attempting to update weights")
                     if validator.subtensor is None:

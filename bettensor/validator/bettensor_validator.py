@@ -67,6 +67,7 @@ class BettensorValidator(BaseNeuron):
         self.metagraph = None
         self.scores = None
         self.hotkeys = None
+        self.subtensor_connection = None
         self.miner_responses = None
         self.max_targets = None
         self.target_group = None
@@ -931,4 +932,4 @@ class BettensorValidator(BaseNeuron):
         return await self.loop.run_in_executor(self.thread_executor, fn)
 
     async def set_weights(self):
-        await self.weight_setter.set_weights(self.db_path)
+x        await self.weight_setter.set_weights(self.db_path)

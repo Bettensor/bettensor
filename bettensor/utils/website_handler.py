@@ -3,70 +3,72 @@ import requests
 import json
 from datetime import datetime
 import bittensor as bt
+import asyncio
 
-def create_keys_table(db_path: str):
+async def create_keys_table(db_path: str):
     """
     Creates keys table in db
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("""
+    conn = await asyncio.to_thread(sqlite3.connect, db_path)
+    cursor = await asyncio.to_thread(conn.cursor)
+    await asyncio.to_thread(cursor.execute, """
         CREATE TABLE IF NOT EXISTS keys (
             hotkey TEXT PRIMARY KEY,
             coldkey TEXT
         )
     """)
-    conn.commit()
-    conn.close()
+    await asyncio.to_thread(conn.commit)
+    await asyncio.to_thread(conn.close)
 
-def get_or_update_coldkey(db_path: str, hotkey: str) -> str:
+async def get_or_update_coldkey(db_path: str, hotkey: str) -> str:
     """
     Retrieves coldkey from metagraph if it doesnt exist in keys table
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    conn = await asyncio.to_thread(sqlite3.connect, db_path)
+    cursor = await asyncio.to_thread(conn.cursor)
 
     # Check if the hotkey exists in the keys table
-    cursor.execute("SELECT coldkey FROM keys WHERE hotkey = ?", (hotkey,))
-    result = cursor.fetchone()
+    result = await asyncio.to_thread(cursor.execute, "SELECT coldkey FROM keys WHERE hotkey = ?", (hotkey,))
+    result = await asyncio.to_thread(result.fetchone)
 
     if result:
+        await asyncio.to_thread(conn.close)
         return result[0]
     else:
         # If not found, fetch from Bittensor and insert into the database
         metagraph = bt.metagraph(netuid=30)
-        metagraph.sync()  # Sync with the network to get the latest data
+        await asyncio.to_thread(metagraph.sync)  # Sync with the network to get the latest data
 
         for neuron in metagraph.neurons:
             if neuron.hotkey == hotkey:
                 coldkey = neuron.coldkey
-                cursor.execute("INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)", (hotkey, coldkey))
-                conn.commit()
-                conn.close()
+                await asyncio.to_thread(cursor.execute, "INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)", (hotkey, coldkey))
+                await asyncio.to_thread(conn.commit)
+                await asyncio.to_thread(conn.close)
                 return coldkey
 
         # If coldkey is not found, insert "dummy_coldkey"
-        cursor.execute("INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)", (hotkey, "dummy_coldkey"))
-        conn.commit()
-        conn.close()
+        await asyncio.to_thread(cursor.execute, "INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)", (hotkey, "dummy_coldkey"))
+        await asyncio.to_thread(conn.commit)
+        await asyncio.to_thread(conn.close)
         return "dummy_coldkey"
 
-def fetch_predictions_from_db(db_path):
+async def fetch_predictions_from_db(db_path):
     """
     Fetch predictions from the SQLite3 database.
 
     :param db_path: Path to the SQLite3 database file
     :return: List of dictionaries containing prediction data
     """
-    conn = sqlite3.connect(db_path)
+    conn = await asyncio.to_thread(sqlite3.connect, db_path)
     conn.row_factory = sqlite3.Row  # This allows accessing columns by name
-    cursor = conn.cursor()
+    cursor = await asyncio.to_thread(conn.cursor)
 
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    tables = cursor.fetchall()
+    tables = await asyncio.to_thread(cursor.execute, "SELECT name FROM sqlite_master WHERE type='table';")
+    tables = await asyncio.to_thread(tables.fetchall)
 
-    cursor.execute("PRAGMA table_info(predictions)")
-    columns = cursor.fetchall()
+    columns = await asyncio.to_thread(cursor.execute, "PRAGMA table_info(predictions)")
+    columns = await asyncio.to_thread(columns.fetchall)
 
     # Construct the query based on the actual columns in the table
     available_columns = [col[1] for col in columns]
@@ -94,37 +96,34 @@ def fetch_predictions_from_db(db_path):
     query = f"SELECT {', '.join(query_columns)} FROM predictions WHERE sent_to_site = 0"
 
     try:
-        cursor.execute(query)
-        rows = cursor.fetchall()
+        rows = await asyncio.to_thread(cursor.execute, query)
+        rows = await asyncio.to_thread(rows.fetchall)
 
-        predictions = []
-        for row in rows:
-            predictions.append(dict(row))
-
+        predictions = [dict(row) for row in rows]
         return predictions
     except sqlite3.OperationalError as e:
         bt.logging.trace(e)
         return []
     finally:
-        conn.close()
+        await asyncio.to_thread(conn.close)
 
-def update_sent_status(db_path, prediction_ids):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+async def update_sent_status(db_path, prediction_ids):
+    conn = await asyncio.to_thread(sqlite3.connect, db_path)
+    cursor = await asyncio.to_thread(conn.cursor)
     
     try:
-        cursor.executemany(
+        await asyncio.to_thread(cursor.executemany,
             "UPDATE predictions SET sent_to_site = 1 WHERE predictionID = ?",
             [(pid,) for pid in prediction_ids]
         )
-        conn.commit()
+        await asyncio.to_thread(conn.commit)
         print(f"Updated sent_to_site status for {len(prediction_ids)} predictions")
     except sqlite3.Error as e:
         print(f"Error updating sent_to_site status: {e}")
     finally:
-        conn.close()    
+        await asyncio.to_thread(conn.close)
 
-def send_predictions(predictions, db_path):
+async def send_predictions(predictions, db_path):
     """
     Send predictions to the Bettensor API.
 
@@ -139,7 +138,7 @@ def send_predictions(predictions, db_path):
     for prediction in predictions:
         hotkey = prediction["minerId"]
         try:
-            coldkey = get_or_update_coldkey(db_path, hotkey)
+            coldkey = await get_or_update_coldkey(db_path, hotkey)
         except ValueError as e:
             bt.logging.error(e)
             coldkey = "dummy_coldkey"
@@ -171,11 +170,11 @@ def send_predictions(predictions, db_path):
     )
     print(transformed_data)
     try:
-        response = requests.post(
+        response = await asyncio.to_thread(requests.post,
             url, data=json.dumps(transformed_data), headers=headers
         )
         if response.status_code == 200 or response.status_code == 201:
-            update_sent_status(db_path, [p['predictionID'] for p in predictions])
+            await update_sent_status(db_path, [p['predictionID'] for p in predictions])
         bt.logging.info(f"Response status code: {response.status_code}")
         bt.logging.debug(f"Response content: {response.text}")
         return response.status_code
@@ -184,18 +183,18 @@ def send_predictions(predictions, db_path):
         bt.logging.error(f"Error sending predictions: {e}")
         return None, str(e)
 
-def fetch_and_send_predictions(db_path):
+async def fetch_and_send_predictions(db_path):
     """
     Fetch predictions from the database and send them to the API.
 
     :param db_path: Path to the SQLite3 database file
     :return: API response
     """
-    create_keys_table(db_path)  # Ensure the keys table exists
-    predictions = fetch_predictions_from_db(db_path)
+    await create_keys_table(db_path)  # Ensure the keys table exists
+    predictions = await fetch_predictions_from_db(db_path)
     if predictions:
         bt.logging.debug("Sending predictions to the Bettensor website.")
-        return send_predictions(predictions, db_path)
+        return await send_predictions(predictions, db_path)
     else:
         print("No predictions found in the database.")
         return None
