@@ -134,7 +134,7 @@ class WeightSetter:
         bt.logging.info(f"Normalized weights: {weights}")
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
-        if stake 1000.0:
+        if stake > 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
             return
 
