@@ -265,6 +265,43 @@ class BettensorValidator(BaseNeuron):
         )
 
         self.initialize_database()
+    
+    def update_daily_stats(self, date):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Calculate daily stats
+            cursor.execute("""
+                INSERT INTO daily_miner_stats (date, minerId, total_predictions, correct_predictions, total_wager, total_earnings)
+                SELECT 
+                    DATE(p.predictionDate) as date,
+                    p.minerId,
+                    COUNT(*) as total_predictions,
+                    SUM(CASE WHEN p.predictedOutcome = p.outcome THEN 1 ELSE 0 END) as correct_predictions,
+                    SUM(p.wager) as total_wager,
+                    SUM(CASE 
+                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '0' THEN p.wager * p.teamAodds
+                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '1' THEN p.wager * p.teamBodds
+                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '2' THEN p.wager * p.tieOdds
+                        ELSE 0
+                    END) as total_earnings
+                FROM predictions p
+                WHERE DATE(p.predictionDate) = DATE(?)
+                GROUP BY DATE(p.predictionDate), p.minerId
+                ON CONFLICT(date, minerId) DO UPDATE SET
+                    total_predictions = excluded.total_predictions,
+                    correct_predictions = excluded.correct_predictions,
+                    total_wager = excluded.total_wager,
+                    total_earnings = excluded.total_earnings
+            """, (date,))
+            
+            conn.commit()
+        except Exception as e:
+            bt.logging.error(f"Error updating daily stats: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
         
         return True
 
