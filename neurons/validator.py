@@ -92,9 +92,7 @@ async def main(validator: BettensorValidator):
             if validator.step % 5 == 0:
                 # Sync metagraph
                 try:
-                    validator.metagraph = await validator.run_sync_in_async(
-                        lambda: validator.sync_metagraph(validator.metagraph, validator.subtensor)
-                    )
+                    validator.metagraph = await validator.sync_metagraph()
                     bt.logging.debug(f"Metagraph synced: {validator.metagraph}")
                 except TimeoutError as e:
                     bt.logging.error(f"Metagraph sync timed out: {e}")

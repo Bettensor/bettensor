@@ -63,6 +63,7 @@ class BettensorValidator(BaseNeuron):
         self.metagraph = None
         self.scores = None
         self.hotkeys = None
+        self.subtensor_connection = None
         self.miner_responses = None
         self.max_targets = None
         self.target_group = None
@@ -92,8 +93,23 @@ class BettensorValidator(BaseNeuron):
 
     async def initialize_connection(self):
         if self.subtensor is None:
+            try:
+                self.subtensor = bt.subtensor(config=self.neuron_config)
+                bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+            except Exception as e:
+                bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
+                self.subtensor = None
+        return self.subtensor
+
+    async def get_subtensor(self):
+        if self.subtensor_connection is None:
             self.subtensor = bt.subtensor(config=self.neuron_config)
-            bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+        return self.subtensor_connection
+
+    async def sync_metagraph(self):
+        subtensor = await self.get_subtensor()
+        self.metagraph.sync(subtensor=subtensor, lite=True)
+        return self.metagraph
 
     def check_vali_reg(self, metagraph, wallet, subtensor) -> bool:
         """validates the validator has registered correctly"""
@@ -584,20 +600,6 @@ class BettensorValidator(BaseNeuron):
         else:
             self.init_default_scores()
 
-    def sync_metagraph(self, metagraph, subtensor):
-        """syncs the metagraph"""
-
-        bt.logging.debug(
-            f"syncing metagraph: {self.metagraph} with subtensor: {self.subtensor}"
-        )
-
-        # sync the metagraph
-        metagraph.sync(subtensor=subtensor, lite=True)
-
-        return metagraph
-
-    # need func to set weights; dont think i should take fans?
-
     def _get_local_miner_blacklist(self) -> list:
         """returns the blacklisted miners hotkeys from the local file"""
 
@@ -1013,7 +1015,14 @@ class BettensorValidator(BaseNeuron):
             bt.logging.error("Insufficient stake. Failed in setting weights.")
             return
 
-        NUM_RETRIES = 3 
+        if self.subtensor is None:
+            bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
+            self.subtensor = await self.initialize_connection()
+            if self.subtensor is None:
+                bt.logging.error("Failed to reinitialize subtensor. Cannot set weights.")
+                return
+
+        NUM_RETRIES = 3
         for i in range(NUM_RETRIES):
             bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
             try:
@@ -1029,7 +1038,7 @@ class BettensorValidator(BaseNeuron):
                     timeout=90  # 90 second timeout
                 )
                 bt.logging.trace(f"Set weights result: {result}")
-                
+
                 if isinstance(result, tuple) and len(result) >= 1:
                     success = result[0]
                     if success:
@@ -1041,8 +1050,8 @@ class BettensorValidator(BaseNeuron):
                 bt.logging.error("Timeout occurred while setting weights.")
             except Exception as e:
                 bt.logging.error(f"Error setting weights: {str(e)}")
-            
+
             if i < NUM_RETRIES - 1:
                 await asyncio.sleep(1)  # Wait before retrying
-        
+
         bt.logging.error("Failed to set weights after all attempts.")
