@@ -932,4 +932,4 @@ class BettensorValidator(BaseNeuron):
         return await self.loop.run_in_executor(self.thread_executor, fn)
 
     async def set_weights(self):
-x        await self.weight_setter.set_weights(self.db_path)
+        await self.weight_setter.set_weights(self.db_path)
