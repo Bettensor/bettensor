@@ -92,9 +92,7 @@ async def main(validator: BettensorValidator):
             if validator.step % 5 == 0:
                 # Sync metagraph
                 try:
-                    validator.metagraph = await validator.run_sync_in_async(
-                        lambda: validator.sync_metagraph(validator.metagraph, validator.subtensor)
-                    )
+                    validator.metagraph = await validator.sync_metagraph()
                     bt.logging.debug(f"Metagraph synced: {validator.metagraph}")
                 except TimeoutError as e:
                     bt.logging.error(f"Metagraph sync timed out: {e}")
@@ -231,14 +229,24 @@ async def main(validator: BettensorValidator):
                 await validator.run_sync_in_async(validator.update_recent_games)
                 
             if current_block - validator.last_updated_block > 300:
-
-                # Periodically update the weights on the Bittensor blockchain.
                 try:
-                    await validator.set_weights()
-                    # Update validators knowledge of the last updated block
-                    validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
-                except TimeoutError as e:
-                    bt.logging.error(f"Setting weights timed out: {e}")
+                    bt.logging.info("Attempting to update weights")
+                    if validator.subtensor is None:
+                        bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
+                        validator.subtensor = await validator.initialize_connection()
+                    
+                    if validator.subtensor is not None:
+                        success = await validator.set_weights()
+                        if success:
+                            validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
+                            bt.logging.info("Successfully updated weights and last updated block")
+                        else:
+                            bt.logging.warning("Failed to set weights, continuing with next iteration.")
+                    else:
+                        bt.logging.error("Failed to reinitialize subtensor. Skipping weight update.")
+                except Exception as e:
+                    bt.logging.error(f"Error during weight update process: {str(e)}")
+                    bt.logging.warning("Continuing with next iteration despite weight update failure.")
 
             # End the current step and prepare for the next iteration.
             validator.step += 1
