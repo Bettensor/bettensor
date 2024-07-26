@@ -108,19 +108,6 @@ async def main(validator: BettensorValidator):
             if current_date > validator.last_stats_update:
                 await validator.run_sync_in_async(lambda: validator.update_daily_stats(current_date - timedelta(days=1)))
                 validator.last_stats_update = current_date
-
-            if validator.step % 150 == 0:
-                # Sends data to the website
-                result = await validator.run_sync_in_async(
-                    lambda: fetch_and_send_predictions(db_path="data/validator.db")
-                )
-                bt.logging.trace(f"result status: {result}")
-                if result:
-                    bt.logging.debug(
-                        "Predictions fetched and sent successfully:", result
-                    )
-                else:
-                    bt.logging.debug("Failed to fetch or send predictions")
             
             # Get all axons
             all_axons = validator.metagraph.axons
@@ -229,6 +216,19 @@ async def main(validator: BettensorValidator):
             bt.logging.debug(
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
+
+            if current_block - validator.last_updated_block > 150:
+                # Sends data to the website
+                result = await validator.run_sync_in_async(
+                    lambda: fetch_and_send_predictions(db_path="data/validator.db")
+                )
+                bt.logging.trace(f"result status: {result}")
+                if result:
+                    bt.logging.debug(
+                        "Predictions fetched and sent successfully:", result
+                    )
+                else:
+                    bt.logging.debug("Failed to fetch or send predictions")
 
             if current_block - validator.last_updated_block > 298:
                 # Update results before setting weights next block
