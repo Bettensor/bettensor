@@ -260,11 +260,12 @@ class BettensorValidator(BaseNeuron):
             subtensor=self.subtensor,
             neuron_config=self.neuron_config,
             loop=self.loop,
-            thread_executor=self.thread_executor
+            thread_executor=self.thread_executor,
             db_path=self.db_path
         )
 
         self.initialize_database()
+        return True
     
     def update_daily_stats(self, date):
         conn = self.connect_db()

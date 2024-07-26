@@ -52,6 +52,36 @@ class WeightSetter:
 
         return decayed_returns / np.sum(decayed_returns)
 
+    def get_current_day_performance(self, cursor):
+        now = datetime.now(timezone.utc)
+        today = now.date().isoformat()
+        
+        cursor.execute("""
+            SELECT minerId, COUNT(*) as total_predictions,
+                SUM(CASE WHEN predictedOutcome = outcome THEN 1 ELSE 0 END) as correct_predictions,
+                SUM(wager) as total_wager,
+                SUM(CASE 
+                    WHEN predictedOutcome = outcome AND predictedOutcome = '0' THEN wager * teamAodds
+                    WHEN predictedOutcome = outcome AND predictedOutcome = '1' THEN wager * teamBodds
+                    WHEN predictedOutcome = outcome AND predictedOutcome = '2' THEN wager * tieOdds
+                    ELSE 0
+                END) as total_earnings
+            FROM predictions
+            WHERE DATE(predictionDate) = ?
+            GROUP BY minerId
+        """, (today,))
+        
+        return cursor.fetchall()
+
+    def get_historical_performance(self, cursor, start_date):
+        cursor.execute("""
+            SELECT minerId, date, total_predictions, correct_predictions, total_wager, total_earnings
+            FROM daily_miner_stats
+            WHERE date >= ?
+        """, (start_date,))
+        
+        return cursor.fetchall()
+
     def calculate_miner_scores(self, db_path):
         earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
         
@@ -59,14 +89,13 @@ class WeightSetter:
         cursor = conn.cursor()
 
         now = datetime.now(timezone.utc)
+        start_date = (now - timedelta(days=365)).date().isoformat()
         
-        cursor.execute("""
-            SELECT minerId, date, total_predictions, correct_predictions, total_wager, total_earnings
-            FROM daily_miner_stats
-            WHERE date >= DATE(?, '-365 days')
-        """, (now.date().isoformat(),))
+        # Fetch historical data
+        daily_stats = self.get_historical_performance(cursor, start_date)
         
-        daily_stats = cursor.fetchall()
+        # Fetch current day data
+        current_day_stats = self.get_current_day_performance(cursor)
         
         miner_performance = {}
         miner_prediction_counts = {}
@@ -74,6 +103,7 @@ class WeightSetter:
 
         min_prediction_count = 1
 
+        # Process historical data
         for row in daily_stats:
             miner_id, date, total_predictions, correct_predictions, total_wager, total_earnings = row
             
@@ -87,6 +117,18 @@ class WeightSetter:
             miner_prediction_counts[miner_id] += total_predictions
             miner_performance[miner_id] += total_earnings * decay_factor
 
+        # Process current day data
+        for row in current_day_stats:
+            miner_id, total_predictions, correct_predictions, total_wager, total_earnings = row
+            
+            if miner_id not in miner_performance:
+                miner_performance[miner_id] = 0.0
+                miner_prediction_counts[miner_id] = 0
+            
+            miner_prediction_counts[miner_id] += total_predictions
+            miner_performance[miner_id] += total_earnings  # No decay for current day
+
+        # Apply penalty and calculate final scores
         for miner_id, total_earned in miner_performance.items():
             prediction_count = miner_prediction_counts[miner_id]
             penalty_factor = self.logarithmic_penalty(prediction_count, min_prediction_count)
@@ -104,9 +146,10 @@ class WeightSetter:
                 idx = miner_id_to_index[miner_id]
                 earnings[idx] = final_score
 
-        bt.logging.trace("Miner performance scores before normalization:")
-        bt.logging.trace(final_scores)
+        bt.logging.info("Miner performance scores before normalization:")
+        bt.logging.info(final_scores)
 
+        conn.close()
         return earnings
 
     async def run_sync_in_async(self, fn):
@@ -122,7 +165,7 @@ class WeightSetter:
         bt.logging.info(f"Normalized weights: {weights}")
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
-        if stake > 1000.0:
+        if stake < 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
             return
 
