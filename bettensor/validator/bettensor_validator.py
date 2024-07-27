@@ -977,6 +977,11 @@ class BettensorValidator(BaseNeuron):
                 bt.logging.warning(f"Prediction {prediction_id} was made after the game started. Skipping.")
                 continue
 
+            # Check if the event started within the last 48 hours
+            if event_start_datetime < forty_eight_hours_ago:
+                bt.logging.debug(f"Game {team_game_id} started more than 48 hours ago. Skipping.")
+                continue
+
             if miner_id not in miner_performance:
                 miner_performance[miner_id] = 0.0
 
@@ -985,10 +990,12 @@ class BettensorValidator(BaseNeuron):
                     earned = wager * team_a_odds
                 elif predicted_outcome == "1":
                     earned = wager * team_b_odds
-                elif predicted_outcome == "2":
+                elif predicted_outcome.lower() == "tie":
                     earned = wager * tie_odds
                 else:
-                    bt.logging.warning(f"Unexpected outcome {predicted_outcome} for {team_game_id}.")
+                    bt.logging.warning(
+                        f"Unexpected outcome {predicted_outcome} for {team_game_id}. Please notify Bettensor Developers, as this is likely a larger API issue."
+                    )
                     continue
                 miner_performance[miner_id] += earned
 
