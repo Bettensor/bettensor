@@ -267,17 +267,23 @@ class BettensorValidator(BaseNeuron):
         cursor = conn.cursor()
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
 
+        # Get today's date in UTC
+        today_utc = datetime.now(timezone.utc).date().isoformat()
+
         for uid, prediction_dict in predictions.items():
             for predictionID, res in prediction_dict.items():
                 if int(uid) not in processed_uids:
                     bt.logging.info(f"UID {uid} not processed, skipping")
                     continue
 
+                # Get today's date in UTC
+                today_utc = datetime.now(timezone.utc).isoformat()
+
                 hotkey = self.metagraph.hotkeys[int(uid)]
                 predictionID = res.predictionID
                 teamGameID = res.teamGameID
                 minerId = hotkey
-                predictionDate = res.predictionDate
+                predictionDate = today_utc
                 predictedOutcome = res.predictedOutcome
                 wager = res.wager
 
