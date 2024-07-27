@@ -921,85 +921,77 @@ class BettensorValidator(BaseNeuron):
         return await self.loop.run_in_executor(self.thread_executor, fn)
 
     def calculate_miner_scores(self):
-        """Calculates the scores for miners based on their performance in the last 8 days"""
-        # initialize the earnings tensor
+        """
+        Calculates the scores for miners based on their performance for games that started in the last 48 hours, 
+        considering only predictions submitted in the last 8 days and excluding future predictions.
+        All times are in UTC.
+        """
         earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
 
-        # connect to the sqlite database
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # get the current timestamp
         now = datetime.now(timezone.utc)
-
-        # calculate the timestamp for 8 days ago
+        forty_eight_hours_ago = now - timedelta(hours=48)
         eight_days_ago = now - timedelta(days=8)
 
-        # fetch all the relevant data from predictions for the last 8 days
         cursor.execute(
             """
-            SELECT predictionID, teamGameID, minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, predictionDate
-            FROM predictions
-            WHERE predictionDate >= ?
+            SELECT p.predictionID, p.teamGameID, p.minerId, p.predictedOutcome, p.outcome, 
+                p.teamA, p.teamB, p.wager, p.teamAodds, p.teamBodds, p.tieOdds, 
+                p.predictionDate, g.eventStartDate
+            FROM predictions p
+            JOIN game_data g ON p.teamGameID = g.externalId
+            WHERE p.predictionDate >= ? AND p.predictionDate <= ? AND g.eventStartDate >= ?
             """,
-            (eight_days_ago.isoformat(),)
+            (eight_days_ago.isoformat(), now.isoformat(), forty_eight_hours_ago.isoformat())
         )
         prediction_rows = cursor.fetchall()
 
-        # close the database connection
         conn.close()
 
-        # process the data
         miner_performance = {}
-        miner_id_to_index = {
-            miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)
-        }
+        miner_id_to_index = {miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)}
 
         for row in prediction_rows:
             (
-                prediction_id,
-                team_game_id,
-                miner_id,
-                predicted_outcome,
-                outcome,
-                team_a,
-                team_b,
-                wager,
-                team_a_odds,
-                team_b_odds,
-                tie_odds,
-                prediction_date
+                prediction_id, team_game_id, miner_id, predicted_outcome, outcome,
+                team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds,
+                prediction_date, event_start_date
             ) = row
 
-            # Convert prediction_date string to aware datetime object
             try:
-                prediction_datetime = datetime.fromisoformat(prediction_date)
-                if prediction_datetime.tzinfo is None:
-                    prediction_datetime = prediction_datetime.replace(tzinfo=timezone.utc)
+                prediction_datetime = datetime.fromisoformat(prediction_date).replace(tzinfo=timezone.utc)
+                event_start_datetime = datetime.fromisoformat(event_start_date).replace(tzinfo=timezone.utc)
             except ValueError:
-                bt.logging.warning(f"Invalid date format for prediction {prediction_id}: {prediction_date}")
+                bt.logging.warning(f"Invalid date format for prediction {prediction_id}. Skipping.")
                 continue
 
-            # Only process predictions from the last 8 days
-            if prediction_datetime >= eight_days_ago:
-                if miner_id not in miner_performance:
-                    miner_performance[miner_id] = 0.0
+            # Skip future predictions
+            if prediction_datetime > now:
+                bt.logging.warning(f"Future prediction date detected for prediction {prediction_id}. Skipping.")
+                continue
 
-                if predicted_outcome == outcome:
-                    if predicted_outcome == "0":
-                        earned = wager * team_a_odds
-                    elif predicted_outcome == "1":
-                        earned = wager * team_b_odds
-                    elif predicted_outcome == "2":
-                        earned = wager * tie_odds
-                    else:
-                        bt.logging.warning(
-                            f"Unexpected outcome {predicted_outcome} for {team_game_id}. Please notify Bettensor Developers."
-                        )
-                        continue
-                    miner_performance[miner_id] += earned
+            # Ensure the prediction was made before the game started
+            if prediction_datetime >= event_start_datetime:
+                bt.logging.warning(f"Prediction {prediction_id} was made after the game started. Skipping.")
+                continue
 
-        # update the earnings tensor
+            if miner_id not in miner_performance:
+                miner_performance[miner_id] = 0.0
+
+            if predicted_outcome == outcome:
+                if predicted_outcome == "0":
+                    earned = wager * team_a_odds
+                elif predicted_outcome == "1":
+                    earned = wager * team_b_odds
+                elif predicted_outcome == "2":
+                    earned = wager * tie_odds
+                else:
+                    bt.logging.warning(f"Unexpected outcome {predicted_outcome} for {team_game_id}.")
+                    continue
+                miner_performance[miner_id] += earned
+
         for miner_id, total_earned in miner_performance.items():
             if miner_id in miner_id_to_index:
                 idx = miner_id_to_index[miner_id]
