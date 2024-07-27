@@ -971,8 +971,14 @@ class BettensorValidator(BaseNeuron):
                 prediction_date
             ) = row
 
-            # Convert prediction_date string to datetime object
-            prediction_datetime = datetime.fromisoformat(prediction_date)
+            # Convert prediction_date string to aware datetime object
+            try:
+                prediction_datetime = datetime.fromisoformat(prediction_date)
+                if prediction_datetime.tzinfo is None:
+                    prediction_datetime = prediction_datetime.replace(tzinfo=timezone.utc)
+            except ValueError:
+                bt.logging.warning(f"Invalid date format for prediction {prediction_id}: {prediction_date}")
+                continue
 
             # Only process predictions from the last 8 days
             if prediction_datetime >= eight_days_ago:
