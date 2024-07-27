@@ -921,7 +921,7 @@ class BettensorValidator(BaseNeuron):
         return await self.loop.run_in_executor(self.thread_executor, fn)
 
     def calculate_miner_scores(self):
-        """Calculates the scores for miners based on their performance in the last 48 hours"""
+        """Calculates the scores for miners based on their performance in the last 8 days"""
         # initialize the earnings tensor
         earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
 
@@ -932,22 +932,17 @@ class BettensorValidator(BaseNeuron):
         # get the current timestamp
         now = datetime.now(timezone.utc)
 
-        # calculate the timestamp for 48 hours ago
-        forty_eight_hours_ago = now - timedelta(hours=48)
+        # calculate the timestamp for 8 days ago
+        eight_days_ago = now - timedelta(days=8)
 
-        # fetch the relevant data from game_data for the last 48 hours
+        # fetch all the relevant data from predictions for the last 8 days
         cursor.execute(
-            "SELECT externalId, eventStartDate FROM game_data WHERE eventStartDate BETWEEN ? AND ?",
-            (forty_eight_hours_ago.isoformat(), now.isoformat()),
-        )
-        game_data_rows = cursor.fetchall()
-
-        # create a mapping from teamGameID to eventStartDate
-        game_date_map = {row[0]: row[1] for row in game_data_rows}
-
-        # fetch all the relevant data from predictions
-        cursor.execute(
-            "SELECT predictionID, teamGameID, minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds FROM predictions"
+            """
+            SELECT predictionID, teamGameID, minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, predictionDate
+            FROM predictions
+            WHERE predictionDate >= ?
+            """,
+            (eight_days_ago.isoformat(),)
         )
         prediction_rows = cursor.fetchall()
 
@@ -973,26 +968,30 @@ class BettensorValidator(BaseNeuron):
                 team_a_odds,
                 team_b_odds,
                 tie_odds,
+                prediction_date
             ) = row
 
-            if team_game_id in game_date_map:
-                event_date = datetime.fromisoformat(game_date_map[team_game_id])
-                if event_date >= forty_eight_hours_ago:
-                    if miner_id not in miner_performance:
-                        miner_performance[miner_id] = 0.0
+            # Convert prediction_date string to datetime object
+            prediction_datetime = datetime.fromisoformat(prediction_date)
 
-                    if predicted_outcome == outcome:
-                        if predicted_outcome == "0":
-                            earned = wager * team_a_odds
-                        elif predicted_outcome == "1":
-                            earned = wager * team_b_odds
-                        elif predicted_outcome == "Tie":
-                            earned = wager * tie_odds
-                        else:
-                            bt.logging.warning(
-                                f"outcome for {team_game_id} not found. Please notify Bettensor Developers, as this is likely a larger API issue."
-                            )
-                        miner_performance[miner_id] += earned
+            # Only process predictions from the last 8 days
+            if prediction_datetime >= eight_days_ago:
+                if miner_id not in miner_performance:
+                    miner_performance[miner_id] = 0.0
+
+                if predicted_outcome == outcome:
+                    if predicted_outcome == "0":
+                        earned = wager * team_a_odds
+                    elif predicted_outcome == "1":
+                        earned = wager * team_b_odds
+                    elif predicted_outcome == "2":
+                        earned = wager * tie_odds
+                    else:
+                        bt.logging.warning(
+                            f"Unexpected outcome {predicted_outcome} for {team_game_id}. Please notify Bettensor Developers."
+                        )
+                        continue
+                    miner_performance[miner_id] += earned
 
         # update the earnings tensor
         for miner_id, total_earned in miner_performance.items():
