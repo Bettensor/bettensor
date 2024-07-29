@@ -136,17 +136,17 @@ class TeamGamePrediction(BaseModel):
 
     predictionID: str = Field(..., description="UUID of the prediction")
     teamGameID: str = Field(..., description="UUID of the team game")
-    minerID: str = Field(
-        ..., description="UUID of the miner (coldkey/hotkey) that made the prediction"
-    )
+    minerID: str = Field(..., description="UUID of the miner (coldkey/hotkey) that made the prediction")
     predictionDate: str = Field(..., description="Prediction date of the prediction")
     predictedOutcome: str = Field(..., description="Predicted outcome")
+    teamA: Optional[str] = Field(None, description="Team A")
+    teamB: Optional[str] = Field(None, description="Team B")
     wager: float = Field(..., description="Wager of the prediction")
     teamAodds: float = Field(..., description="Team A odds")
     teamBodds: float = Field(..., description="Team B odds")
-    tieOdds: float = Field(..., description="Tie odds")
+    tieOdds: Optional[float] = Field(None, description="Tie odds")
     outcome: str = Field(..., description="Outcome of prediction")
-    can_overwrite: bool = Field(..., description="Can overwrite")
+    can_overwrite: Optional[bool] = Field(True, description="Can overwrite")
 
 
 class TeamGame(BaseModel):

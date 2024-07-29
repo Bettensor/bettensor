@@ -175,3 +175,5 @@ games_data.json
 miner.sh
 validator.sh
 bettensor/utills/print_db.py
+data/*
+!data/.gitkeep

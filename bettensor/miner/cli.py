@@ -10,6 +10,7 @@ import subprocess
 import bittensor as bt
 import rich
 import prompt_toolkit
+from prompt_toolkit.shortcuts import clear
 from rich.console import Console
 from rich.table import Table
 from prompt_toolkit.application import Application
@@ -20,11 +21,17 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.application import Application as PTApplication
 from argparse import ArgumentParser
 import time
-import threading
 from prompt_toolkit.layout.containers import Window, HSplit
 import logging
 import os
 from bettensor.miner.database.database_manager import get_db_manager
+from bettensor.miner.database.predictions import PredictionsHandler
+from bettensor.miner.database.games import GamesHandler
+from bettensor.miner.stats.miner_stats import MinerStateManager
+import threading
+import os
+import sys
+import subprocess
 
 log_dir = "./logs"
 if not os.path.exists(log_dir):
@@ -61,21 +68,22 @@ class Application:
         self.db_manager = get_db_manager()
         
         if not os.path.exists(self.db_manager.db_path):
-            print("Error: Database not found. Please start the miner first.")
-            exit(1)
+            raise ValueError("Error: Database not found. Please start the miner first.")
 
         self.available_miners = self.get_available_miners()
         
         if not self.available_miners:
-            print("Error: No miners found in the database. Please start the miner first.")
-            exit(1)
+            raise ValueError("Error: No miners found in the database. Please start the miner first.")
 
-        self.miner_uid = self.select_miner()
+        # Load the saved miner index
+        self.current_miner_index = self.get_saved_miner_index()
+        self.miner_uid = self.available_miners[self.current_miner_index][0]
         self.load_miner_data()
 
-        print(
-            f"Miner UID: {self.miner_uid}, Miner Hotkey: {self.miner_hotkey}, DB Path: {self.db_manager.db_path}"
-        )
+        self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid)
+        
+        self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_uid)
+        self.games_handler = GamesHandler(self.db_manager)
 
         self.reload_data()
         self.current_view = MainMenu(self)
@@ -98,51 +106,61 @@ class Application:
             cursor.execute("SELECT miner_uid, miner_hotkey FROM miner_stats")
             return cursor.fetchall()
 
-    def select_miner(self):
+    def select_next_miner(self):
         """
-        Prompt the user to select a miner if multiple miners are available.
-
-        Returns:
-            str: The selected miner's UID.
+        Rotate to the next available miner and restart the application.
 
         Behavior:
-            - If only one miner is available, it's automatically selected
-            - If multiple miners are available, the user is prompted to choose one
+            - Cycles through available miners
+            - Saves the new miner index
+            - Restarts the entire application
         """
-        if len(self.available_miners) == 1:
-            print(f"Only one miner found. Selecting UID: {self.available_miners[0][0]}")
-            return self.available_miners[0][0]
+        self.current_miner_index = (self.current_miner_index + 1) % len(self.available_miners)
+        
+        # Save the current miner index to a file
+        with open('current_miner_index.txt', 'w') as f:
+            f.write(str(self.current_miner_index))
+        
+        # Restart the application
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
 
-        print("Available miners:")
-        for i, (uid, hotkey) in enumerate(self.available_miners, 1):
-            print(f"{i}. UID: {uid}, Hotkey: {hotkey}")
-
-        while True:
-            try:
-                choice = int(input("Enter the number of the miner you want to select: "))
-                if 1 <= choice <= len(self.available_miners):
-                    return self.available_miners[choice-1][0]
-                else:
-                    print("Invalid choice. Please try again.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
+    @staticmethod
+    def get_saved_miner_index():
+        """
+        Retrieve the saved miner index from file.
+        """
+        try:
+            with open('current_miner_index.txt', 'r') as f:
+                return int(f.read().strip())
+        except FileNotFoundError:
+            return 0
 
     def load_miner_data(self):
         """
         Load data for the selected miner.
 
         Behavior:
-            - Retrieves the miner's hotkey from the database
-            - Sets the miner_hotkey attribute
+            - Retrieves miner stats from the state manager
+            - If no stats exist, initializes with default values
+            - Updates the miner_stats attribute
         """
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT miner_hotkey FROM miner_stats WHERE miner_uid = ?", (self.miner_uid,))
-            result = cursor.fetchone()
-            if result:
-                self.miner_hotkey = result[0]
-            else:
-                print(f"No miner found with UID: {self.miner_uid}")
-                exit(1)
+        miner_stats = self.state_manager.get_miner_stats()
+        if not miner_stats:
+            miner_stats = {
+                'miner_hotkey': self.miner_hotkey,
+                'miner_uid': self.miner_uid,
+                'miner_rank': 0,
+                'miner_cash': 1000,
+                'miner_current_incentive': 0,
+                'miner_last_prediction_date': None,
+                'miner_lifetime_earnings': 0,
+                'miner_lifetime_wager': 0,
+                'miner_lifetime_wins': 0,
+                'miner_lifetime_losses': 0,
+                'miner_win_loss_ratio': 0,
+            }
+        self.miner_stats = miner_stats
 
     def reload_data(self):
         """
@@ -153,29 +171,14 @@ class Application:
             - Initializes default values if no stats are found
             - Sets up active games and unsubmitted predictions
         """
-        self.predictions = self.get_predictions()
-        self.games = self.get_game_data()
-        self.miner_stats = self.get_miner_stats(self.miner_uid)
+        self.predictions = self.predictions_handler.get_predictions()
+        self.games = self.games_handler.get_active_games()
+        self.miner_stats = self.state_manager.get_stats()
         
         if self.miner_stats is None:
-            print(f"No miner stats found for UID: {self.miner_uid}. Initializing with default values.")
-            self.miner_stats = {
-                "miner_uid": self.miner_uid,
-                "miner_hotkey": self.miner_hotkey,
-                "miner_cash": 1000,  # Default starting cash
-                "miner_status": "active",
-                "miner_last_prediction_date": None,
-                "miner_lifetime_earnings": 0,
-                "miner_lifetime_wager": 0,
-                "miner_lifetime_predictions": 0,
-                "miner_lifetime_wins": 0,
-                "miner_lifetime_losses": 0,
-                "miner_win_loss_ratio": 0,
-                "miner_rank": 0,
-                "miner_current_incentive": 0,
-            }
-            # Insert these default stats into the database
-            self.insert_miner_stats(self.miner_stats)
+            bt.logging.warning(f"No stats found for miner {self.miner_uid}. Initializing new miner row.")
+            self.state_manager.stats_handler.init_miner_row()
+            self.miner_stats = self.state_manager.get_stats()
 
         self.active_games = {}
         self.unsubmitted_predictions = {}
@@ -194,6 +197,10 @@ class Application:
         """
         self.current_view = new_view
         self.layout.container = new_view.box
+
+        # If changing to MainMenu, update miner data
+        if isinstance(new_view, MainMenu):
+            new_view.update_text_area()
 
     def run(self):
         """
@@ -223,8 +230,7 @@ class Application:
             with self.db_manager.get_cursor() as cursor:
                 cursor.execute("SELECT * FROM predictions")
         except Exception as e:
-            print(e)
-            print("Database not initialized properly, restart your miner first")
+            raise ValueError(f"Database not initialized properly, restart your miner first: {e}")
 
     def submit_predictions(self):
         """
@@ -235,31 +241,9 @@ class Application:
             - Inserts or replaces predictions in the database
             - Logs warnings for any insertion failures
         """
-        with self.db_manager.get_cursor() as cursor:
-            for prediction in self.unsubmitted_predictions.values():
-                try:
-                    cursor.execute(
-                        """INSERT OR REPLACE INTO predictions (predictionID, teamGameID, minerID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            prediction["predictionID"],
-                            prediction["teamGameID"],
-                            prediction["minerID"],
-                            prediction["predictionDate"],
-                            prediction["teamA"],
-                            prediction["teamB"],
-                            prediction["teamAodds"],
-                            prediction["teamBodds"],
-                            prediction["tieOdds"],
-                            prediction["predictedOutcome"],
-                            prediction["wager"],
-                            prediction["outcome"],
-                            prediction["canOverwrite"],
-                        ),
-                    )
-                except sqlite3.IntegrityError as e:
-                    logging.warning(f"Failed to insert prediction {prediction['predictionID']}: {e}")
-            cursor.connection.commit()
+        for prediction in self.unsubmitted_predictions.values():
+            self.predictions_handler.add_prediction(prediction)
+        self.unsubmitted_predictions.clear()
 
     def get_predictions(self):
         """
@@ -272,13 +256,7 @@ class Application:
             - Queries the database for all predictions
             - Constructs a dictionary of prediction data
         """
-        predictions = {}
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT * FROM predictions")
-            columns = [column[0] for column in cursor.description]
-            for row in cursor.fetchall():
-                predictions[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
-        return predictions
+        return self.predictions_handler.get_predictions()
 
     def get_game_data(self):
         """
@@ -291,13 +269,7 @@ class Application:
             - Queries the database for all inactive games
             - Constructs a dictionary of game data
         """
-        game_data = {}
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT * FROM games WHERE active = 0")
-            columns = [column[0] for column in cursor.description]
-            for row in cursor.fetchall():
-                game_data[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
-        return game_data
+        return self.games_handler.get_active_games()
 
     def get_miner_stats(self, uid=None):
         """
@@ -313,21 +285,7 @@ class Application:
             - Queries the database for miner stats based on the provided UID
             - Constructs a dictionary of miner stats if found
         """
-        logging.info(f"Getting miner stats for uid: {uid}")
-        if uid is not None:
-            with self.db_manager.get_cursor() as cursor:
-                cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = ?", (str(uid),))
-                columns = [column[0] for column in cursor.description]
-                row = cursor.fetchone()
-                if row is None:
-                    logging.warning(f"No miner stats found for uid: {uid}")
-                    return None
-                miner_stats = {columns[i]: row[i] for i in range(len(columns))}
-                logging.info(f"Miner stats: {miner_stats}")
-                return miner_stats
-        else:
-            logging.error("No UID specified")
-            return None
+        return self.state_manager.get_stats()
 
     def insert_miner_stats(self, stats):
         """
@@ -347,45 +305,21 @@ class Application:
             cursor.execute(f"INSERT INTO miner_stats ({columns}) VALUES ({placeholders})", values)
             cursor.connection.commit()
 
-    def update_miner_stats(self, wager, prediction_date, miner_uid):
+    def update_miner_stats(self, wager, prediction_date):
         """
         Update miner stats in the database.
 
         Args:
             wager (float): The wager amount for the prediction.
             prediction_date (str): The date of the prediction.
-            miner_uid (str): The UID of the miner to update.
 
         Behavior:
             - Updates miner cash, last prediction date, lifetime wager, and lifetime predictions
             - Commits the changes to the database
             - Reloads the miner stats after update
         """
-        logging.info(f"Updating miner stats for miner_uid: {miner_uid}")
-        logging.debug(f"Miner stats: {self.miner_stats}")
-        new_miner_cash = self.miner_stats["miner_cash"] - wager
-        new_miner_last_prediction_date = prediction_date
-        new_miner_lifetime_wager = self.miner_stats["miner_lifetime_wager"] + wager
-        new_miner_lifetime_predictions = self.miner_stats["miner_lifetime_predictions"] + 1
-
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute(
-                """UPDATE miner_stats SET miner_cash = ?,
-                                miner_last_prediction_date = ?, 
-                                miner_lifetime_wager = ?, 
-                                miner_lifetime_predictions = ? 
-                                WHERE miner_uid = ?""",
-                (
-                    new_miner_cash,
-                    new_miner_last_prediction_date,
-                    new_miner_lifetime_wager,
-                    new_miner_lifetime_predictions,
-                    miner_uid,
-                ),
-            )
-            cursor.connection.commit()
-        self.miner_stats = self.get_miner_stats(miner_uid)
-        logging.info(f"Updated miner stats: {self.miner_stats}")
+        self.state_manager.update_on_prediction({'wager': wager, 'predictionDate': prediction_date})
+        self.reload_data()
 
 
 class InteractiveTable:
@@ -438,9 +372,13 @@ class InteractiveTable:
         Handle the enter key press.
 
         Behavior:
-            - To be implemented by subclasses
+            - If the "Go Back" option is selected, changes the view to the main menu
+            - Otherwise, does nothing (for now)
         """
-        pass
+        if self.selected_index == len(self.options) - 1:  # Go Back
+            self.app.change_view(MainMenu(self.app))
+        
+        
 
     def move_up(self):
         """
@@ -492,7 +430,7 @@ class MainMenu(InteractiveTable):
         self.options = [
             "View Submitted Predictions",
             "View Games and Make Predictions",
-            "Select Miner",
+            "Select Next Miner (This will trigger app restart, please be patient)",
             "Quit",
         ]
         self.update_text_area()
@@ -513,15 +451,14 @@ class MainMenu(InteractiveTable):
             f" Miner Hotkey: {self.app.miner_stats['miner_hotkey']}\n"
             f" Miner UID: {self.app.miner_stats['miner_uid']}\n"
             f" Miner Rank: {self.app.miner_stats['miner_rank']}\n"
-            f" Miner Cash: {self.app.miner_stats['miner_cash']}\n"
-            f" Current Incentive: {self.app.miner_stats['miner_current_incentive']} τ per day\n"
+            f" Miner Cash: {self.app.miner_stats['miner_cash']:.2f}\n"
+            f" Current Incentive: {self.app.miner_stats['miner_current_incentive']:.2f} τ per day\n"
             f" Last Prediction: {self.app.miner_stats['miner_last_prediction_date']}\n"
-            f" Lifetime Earnings: ${self.app.miner_stats['miner_lifetime_earnings']}\n"
-            f" Lifetime Wager Amount: {self.app.miner_stats['miner_lifetime_wager']}\n"
+            f" Lifetime Earnings: ${self.app.miner_stats['miner_lifetime_earnings']:.2f}\n"
+            f" Lifetime Wager Amount: {self.app.miner_stats['miner_lifetime_wager']:.2f}\n"
             f" Lifetime Wins: {self.app.miner_stats['miner_lifetime_wins']}\n"
             f" Lifetime Losses: {self.app.miner_stats['miner_lifetime_losses']}\n"
             f" Win/Loss Ratio: {self.app.miner_stats['miner_win_loss_ratio']:.2f}\n"
-            f" Miner Status: {self.app.miner_stats['miner_status']}\n"
         )
 
         options_text = "\n".join(
@@ -546,10 +483,7 @@ class MainMenu(InteractiveTable):
         elif self.selected_index == 1:
             self.app.change_view(GamesList(self.app))
         elif self.selected_index == 2:
-            self.app.miner_uid = self.app.select_miner()
-            self.app.load_miner_data()
-            self.app.reload_data()
-            self.update_text_area()
+            self.app.select_next_miner()
         elif self.selected_index == 3:
             graceful_shutdown(self.app, submit=True)
 
@@ -575,7 +509,6 @@ class MainMenu(InteractiveTable):
         super().move_down()
         self.update_text_area()
 
-
 class PredictionsList(InteractiveTable):
     def __init__(self, app):
         """
@@ -597,6 +530,7 @@ class PredictionsList(InteractiveTable):
         self.update_sorted_predictions()
         self.update_total_pages()
         self.update_options()
+        self.selected_index = len(self.options) - 1  # Set cursor to "Go Back"
         self.update_text_area()
 
     def update_sorted_predictions(self):
@@ -628,47 +562,50 @@ class PredictionsList(InteractiveTable):
         Update the options list for the predictions view.
 
         Behavior:
-            - Calculates the start and end indices for the current page
-            - Generates formatted prediction strings for the current page
-            - Adds a "Go Back" option at the end
+            - Calculates dynamic column widths based on data
+            - Formats predictions data with proper alignment and separators
         """
         start_idx = self.current_page * self.predictions_per_page
         end_idx = min(start_idx + self.predictions_per_page, len(self.sorted_predictions))
         
-        if not self.sorted_predictions:
-            # Set default lengths if there are no predictions
-            max_teamA_len = len("Team A")
-            max_teamB_len = len("Team B")
-            max_teamAodds_len = len("Team A Odds")
-            max_teamBodds_len = len("Team B Odds")
-            max_tieOdds_len = len("Tie Odds")
-            max_prediction_len = len("Prediction")
-            max_wager_amount_len = len("Wager Amount")
-            max_outcome_len = len("Outcome")
-            max_date_len = len("Prediction Date")
-        else:
-            # Calculate maximum widths for each column
-            max_teamA_len = max(len("Team A"), max(len(pred["teamA"]) for pred in self.sorted_predictions))
-            max_teamB_len = max(len("Team B"), max(len(pred["teamB"]) for pred in self.sorted_predictions))
-            max_teamAodds_len = max(len("Team A Odds"), max(len(f"{pred['teamAodds']:.2f}") for pred in self.sorted_predictions))
-            max_teamBodds_len = max(len("Team B Odds"), max(len(f"{pred['teamBodds']:.2f}") for pred in self.sorted_predictions))
-            max_tieOdds_len = max(len("Tie Odds"), max(len(f"{pred['tieOdds']:.2f}") for pred in self.sorted_predictions))
-            max_prediction_len = max(len("Prediction"), max(len(pred["predictedOutcome"]) for pred in self.sorted_predictions))
-            max_wager_amount_len = max(len("Wager Amount"), max(len(f"{pred['wager']:.2f}") for pred in self.sorted_predictions))
-            max_outcome_len = max(len("Outcome"), max(len(str(pred["outcome"])) for pred in self.sorted_predictions))
-            max_date_len = max(len("Prediction Date"), max(len(self.format_prediction_date(pred["predictionDate"])) for pred in self.sorted_predictions))
+        # Calculate maximum widths for each column
+        max_date_len = max(len("Prediction Date"), max(len(self.format_prediction_date(pred["predictionDate"])) for pred in self.sorted_predictions))
+        max_prediction_len = max(len("Predicted Outcome"), max(len(str(pred["predictedOutcome"])) for pred in self.sorted_predictions))
+        max_teamA_len = max(len("Team A"), max(len(str(pred["teamA"])) for pred in self.sorted_predictions))
+        max_teamB_len = max(len("Team B"), max(len(str(pred["teamB"])) for pred in self.sorted_predictions))
+        max_wager_amount_len = max(len("Wager Amount"), max(len(self.format_odds(pred["wager"])) for pred in self.sorted_predictions))
+        max_teamAodds_len = max(len("Team A Odds"), max(len(self.format_odds(pred["teamAodds"])) for pred in self.sorted_predictions))
+        max_teamBodds_len = max(len("Team B Odds"), max(len(self.format_odds(pred["teamBodds"])) for pred in self.sorted_predictions))
+        max_tieOdds_len = max(len("Tie Odds"), max(len(self.format_odds(pred["tieOdds"])) for pred in self.sorted_predictions))
+        max_outcome_len = max(len("Outcome"), max(len(str(pred["outcome"])) for pred in self.sorted_predictions))
 
-        # Define the header with calculated widths
-        self.header = Label(
-            f"  {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Team A Odds':<{max_teamAodds_len}} | {'Team B Odds':<{max_teamBodds_len}} | {'Tie Odds':<{max_tieOdds_len}} | {'Prediction':<{max_prediction_len}} | {'Wager Amount':<{max_wager_amount_len}} | {'Outcome':<{max_outcome_len}} | {'Prediction Date':<{max_date_len}}",
-            style="bold",
+        # Define the header with calculated widths, adding a space at the beginning for cursor alignment
+        self.header = (
+            f"  {'Prediction Date':<{max_date_len}} | "
+            f"{'Predicted Outcome':<{max_prediction_len}} | "
+            f"{'Team A':<{max_teamA_len}} | "
+            f"{'Team B':<{max_teamB_len}} | "
+            f"{'Wager Amount':<{max_wager_amount_len}} | "
+            f"{'Team A Odds':<{max_teamAodds_len}} | "
+            f"{'Team B Odds':<{max_teamBodds_len}} | "
+            f"{'Tie Odds':<{max_tieOdds_len}} | "
+            f"{'Outcome':<{max_outcome_len}}"
         )
 
         # Generate options for the current page
-        self.options = [
-            f"{pred['teamA']:<{max_teamA_len}} | {pred['teamB']:<{max_teamB_len}} | {pred['teamAodds']:<{max_teamAodds_len}.2f} | {pred['teamBodds']:<{max_teamBodds_len}.2f} | {pred['tieOdds']:<{max_tieOdds_len}.2f} | {pred['predictedOutcome']:<{max_prediction_len}} | {pred['wager']:<{max_wager_amount_len}.2f} | {str(pred['outcome']):<{max_outcome_len}} | {self.format_prediction_date(pred['predictionDate']):<{max_date_len}}"
-            for pred in self.sorted_predictions[start_idx:end_idx]
-        ]
+        self.options = []
+        for pred in self.sorted_predictions[start_idx:end_idx]:
+            self.options.append(
+                f"{self.format_prediction_date(pred['predictionDate']):<{max_date_len}} | "
+                f"{pred['predictedOutcome']:<{max_prediction_len}} | "
+                f"{pred['teamA']:<{max_teamA_len}} | "
+                f"{pred['teamB']:<{max_teamB_len}} | "
+                f"{self.format_odds(pred['wager']):<{max_wager_amount_len}} | "
+                f"{self.format_odds(pred['teamAodds']):<{max_teamAodds_len}} | "
+                f"{self.format_odds(pred['teamBodds']):<{max_teamBodds_len}} | "
+                f"{self.format_odds(pred['tieOdds']):<{max_tieOdds_len}} | "
+                f"{pred['outcome']:<{max_outcome_len}}"
+            )
         self.options.append("Go Back")
 
     def update_text_area(self):
@@ -679,18 +616,17 @@ class PredictionsList(InteractiveTable):
             - Formats the header, options, and pagination information
             - Updates the text area content
         """
-        header_text = self.header.text
+        header_text = self.header
         divider = "-" * len(header_text)
         if len(self.options) <= 1:  # Only "Go Back" is present
             options_text = "No predictions available."
         else:
             options_text = "\n".join(
-                f"> {option}" if i == self.selected_index else f"  {option}"
-                for i, option in enumerate(self.options[:-1])
+                f"{'>' if i == self.selected_index else ' '} {option}"
+                for i, option in enumerate(self.options)
             )
-        go_back_text = f"\n\n{'>' if self.selected_index == len(self.options) - 1 else ' '} {self.options[-1]}"
         page_info = f"\nPage {self.current_page + 1}/{self.total_pages} (Use left/right arrow keys to navigate)"
-        self.text_area.text = f"{header_text}\n{divider}\n{options_text}{go_back_text}{page_info}\n\n{self.message}"
+        self.text_area.text = f"{header_text}\n{divider}\n{options_text}{page_info}\n\n{self.message}"
 
     def format_prediction_date(self, date_string):
         """
@@ -714,22 +650,9 @@ class PredictionsList(InteractiveTable):
         Handle the enter key press in the predictions view.
 
         Behavior:
-            - If the "Go Back" option is selected, changes the view to the main menu
-            - Otherwise, opens the prediction view for the selected prediction
+            - Changes the view to the main menu (since cursor is always on "Go Back")
         """
-        if self.selected_index == len(self.options) - 1:  # Go Back
-            self.app.change_view(MainMenu(self.app))
-        else:
-            selected_prediction = self.sorted_predictions[self.current_page * self.predictions_per_page + self.selected_index]
-
-            # Find the corresponding game data
-            game_id = selected_prediction.get("teamGameID")
-            game_data = next(
-                (game for game in self.app.games.values() if game["gameID"] == game_id),
-                None,
-            )
-
-            # TODO - switch to prediction view (can't edit)
+        self.app.change_view(MainMenu(self.app))
 
     def clear_message(self):
         """
@@ -744,27 +667,15 @@ class PredictionsList(InteractiveTable):
 
     def move_up(self):
         """
-        Move the selection up in the predictions view.
-
-        Behavior:
-            - Decrements the selected index if not at the top
-            - Updates the text area
+        Overridden to prevent cursor movement.
         """
-        if self.selected_index > 0:
-            self.selected_index -= 1
-            self.update_text_area()
+        pass
 
     def move_down(self):
         """
-        Move the selection down in the predictions view.
-
-        Behavior:
-            - Increments the selected index if not at the bottom
-            - Updates the text area
+        Overridden to prevent cursor movement.
         """
-        if self.selected_index < len(self.options) - 1:
-            self.selected_index += 1
-            self.update_text_area()
+        pass
 
     def move_left(self):
         """
@@ -772,13 +683,12 @@ class PredictionsList(InteractiveTable):
 
         Behavior:
             - Decrements the current page if not on the first page
-            - Resets the selected index to 0
             - Updates the options and text area
         """
         if self.current_page > 0:
             self.current_page -= 1
-            self.selected_index = 0
             self.update_options()
+            self.selected_index = len(self.options) - 1  # Keep cursor on "Go Back"
             self.update_text_area()
 
     def move_right(self):
@@ -787,14 +697,30 @@ class PredictionsList(InteractiveTable):
 
         Behavior:
             - Increments the current page if not on the last page
-            - Resets the selected index to 0
             - Updates the options and text area
         """
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
-            self.selected_index = 0
             self.update_options()
+            self.selected_index = len(self.options) - 1  # Keep cursor on "Go Back"
             self.update_text_area()
+
+    def format_odds(self, value):
+        """
+        Format odds or wager values, handling both string and float types.
+
+        Args:
+            value: The value to format (can be string or float).
+
+        Returns:
+            str: The formatted value as a string.
+        """
+        if isinstance(value, str):
+            return value
+        elif isinstance(value, (int, float)):
+            return f"{value:.2f}"
+        else:
+            return str(value)
 
 
 class GamesList(InteractiveTable):
@@ -812,19 +738,77 @@ class GamesList(InteractiveTable):
         """
         super().__init__(app)
         app.reload_data()
-
-        # Get unique sports from all games
-        self.available_sports = sorted(set(game['sport'] for game in self.app.games.values()))
-        self.current_filter = "All Sports"  # Default to no filter
-
+        self.available_sports = sorted(set(game.sport for game in self.app.games.values()))
+        self.current_filter = "All Sports"
         self.update_sorted_games()
-
         self.games_per_page = 25
         self.current_page = 0
         self.update_total_pages()
-
         self.update_options()
         self.update_text_area()
+
+    def update_options(self):
+        """
+        Update the options list for the games view.
+
+        Behavior:
+            - Calculates dynamic column widths based on data
+            - Formats games data with proper alignment and separators
+        """
+        start_idx = self.current_page * self.games_per_page
+        end_idx = min(start_idx + self.games_per_page, len(self.sorted_games))
+        
+        # Calculate maximum widths for each column
+        max_sport_len = max(len("Sport"), max(len(game.sport) for game in self.sorted_games))
+        max_teamA_len = max(len("Team A"), max(len(game.teamA) for game in self.sorted_games))
+        max_teamB_len = max(len("Team B"), max(len(game.teamB) for game in self.sorted_games))
+        max_eventStartDate_len = max(len("Event Start Date"), max(len(self.format_event_start_date(game.eventStartDate)) for game in self.sorted_games))
+        max_teamAodds_len = max(len("Team A Odds"), max(len(self.format_odds(game.teamAodds)) for game in self.sorted_games))
+        max_teamBodds_len = max(len("Team B Odds"), max(len(self.format_odds(game.teamBodds)) for game in self.sorted_games))
+        max_tieOdds_len = max(len("Tie Odds"), max(len(self.format_odds(game.tieOdds)) for game in self.sorted_games))
+
+        # Define the header with calculated widths, adding a space at the beginning for cursor alignment
+        self.header = (
+            f"  {'Sport':<{max_sport_len}} | "
+            f"{'Team A':<{max_teamA_len}} | "
+            f"{'Team B':<{max_teamB_len}} | "
+            f"{'Event Start Date':<{max_eventStartDate_len}} | "
+            f"{'Team A Odds':<{max_teamAodds_len}} | "
+            f"{'Team B Odds':<{max_teamBodds_len}} | "
+            f"{'Tie Odds':<{max_tieOdds_len}}"
+        )
+
+        # Generate options for the current page
+        self.options = []
+        for game in self.sorted_games[start_idx:end_idx]:
+            self.options.append(
+                f"{game.sport:<{max_sport_len}} | "
+                f"{game.teamA:<{max_teamA_len}} | "
+                f"{game.teamB:<{max_teamB_len}} | "
+                f"{self.format_event_start_date(game.eventStartDate):<{max_eventStartDate_len}} | "
+                f"{self.format_odds(game.teamAodds):<{max_teamAodds_len}} | "
+                f"{self.format_odds(game.teamBodds):<{max_teamBodds_len}} | "
+                f"{self.format_odds(game.tieOdds):<{max_tieOdds_len}}"
+            )
+        self.options.append(f"Filter: {self.current_filter}")
+        self.options.append("Go Back")
+
+    def format_odds(self, value):
+        """
+        Format odds values, handling both string and float types.
+
+        Args:
+            value: The value to format (can be string or float).
+
+        Returns:
+            str: The formatted value as a string.
+        """
+        if isinstance(value, str):
+            return value
+        elif isinstance(value, (int, float)):
+            return f"{value:.2f}"
+        else:
+            return str(value)
 
     def update_sorted_games(self):
         """
@@ -833,16 +817,18 @@ class GamesList(InteractiveTable):
         Behavior:
             - Sorts the games by event start date (earliest first)
             - Applies the current filter if not set to "All Sports"
+            - Filters out games that have already occurred
         """
+        current_time = datetime.datetime.now(datetime.timezone.utc)
         if self.current_filter == "All Sports":
             self.sorted_games = sorted(
-                self.app.games.values(),
-                key=lambda x: datetime.datetime.fromisoformat(x["eventStartDate"])
+                [game for game in self.app.games.values() if self.parse_date(game.eventStartDate) > current_time],
+                key=lambda x: self.parse_date(x.eventStartDate)
             )
         else:
             self.sorted_games = sorted(
-                [game for game in self.app.games.values() if game['sport'] == self.current_filter],
-                key=lambda x: datetime.datetime.fromisoformat(x["eventStartDate"])
+                [game for game in self.app.games.values() if game.sport == self.current_filter and self.parse_date(game.eventStartDate) > current_time],
+                key=lambda x: self.parse_date(x.eventStartDate)
             )
 
     def update_total_pages(self):
@@ -856,82 +842,6 @@ class GamesList(InteractiveTable):
         self.total_pages = max(1, (len(self.sorted_games) + self.games_per_page - 1) // self.games_per_page)
         self.current_page = min(self.current_page, self.total_pages - 1)
 
-    def update_options(self):
-        """
-        Update the options list for the games view.
-
-        Behavior:
-            - Calculates the start and end indices for the current page
-            - Generates formatted game strings for the current page
-            - Adds a "Filter" and "Go Back" option at the end
-        """
-        start_idx = self.current_page * self.games_per_page
-        end_idx = min(start_idx + self.games_per_page, len(self.sorted_games))
-        
-        if not self.sorted_games:
-            # Set default lengths if there are no games
-            max_sport_len = len("Sport")
-            max_teamA_len = len("Team A")
-            max_teamB_len = len("Team B")
-            max_eventStartDate_len = len("Event Start Date (UTC)")
-            max_teamAodds_len = len("Team A Odds")
-            max_teamBodds_len = len("Team B Odds")
-            max_tieOdds_len = len("Tie Odds")
-        else:
-            # Calculate maximum widths for each column based on data and header
-            max_sport_len = max(
-                max(len(game["sport"]) for game in self.sorted_games),
-                len("Sport"),
-            )
-            max_teamA_len = max(
-                max(len(game["teamA"]) for game in self.sorted_games),
-                len("Team A"),
-            )
-            max_teamB_len = max(
-                max(len(game["teamB"]) for game in self.sorted_games),
-                len("Team B"),
-            )
-            max_eventStartDate_len = max(
-                max(len(game["eventStartDate"]) for game in self.sorted_games),
-                len("Event Start Date"),
-            )
-            max_teamAodds_len = max(
-                max(
-                    len(str(game.get("teamAodds", "")))
-                    for game in self.sorted_games
-                ),
-                len("Team A Odds"),
-            )
-            max_teamBodds_len = max(
-                max(
-                    len(str(game.get("teamBodds", "")))
-                    for game in self.sorted_games
-                ),
-                len("Team B Odds"),
-            )
-            max_tieOdds_len = max(
-                max(
-                    len(str(game.get("tieOdds", "")))
-                    for game in self.sorted_games
-                ),
-                len("Tie Odds"),
-            )
-
-        # Define the header with calculated widths
-        self.header = Label(
-            f"  {'Sport':<{max_sport_len}} | {'Team A':<{max_teamA_len}} | {'Team B':<{max_teamB_len}} | {'Event Start Date (UTC)':<{max_eventStartDate_len}} | {'Team A Odds':<{max_teamAodds_len}} | {'Team B Odds':<{max_teamBodds_len}} | {'Tie Odds':<{max_tieOdds_len}} ",
-            style="bold",
-        )
-
-        # Generate options for the current page
-        self.options = [
-            f"{game['sport']:<{max_sport_len}} | {game['teamA']:<{max_teamA_len}} | {game['teamB']:<{max_teamB_len}} | {self.format_event_start_date(game['eventStartDate']):<{max_eventStartDate_len}} | {str(game.get('teamAodds', '')):<{max_teamAodds_len}} | {str(game.get('teamBodds', '')):<{max_teamBodds_len}} | {str(game.get('tieOdds', '')):<{max_tieOdds_len}}"
-            for game in self.sorted_games[start_idx:end_idx]
-        ]
-        # Add filter option and Go Back
-        self.options.append(f"Filter: {self.current_filter}")
-        self.options.append("Go Back")
-
     def update_text_area(self):
         """
         Update the text area for the games view.
@@ -940,7 +850,7 @@ class GamesList(InteractiveTable):
             - Formats the header, options, and pagination information
             - Updates the text area content
         """
-        header_text = self.header.text
+        header_text = self.header
         divider = "-" * len(header_text)
         if len(self.options) == 2:  # Only "Filter" and "Go Back" are present
             options_text = "No games available."
@@ -1074,12 +984,25 @@ class GamesList(InteractiveTable):
             - Converts the datetime object to UTC
             - Formats the datetime object as "YYYY-MM-DD HH:MM"
         """
-        # Parse the ISO format date
-        dt = datetime.datetime.fromisoformat(event_start_date)
-        # Convert to UTC
-        dt = dt.astimezone(pytz.utc)
-        # Format it to the desired format
+        dt = self.parse_date(event_start_date)
         return dt.strftime("%Y-%m-%d %H:%M")
+
+    @staticmethod
+    def parse_date(date_string):
+        """
+        Parse a date string into a datetime object.
+
+        Args:
+            date_string (str): The date string to parse.
+
+        Returns:
+            datetime.datetime: The parsed datetime object.
+
+        Behavior:
+            - Converts the date string to a datetime object
+            - Ensures the datetime is in UTC
+        """
+        return datetime.datetime.fromisoformat(date_string.replace('Z', '+00:00'))
 
 
 class WagerConfirm(InteractiveTable):
@@ -1105,8 +1028,8 @@ class WagerConfirm(InteractiveTable):
         super().__init__(app)
         self.game_data = game_data
         self.previous_view = previous_view
-        self.miner_cash = app.miner_cash
-        self.selected_team = game_data["teamA"]  # Default to teamA
+        self.miner_cash = app.miner_stats["miner_cash"]
+        self.selected_team = game_data.teamA  # Default to teamA
         self.wager_input = TextArea(
             text=str(wager_amount),  # Set the initial wager amount
             multiline=False,
@@ -1131,8 +1054,8 @@ class WagerConfirm(InteractiveTable):
             - Updates the text area content
         """
         game_info = (
-            f" {self.game_data['sport']} | {self.game_data['teamA']} vs {self.game_data['teamB']} | {self.game_data['eventStartDate']} | "
-            f"Team A Odds: {self.game_data['teamAodds']} | Team B Odds: {self.game_data['teamBodds']} | Tie Odds: {self.game_data['tieOdds']}"
+            f" {self.game_data.sport} | {self.game_data.teamA} vs {self.game_data.teamB} | {self.game_data.eventStartDate} | "
+            f"Team A Odds: {self.game_data.teamAodds} | Team B Odds: {self.game_data.teamBodds} | Tie Odds: {self.game_data.tieOdds}"
         )
         cash_info = f"Miner's Cash: ${self.miner_cash}"
         selected_team_text = f"Selected Team: {self.selected_team}"
@@ -1163,29 +1086,28 @@ class WagerConfirm(InteractiveTable):
                 wager_amount = float(self.wager_input.text.strip())
                 if wager_amount <= 0 or wager_amount > self.miner_cash:
                     raise ValueError("Invalid wager amount")
-                # Add the prediction to unsubmitted_predictions
-                prediction_id = str(uuid.uuid4())  # Generate a new UUID for each prediction
-                self.app.unsubmitted_predictions[prediction_id] = {
+                prediction_id = str(uuid.uuid4())
+                prediction = {
                     "predictionID": prediction_id,
-                    "teamGameID": self.game_data["externalID"],
-                    "minerID": self.app.miner_uid,  # Use the currently selected miner's UID
-                    "sport": self.game_data["sport"],
-                    "teamA": self.game_data["teamA"],
-                    "teamB": self.game_data["teamB"],
-                    "eventStartDate": self.game_data["eventStartDate"],
+                    "teamGameID": self.game_data.externalId,
+                    "minerID": self.app.miner_uid,
                     "predictionDate": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "teamAodds": self.game_data["teamAodds"],
-                    "teamBodds": self.game_data["teamBodds"],
-                    "tieOdds": self.game_data["tieOdds"],
                     "predictedOutcome": self.selected_team,
                     "wager": wager_amount,
+                    "teamAodds": self.game_data.teamAodds,
+                    "teamBodds": self.game_data.teamBodds,
+                    "tieOdds": self.game_data.tieOdds,
+                    "outcome": "Unfinished",
                     "canOverwrite": True,
-                    "outcome": "",
+                    "teamA": self.game_data.teamA,
+                    "teamB": self.game_data.teamB
                 }
-                self.app.miner_cash -= wager_amount
+                self.app.unsubmitted_predictions[prediction_id] = prediction
+                self.app.update_miner_stats(wager_amount, prediction["predictionDate"], self.app.miner_uid)
                 self.confirmation_message = "Wager confirmed! Submitting Prediction to Validators..."
                 self.update_text_area()
                 self.app.submit_predictions()
+                self.app.load_miner_data()  # Reload miner data to ensure we have the latest stats
                 threading.Timer(2.0, lambda: self.app.change_view(self.previous_view)).start()
             except ValueError:
                 self.wager_input.text = "Invalid amount. Try again."
@@ -1258,14 +1180,12 @@ class WagerConfirm(InteractiveTable):
             - Cycles through the available teams (teamA, teamB, and Tie if applicable)
             - Updates the text area
         """
-        if self.selected_team == self.game_data["teamA"]:
-            self.selected_team = self.game_data["teamB"]
-        elif self.selected_team == self.game_data["teamB"] and self.game_data.get(
-            "canTie", False
-        ):
+        if self.selected_team == self.game_data.teamA:
+            self.selected_team = self.game_data.teamB
+        elif self.selected_team == self.game_data.teamB and self.game_data.canTie:
             self.selected_team = "Tie"
         else:
-            self.selected_team = self.game_data["teamA"]
+            self.selected_team = self.game_data.teamA
         self.update_text_area()
 
 

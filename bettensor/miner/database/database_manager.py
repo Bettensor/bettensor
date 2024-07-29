@@ -1,175 +1,210 @@
 import sqlite3
-from contextlib import contextmanager
-from threading import Lock
 import os
-import bittensor as bt
-from sqlite3 import OperationalError
+import threading
 import time
-import datetime
-from typing import Dict, Tuple
-from bettensor.protocol import TeamGame
-
-# Import operation classes 
-from .games import Games
-from .predictions import Predictions
-from bettensor.miner.stats import MinerStatsHandler
+import bittensor as bt
+from contextlib import asynccontextmanager, contextmanager
+from queue import Queue
+from bettensor.miner.utils.migrate import migrate_database
+from bettensor import __database_version__
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from packaging import version
 
 class DatabaseManager:
     _instance = None
-    _lock = Lock()
-    _connection_pool = []
-    _max_connections = 10  # Increased default
+    _lock = threading.Lock()
 
-    def __init__(self, db_path, max_connections=None):
-        bt.logging.trace(f"Initializing DatabaseManager with db_path: {db_path}, max_connections: {max_connections}")
-        if not DatabaseManager._instance:
-            bt.logging.trace(f"__init__() | Initializing database manager for {db_path}")
-            self.db_path = db_path
-            
-            if max_connections is not None:
-                DatabaseManager._max_connections = max_connections
-            
-            # Ensure the database directory exists and initialize the database
-            self.ensure_db_directory_exists()
-            self.initialize_database()
-            
-            # Initialize operation classes
-            self.games = Games(self)
-            self.predictions = Predictions(self)
-            self.miner_stats = MinerStatsHandler(self)
+    def __init__(self, db_path=None, max_connections=10):
+        if db_path is None:
+            db_path = os.environ.get('BETTENSOR_DB_PATH', os.path.expanduser('~/bettensor/data/miner.db'))
+        self.db_path = db_path
+        self.target_version = __database_version__
+        bt.logging.info(f"Initializing DatabaseManager with target version: {self.target_version}")
+        self._initialize_database()
+        self.connection_pool = Queue(maxsize=max_connections)
+        for _ in range(max_connections):
+            self.connection_pool.put(self._create_connection())
 
-            DatabaseManager._instance = self
-        bt.logging.trace("DatabaseManager initialization complete")
+    def _create_connection(self):
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
+        conn.execute("PRAGMA busy_timeout = 30000;")
+        return conn
+
+    def _initialize_database(self):
+        max_retries = 5
+        retry_delay = 1
+        for attempt in range(max_retries):
+            try:
+                with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+                    conn.execute("PRAGMA busy_timeout = 30000;")
+                    cursor = conn.cursor()
+                    
+                    bt.logging.info("Checking for database_version table")
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='database_version'")
+                    if cursor.fetchone() is None:
+                        bt.logging.info("database_version table not found, creating it")
+                        cursor.execute("""
+                            CREATE TABLE database_version (
+                                version TEXT PRIMARY KEY,
+                                timestamp TEXT DEFAULT (datetime('now'))
+                            )
+                        """)
+                        cursor.execute("INSERT INTO database_version (version) VALUES (?)", (self.target_version,))
+                        conn.commit()
+                        current_version = self.target_version
+                        bt.logging.info(f"Initialized database_version table with version: {current_version}")
+                    else:
+                        bt.logging.info("database_version table found, checking for timestamp column")
+                        cursor.execute("PRAGMA table_info(database_version)")
+                        columns = [column[1] for column in cursor.fetchall()]
+                        if 'timestamp' not in columns:
+                            bt.logging.info("Adding timestamp column to database_version table")
+                            cursor.execute("ALTER TABLE database_version ADD COLUMN timestamp TEXT")
+                            cursor.execute("UPDATE database_version SET timestamp = datetime('now')")
+                            conn.commit()
+                        
+                        bt.logging.info("Fetching current version")
+                        cursor.execute("SELECT version FROM database_version ORDER BY timestamp DESC, version DESC LIMIT 1")
+                        result = cursor.fetchone()
+                        current_version = result[0] if result else '0.0.0'
+                        bt.logging.info(f"Current database version: {current_version}")
+                    
+                    bt.logging.info(f"Comparing current version {current_version} with target version {self.target_version}")
+                    if version.parse(current_version) < version.parse(self.target_version):
+                        bt.logging.info(f"Database needs migration from {current_version} to {self.target_version}")
+                        if not migrate_database(conn, self.db_path, self.target_version):
+                            raise Exception("Database migration failed")
+                        
+                        bt.logging.info("Updating database_version table after migration")
+                        cursor.execute("INSERT INTO database_version (version, timestamp) VALUES (?, datetime('now'))", (self.target_version,))
+                        conn.commit()
+                        bt.logging.info(f"Database version updated to {self.target_version}")
+                    else:
+                        bt.logging.info(f"Database is already at version {current_version}, no migration needed")
+                    
+                    bt.logging.info("Creating tables if they don't exist")
+                    self._create_tables(cursor)
+                    conn.commit()
+                bt.logging.info("Database initialization completed successfully")
+                
+                # Double-check the version after initialization
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT version FROM database_version ORDER BY timestamp DESC, version DESC LIMIT 1")
+                    result = cursor.fetchone()
+                    bt.logging.info(f"Final database version check: {result[0] if result else 'No version found'}")
+                
+                return
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    bt.logging.warning(f"Database is locked. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                else:
+                    bt.logging.error(f"Failed to initialize database: {e}")
+                    raise
+            except Exception as e:
+                bt.logging.error(f"Failed to initialize database: {e}")
+                raise
+
+    def _create_tables(self, cursor):
+        bt.logging.info("Creating predictions table")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS predictions (
+                predictionID TEXT PRIMARY KEY, 
+                teamGameID TEXT, 
+                minerID TEXT, 
+                predictionDate TEXT, 
+                predictedOutcome TEXT,
+                teamA TEXT,
+                teamB TEXT,
+                wager REAL,
+                teamAodds REAL,
+                teamBodds REAL,
+                tieOdds REAL,
+                outcome TEXT
+            )
+        """)
+        
+        bt.logging.info("Creating games table")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS games (
+                gameID TEXT PRIMARY KEY,
+                teamA TEXT,
+                teamAodds REAL,
+                teamB TEXT,
+                teamBodds REAL,
+                sport TEXT,
+                league TEXT,
+                externalID TEXT,
+                createDate TEXT,
+                lastUpdateDate TEXT,
+                eventStartDate TEXT,
+                active INTEGER,
+                outcome TEXT,
+                tieOdds REAL,
+                canTie BOOLEAN
+            )
+        """)
+        
+        bt.logging.info("Creating miner_stats table")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS miner_stats (
+                miner_hotkey TEXT PRIMARY KEY,
+                miner_uid TEXT,
+                miner_cash REAL,
+                miner_lifetime_earnings REAL,
+                miner_lifetime_wager REAL,
+                miner_current_incentive REAL,
+                miner_rank INTEGER,
+                miner_lifetime_predictions INTEGER,
+                miner_lifetime_wins INTEGER,
+                miner_lifetime_losses INTEGER,
+                miner_win_loss_ratio REAL,
+                miner_last_prediction_date TEXT,
+                last_daily_reset TEXT
+            )
+        """)
 
     @classmethod
-    def get_instance(cls, max_connections=None):
-        bt.logging.trace(f"Getting DatabaseManager instance with max_connections: {max_connections}")
+    def get_instance(cls, db_path, max_connections=10):
         if cls._instance is None:
-            db_path = os.environ.get('DB_PATH', './data/miner.db')
             with cls._lock:
-                if cls._instance is None:  # Double-check locking
+                if cls._instance is None:
                     cls._instance = cls(db_path, max_connections)
-        bt.logging.trace("DatabaseManager instance retrieved")
         return cls._instance
 
-    @classmethod
-    def get_connection(cls):
-        bt.logging.trace("Getting database connection")
-        with cls._lock:
-            if cls._connection_pool:
-                return cls._connection_pool.pop()
-            else:
-                conn = sqlite3.connect(cls._instance.db_path, check_same_thread=False)
-                conn.execute('PRAGMA journal_mode=WAL')  # Enable WAL mode
-                bt.logging.trace("Database connection obtained")
-                return conn
-
-    @classmethod
-    def release_connection(cls, conn):
-        bt.logging.trace("Releasing database connection")
-        with cls._lock:
-            if len(cls._connection_pool) < cls._max_connections:
-                cls._connection_pool.append(conn)
-            else:
-                conn.close()
-        bt.logging.trace("Database connection released")
-
-    @classmethod
     @contextmanager
-    def get_cursor(cls):
-        bt.logging.trace("Getting database cursor")
-        conn = cls.get_connection()
+    def get_cursor(self):
+        connection = self.connection_pool.get()
         try:
-            cursor = conn.cursor()
+            cursor = connection.cursor()
             yield cursor
-            conn.commit()
-            bt.logging.trace("Database operation completed successfully")
-        except OperationalError as e:
-            bt.logging.error(f"Database error: {e}. Retrying...")
-            time.sleep(1)  # Wait for a second before retrying
-            cursor = conn.cursor()
-            yield cursor
-            conn.commit()
+            connection.commit()
+        except Exception as e:
+            bt.logging.error(f"Database error: {e}")
+            connection.rollback()
+            raise
         finally:
-            cursor.close()
-            cls.release_connection(conn)
+            self.connection_pool.put(connection)
 
-    def ensure_db_directory_exists(self) -> bool:
-        bt.logging.trace(f"Ensuring database directory exists for {self.db_path}")
-        db_dir = os.path.dirname(self.db_path)
-        if not os.path.exists(db_dir):
-            os.makedirs(db_dir)
-        bt.logging.trace("Database directory check complete")
+    def close_all(self):
+        while not self.connection_pool.empty():
+            conn = self.connection_pool.get()
+            conn.close()
 
-    def initialize_database(self):
-        bt.logging.trace(f"Initializing database at {self.db_path}")
-        try:
-            with self.get_cursor() as cursor:
-                cursor.execute(
-                    """CREATE TABLE IF NOT EXISTS predictions (
-                                   predictionID TEXT PRIMARY KEY, 
-                                   teamGameID TEXT, 
-                                   minerID TEXT, 
-                                   predictionDate TEXT, 
-                                   predictedOutcome TEXT,
-                                   teamA TEXT,
-                                   teamB TEXT,
-                                   wager REAL,
-                                   teamAodds REAL,
-                                   teamBodds REAL,
-                                   tieOdds REAL,
-                                   canOverwrite BOOLEAN,
-                                   outcome TEXT
-                                   )"""
-                )
-                cursor.execute(
-                    """CREATE TABLE IF NOT EXISTS games (
-                                   gameID TEXT PRIMARY KEY, 
-                                   teamA TEXT,
-                                   teamAodds REAL,
-                                   teamB TEXT,
-                                   teamBodds REAL,
-                                   sport TEXT, 
-                                   league TEXT, 
-                                   externalID TEXT, 
-                                   createDate TEXT, 
-                                   lastUpdateDate TEXT, 
-                                   eventStartDate TEXT, 
-                                   active INTEGER, 
-                                   outcome TEXT,
-                                   tieOdds REAL,
-                                   canTie BOOLEAN
-                                   )"""
-                )
-                cursor.execute(
-                    """CREATE TABLE IF NOT EXISTS miner_stats (
-                                   minerID TEXT PRIMARY KEY, 
-                                   balance REAL,
-                                   last_update_time TEXT
-                                   )"""
-                )
-        except sqlite3.Error as e:
-            bt.logging.error(f"Failed to initialize local database: {e}")
-            raise Exception("Failed to initialize local database")
-        bt.logging.trace("Database initialization complete")
-
-    # Game operations
-    def add_game_data(self, game_data):
-        return self.game_ops.add_game_data(game_data)
-
-    def update_game_data(self, game_data):
-        return self.game_ops.update_game_data(game_data)
-
-    def get_games(self, filters=None):
-        return self.game_ops.get_games(filters)
-
-    # Prediction operations
-    def add_prediction(self, prediction_data):
-        return self.prediction_ops.add_prediction(prediction_data)
-
-    def get_predictions(self, filters=None):
-        return self.prediction_ops.get_predictions(filters)
-
-def get_db_manager(max_connections=None):
-    bt.logging.trace(f"Getting DatabaseManager with max_connections: {max_connections}")
-    return DatabaseManager.get_instance(max_connections)
+def get_db_manager(max_connections=10, state_manager=None, miner_uid=None):
+    config = bt.config()
+    db_path = getattr(config, 'db_path', None)
+    
+    if db_path is None:
+        bt.logging.warning("db_path not found in config. Using default path.")
+        default_path = os.path.expanduser("~/bettensor/data/miner.db")
+        db_path = os.environ.get('DB_PATH', default_path)
+    
+    bt.logging.info(f"Using database path: {db_path}")
+    
+    # Ensure the directory exists
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    
+    return DatabaseManager.get_instance(db_path, max_connections)
