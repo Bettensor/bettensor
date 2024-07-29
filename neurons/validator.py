@@ -214,7 +214,7 @@ async def main(validator: BettensorValidator):
             if current_block - validator.last_updated_block > 150:
                 # Sends data to the website
                 try:
-                    result = await validator.run_sync_in_async(lambda: fetch_and_send_predictions("data/validator.db"))
+                    result = fetch_and_send_predictions("data/validator.db")
                     bt.logging.info(f"Result status: {result}")
                     if result:
                         bt.logging.info("Predictions fetched and sent successfully")
