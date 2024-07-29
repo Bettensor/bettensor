@@ -103,12 +103,6 @@ async def main(validator: BettensorValidator):
                 # Save state
                 validator.save_state()
 
-            # Update daily stats at the end of each day
-            current_date = datetime.now(timezone.utc).date()
-            if current_date > validator.last_stats_update:
-                await validator.run_sync_in_async(lambda: validator.update_daily_stats(current_date - timedelta(days=1)))
-                validator.last_stats_update = current_date
-            
             # Get all axons
             all_axons = validator.metagraph.axons
             bt.logging.trace(f"All axons: {all_axons}")
@@ -220,7 +214,7 @@ async def main(validator: BettensorValidator):
             if current_block - validator.last_updated_block > 150:
                 # Sends data to the website
                 try:
-                    result = await fetch_and_send_predictions(db_path="data/validator.db")
+                    result = fetch_and_send_predictions("data/validator.db")
                     bt.logging.info(f"Result status: {result}")
                     if result:
                         bt.logging.info("Predictions fetched and sent successfully")

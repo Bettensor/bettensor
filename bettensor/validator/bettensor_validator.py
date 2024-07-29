@@ -57,6 +57,22 @@ class BettensorValidator(BaseNeuron):
             help="Path to the validator database",
         )
 
+        # Check if the arguments are already defined before adding them
+        if not any(arg.dest == 'subtensor.network' for arg in parser._actions):
+            parser.add_argument('--subtensor.network', type=str, help="The subtensor network to connect to")
+        if not any(arg.dest == 'netuid' for arg in parser._actions):
+            parser.add_argument('--netuid', type=int, help="The network UID")
+        if not any(arg.dest == 'wallet.name' for arg in parser._actions):
+            parser.add_argument('--wallet.name', type=str, help="The name of the wallet to use")
+        if not any(arg.dest == 'wallet.hotkey' for arg in parser._actions):
+            parser.add_argument('--wallet.hotkey', type=str, help="The hotkey of the wallet to use")
+        if not any(arg.dest == 'logging.trace' for arg in parser._actions):
+            parser.add_argument('--logging.trace', action='store_true', help="Enable trace logging")
+        if not any(arg.dest == 'logging.debug' for arg in parser._actions):
+            parser.add_argument('--logging.debug', action='store_true', help="Enable debug logging")
+        if not any(arg.dest == 'logging.info' for arg in parser._actions):
+            parser.add_argument('--logging.info', action='store_true', help="Enable info logging")
+
         args = parser.parse_args()
 
         self.timeout = 12
@@ -352,17 +368,23 @@ class BettensorValidator(BaseNeuron):
         cursor = conn.cursor()
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
 
+        # Get today's date in UTC
+        today_utc = datetime.now(timezone.utc).date().isoformat()
+
         for uid, prediction_dict in predictions.items():
             for predictionID, res in prediction_dict.items():
                 if int(uid) not in processed_uids:
                     bt.logging.info(f"UID {uid} not processed, skipping")
                     continue
 
+                # Get today's date in UTC
+                today_utc = datetime.now(timezone.utc).isoformat()
+
                 hotkey = self.metagraph.hotkeys[int(uid)]
                 predictionID = res.predictionID
                 teamGameID = res.teamGameID
                 minerId = hotkey
-                predictionDate = res.predictionDate
+                predictionDate = today_utc
                 predictedOutcome = res.predictedOutcome
                 wager = res.wager
 
