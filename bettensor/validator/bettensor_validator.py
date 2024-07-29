@@ -288,35 +288,6 @@ class BettensorValidator(BaseNeuron):
 
         self.initialize_database()
         return True
-    
-    def update_all_daily_stats(self):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        
-        try:
-            # Get the earliest prediction date
-            cursor.execute("SELECT MIN(DATE(predictionDate)) FROM predictions")
-            start_date = cursor.fetchone()[0]
-            
-            if start_date is None:
-                bt.logging.info("No predictions found in the database.")
-                return
-
-            # Get today's date
-            end_date = datetime.now(timezone.utc).date()
-            
-            current_date = datetime.strptime(start_date, '%Y-%m-%d').date()
-            
-            while current_date <= end_date:
-                self.update_daily_stats(current_date)
-                current_date += timedelta(days=1)
-
-            bt.logging.info(f"Updated daily stats from {start_date} to {end_date}")
-        except Exception as e:
-            bt.logging.error(f"Error updating all daily stats: {e}")
-            conn.rollback()
-        finally:
-            conn.close()
 
     def update_daily_stats(self, date):
         conn = self.connect_db()
