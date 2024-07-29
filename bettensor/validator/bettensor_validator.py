@@ -284,9 +284,40 @@ class BettensorValidator(BaseNeuron):
             db_path=self.db_path
         )
 
+        self.weight_setter.update_all_daily_stats()
+
         self.initialize_database()
         return True
     
+    def update_all_daily_stats(self):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Get the earliest prediction date
+            cursor.execute("SELECT MIN(DATE(predictionDate)) FROM predictions")
+            start_date = cursor.fetchone()[0]
+            
+            if start_date is None:
+                bt.logging.info("No predictions found in the database.")
+                return
+
+            # Get today's date
+            end_date = datetime.now(timezone.utc).date()
+            
+            current_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+            
+            while current_date <= end_date:
+                self.update_daily_stats(current_date)
+                current_date += timedelta(days=1)
+
+            bt.logging.info(f"Updated daily stats from {start_date} to {end_date}")
+        except Exception as e:
+            bt.logging.error(f"Error updating all daily stats: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
     def update_daily_stats(self, date):
         conn = self.connect_db()
         cursor = conn.cursor()
@@ -308,23 +339,22 @@ class BettensorValidator(BaseNeuron):
                         ELSE 0
                     END) as total_earnings
                 FROM predictions p
-                WHERE DATE(p.predictionDate) = DATE(?)
+                WHERE DATE(p.predictionDate) = ?
                 GROUP BY DATE(p.predictionDate), p.minerId
                 ON CONFLICT(date, minerId) DO UPDATE SET
                     total_predictions = excluded.total_predictions,
                     correct_predictions = excluded.correct_predictions,
                     total_wager = excluded.total_wager,
                     total_earnings = excluded.total_earnings
-            """, (date,))
+            """, (date.isoformat(),))
             
             conn.commit()
+            bt.logging.debug(f"Updated daily stats for {date.isoformat()}")
         except Exception as e:
-            bt.logging.error(f"Error updating daily stats: {e}")
+            bt.logging.error(f"Error updating daily stats for {date.isoformat()}: {e}")
             conn.rollback()
         finally:
             conn.close()
-        
-        return True
 
     def _parse_args(self, parser):
         """parses the command line arguments"""

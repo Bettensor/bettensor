@@ -226,7 +226,8 @@ class WeightSetter:
 
     async def set_weights(self, db_path):
         # Update daily stats if it's a new day
-        self.update_daily_stats_if_new_day()
+        self.update_all_daily_stats()
+
         earnings = self.calculate_miner_scores(db_path)
         weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
         np.set_printoptions(precision=8, suppress=True)
