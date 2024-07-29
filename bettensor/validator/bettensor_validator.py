@@ -53,6 +53,22 @@ class BettensorValidator(BaseNeuron):
             help="Path to the validator database",
         )
 
+        # Check if the arguments are already defined before adding them
+        if not any(arg.dest == 'subtensor.network' for arg in parser._actions):
+            parser.add_argument('--subtensor.network', type=str, help="The subtensor network to connect to")
+        if not any(arg.dest == 'netuid' for arg in parser._actions):
+            parser.add_argument('--netuid', type=int, help="The network UID")
+        if not any(arg.dest == 'wallet.name' for arg in parser._actions):
+            parser.add_argument('--wallet.name', type=str, help="The name of the wallet to use")
+        if not any(arg.dest == 'wallet.hotkey' for arg in parser._actions):
+            parser.add_argument('--wallet.hotkey', type=str, help="The hotkey of the wallet to use")
+        if not any(arg.dest == 'logging.trace' for arg in parser._actions):
+            parser.add_argument('--logging.trace', action='store_true', help="Enable trace logging")
+        if not any(arg.dest == 'logging.debug' for arg in parser._actions):
+            parser.add_argument('--logging.debug', action='store_true', help="Enable debug logging")
+        if not any(arg.dest == 'logging.info' for arg in parser._actions):
+            parser.add_argument('--logging.info', action='store_true', help="Enable info logging")
+
         args = parser.parse_args()
 
         self.timeout = 12
@@ -63,6 +79,7 @@ class BettensorValidator(BaseNeuron):
         self.metagraph = None
         self.scores = None
         self.hotkeys = None
+        self.subtensor_connection = None
         self.miner_responses = None
         self.max_targets = None
         self.target_group = None
@@ -92,8 +109,23 @@ class BettensorValidator(BaseNeuron):
 
     async def initialize_connection(self):
         if self.subtensor is None:
+            try:
+                self.subtensor = bt.subtensor(config=self.neuron_config)
+                bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+            except Exception as e:
+                bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
+                self.subtensor = None
+        return self.subtensor
+
+    async def get_subtensor(self):
+        if self.subtensor_connection is None:
             self.subtensor = bt.subtensor(config=self.neuron_config)
-            bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+        return self.subtensor_connection
+
+    async def sync_metagraph(self):
+        subtensor = await self.get_subtensor()
+        self.metagraph.sync(subtensor=subtensor, lite=True)
+        return self.metagraph
 
     def check_vali_reg(self, metagraph, wallet, subtensor) -> bool:
         """validates the validator has registered correctly"""
@@ -251,17 +283,23 @@ class BettensorValidator(BaseNeuron):
         cursor = conn.cursor()
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
 
+        # Get today's date in UTC
+        today_utc = datetime.now(timezone.utc).date().isoformat()
+
         for uid, prediction_dict in predictions.items():
             for predictionID, res in prediction_dict.items():
                 if int(uid) not in processed_uids:
                     bt.logging.info(f"UID {uid} not processed, skipping")
                     continue
 
+                # Get today's date in UTC
+                today_utc = datetime.now(timezone.utc).isoformat()
+
                 hotkey = self.metagraph.hotkeys[int(uid)]
                 predictionID = res.predictionID
                 teamGameID = res.teamGameID
                 minerId = hotkey
-                predictionDate = res.predictionDate
+                predictionDate = today_utc
                 predictedOutcome = res.predictedOutcome
                 wager = res.wager
 
@@ -584,20 +622,6 @@ class BettensorValidator(BaseNeuron):
         else:
             self.init_default_scores()
 
-    def sync_metagraph(self, metagraph, subtensor):
-        """syncs the metagraph"""
-
-        bt.logging.debug(
-            f"syncing metagraph: {self.metagraph} with subtensor: {self.subtensor}"
-        )
-
-        # sync the metagraph
-        metagraph.sync(subtensor=subtensor, lite=True)
-
-        return metagraph
-
-    # need func to set weights; dont think i should take fans?
-
     def _get_local_miner_blacklist(self) -> list:
         """returns the blacklisted miners hotkeys from the local file"""
 
@@ -913,80 +937,84 @@ class BettensorValidator(BaseNeuron):
         return await self.loop.run_in_executor(self.thread_executor, fn)
 
     def calculate_miner_scores(self):
-        """Calculates the scores for miners based on their performance in the last 48 hours"""
-        # initialize the earnings tensor
+        """
+        Calculates the scores for miners based on their performance for games that started in the last 48 hours, 
+        considering only predictions submitted in the last 8 days and excluding future predictions.
+        All times are in UTC.
+        """
         earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
 
-        # connect to the sqlite database
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # get the current timestamp
         now = datetime.now(timezone.utc)
-
-        # calculate the timestamp for 48 hours ago
         forty_eight_hours_ago = now - timedelta(hours=48)
+        eight_days_ago = now - timedelta(days=8)
 
-        # fetch the relevant data from game_data for the last 48 hours
         cursor.execute(
-            "SELECT externalId, eventStartDate FROM game_data WHERE eventStartDate BETWEEN ? AND ?",
-            (forty_eight_hours_ago.isoformat(), now.isoformat()),
-        )
-        game_data_rows = cursor.fetchall()
-
-        # create a mapping from teamGameID to eventStartDate
-        game_date_map = {row[0]: row[1] for row in game_data_rows}
-
-        # fetch all the relevant data from predictions
-        cursor.execute(
-            "SELECT predictionID, teamGameID, minerId, predictedOutcome, outcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds FROM predictions"
+            """
+            SELECT p.predictionID, p.teamGameID, p.minerId, p.predictedOutcome, p.outcome, 
+                p.teamA, p.teamB, p.wager, p.teamAodds, p.teamBodds, p.tieOdds, 
+                p.predictionDate, g.eventStartDate
+            FROM predictions p
+            JOIN game_data g ON p.teamGameID = g.externalId
+            WHERE p.predictionDate >= ? AND p.predictionDate <= ? AND g.eventStartDate >= ?
+            """,
+            (eight_days_ago.isoformat(), now.isoformat(), forty_eight_hours_ago.isoformat())
         )
         prediction_rows = cursor.fetchall()
 
-        # close the database connection
         conn.close()
 
-        # process the data
         miner_performance = {}
-        miner_id_to_index = {
-            miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)
-        }
+        miner_id_to_index = {miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)}
 
         for row in prediction_rows:
             (
-                prediction_id,
-                team_game_id,
-                miner_id,
-                predicted_outcome,
-                outcome,
-                team_a,
-                team_b,
-                wager,
-                team_a_odds,
-                team_b_odds,
-                tie_odds,
+                prediction_id, team_game_id, miner_id, predicted_outcome, outcome,
+                team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds,
+                prediction_date, event_start_date
             ) = row
 
-            if team_game_id in game_date_map:
-                event_date = datetime.fromisoformat(game_date_map[team_game_id])
-                if event_date >= forty_eight_hours_ago:
-                    if miner_id not in miner_performance:
-                        miner_performance[miner_id] = 0.0
+            try:
+                prediction_datetime = datetime.fromisoformat(prediction_date).replace(tzinfo=timezone.utc)
+                event_start_datetime = datetime.fromisoformat(event_start_date).replace(tzinfo=timezone.utc)
+            except ValueError:
+                bt.logging.warning(f"Invalid date format for prediction {prediction_id}. Skipping.")
+                continue
 
-                    if predicted_outcome == outcome:
-                        if predicted_outcome == "0":
-                            earned = wager * team_a_odds
-                        elif predicted_outcome == "1":
-                            earned = wager * team_b_odds
-                        elif predicted_outcome == "Tie":
-                            earned = wager * tie_odds
-                        else:
-                            bt.logging.warning(
-                                f"outcome for {team_game_id} not found. Please notify Bettensor Developers, as this is likely a larger API issue."
-                            )
-                        miner_performance[miner_id] += earned
+            # Skip future predictions
+            if prediction_datetime > now:
+                bt.logging.warning(f"Future prediction date detected for prediction {prediction_id}. Skipping.")
+                continue
 
-        # update the earnings tensor
+            # Ensure the prediction was made before the game started
+            if prediction_datetime >= event_start_datetime:
+                bt.logging.warning(f"Prediction {prediction_id} was made after the game started. Skipping.")
+                continue
+
+            # Check if the event started within the last 48 hours
+            if event_start_datetime < forty_eight_hours_ago:
+                bt.logging.debug(f"Game {team_game_id} started more than 48 hours ago. Skipping.")
+                continue
+
+            if miner_id not in miner_performance:
+                miner_performance[miner_id] = 0.0
+
+            if predicted_outcome == outcome:
+                if predicted_outcome == "0":
+                    earned = wager * team_a_odds
+                elif predicted_outcome == "1":
+                    earned = wager * team_b_odds
+                elif predicted_outcome.lower() == "tie":
+                    earned = wager * tie_odds
+                else:
+                    bt.logging.warning(
+                        f"Unexpected outcome {predicted_outcome} for {team_game_id}. Please notify Bettensor Developers, as this is likely a larger API issue."
+                    )
+                    continue
+                miner_performance[miner_id] += earned
+
         for miner_id, total_earned in miner_performance.items():
             if miner_id in miner_id_to_index:
                 idx = miner_id_to_index[miner_id]
@@ -998,53 +1026,54 @@ class BettensorValidator(BaseNeuron):
         return earnings
         
     async def set_weights(self):
-        """Sets the weights for the miners based on their calculated scores"""
-        # Calculate miner scores
+        bt.logging.info("Entering set_weights method")
+        # Calculate miner scores and normalize weights as before
         earnings = self.calculate_miner_scores()
-
-        # Normalize the earnings tensor to get weights
         weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
-
         bt.logging.info(f"Normalized weights: {weights}")
-        # Check stake and set weights
+
+        # Check stake
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
 
         
         if stake < 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
-            return
+            return False
 
-        NUM_RETRIES = 3 
-        for i in range(NUM_RETRIES):
-            bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
-            try:
-                result = await asyncio.wait_for(
-                    self.run_sync_in_async(lambda: self.subtensor.set_weights(
-                        netuid=self.neuron_config.netuid,
-                        wallet=self.wallet,
-                        uids=self.metagraph.uids,
-                        weights=weights,
-                        wait_for_inclusion=False,
-                        wait_for_finalization=True,
-                    )),
-                    timeout=90  # 90 second timeout
-                )
-                bt.logging.trace(f"Set weights result: {result}")
-                
-                if isinstance(result, tuple) and len(result) >= 1:
-                    success = result[0]
-                    if success:
-                        bt.logging.info("Successfully set weights.")
-                        return
-                else:
-                    bt.logging.warning(f"Unexpected result format in setting weights: {result}")
-            except TimeoutError:
-                bt.logging.error("Timeout occurred while setting weights.")
-            except Exception as e:
-                bt.logging.error(f"Error setting weights: {str(e)}")
+        if self.subtensor is None:
+            bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
+            self.subtensor = await self.initialize_connection()
+            if self.subtensor is None:
+                bt.logging.error("Failed to reinitialize subtensor. Cannot set weights.")
+                return False
+
+        try:
+            bt.logging.info("Attempting to set weights with 120 second timeout")
+            result = await asyncio.wait_for(
+                self.run_sync_in_async(lambda: self.subtensor.set_weights(
+                    netuid=self.neuron_config.netuid,
+                    wallet=self.wallet,
+                    uids=self.metagraph.uids,
+                    weights=weights,
+                    wait_for_inclusion=False,
+                    wait_for_finalization=True,
+                )),
+                timeout=120  # 120 second timeout
+            )
+            bt.logging.trace(f"Set weights result: {result}")
             
-            if i < NUM_RETRIES - 1:
-                await asyncio.sleep(1)  # Wait before retrying
+            if isinstance(result, tuple) and len(result) >= 1:
+                success = result[0]
+                if success:
+                    bt.logging.info("Successfully set weights.")
+                    return True
+            else:
+                bt.logging.warning(f"Unexpected result format in setting weights: {result}")
+        except asyncio.TimeoutError:
+            bt.logging.error("Timeout occurred while setting weights (120 seconds elapsed).")
+        except Exception as e:
+            bt.logging.error(f"Error setting weights: {str(e)}")
         
-        bt.logging.error("Failed to set weights after all attempts.")
+        bt.logging.error("Failed to set weights.")
+        return False

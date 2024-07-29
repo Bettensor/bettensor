@@ -65,7 +65,11 @@ async def main(validator: BettensorValidator):
             {"id": "78", "season": "2024"},   # Bundesliga
             {"id": "262", "season": "2024"},  # Liga MX
             {"id": "4", "season": "2024"},     # Euro Cup
-            {"id": "9", "season": "2024"}     # Copa America
+            {"id": "9", "season": "2024"},    # Copa America
+            {"id": "71", "season": "2024"},  # Brasileirão Série A
+            {"id": "98", "season": "2024"}, # J1 League
+            {"id": "480", "season": "2024"}, # Olympics mens
+            {"id": "524", "season": "2024"} # Olympics womens
         ]
     }
 
@@ -88,9 +92,7 @@ async def main(validator: BettensorValidator):
             if validator.step % 5 == 0:
                 # Sync metagraph
                 try:
-                    validator.metagraph = await validator.run_sync_in_async(
-                        lambda: validator.sync_metagraph(validator.metagraph, validator.subtensor)
-                    )
+                    validator.metagraph = await validator.sync_metagraph()
                     bt.logging.debug(f"Metagraph synced: {validator.metagraph}")
                 except TimeoutError as e:
                     bt.logging.error(f"Metagraph sync timed out: {e}")
@@ -101,19 +103,6 @@ async def main(validator: BettensorValidator):
                 # Save state
                 validator.save_state()
 
-            if validator.step % 150 == 0:
-                # Sends data to the website
-                result = await validator.run_sync_in_async(
-                    lambda: fetch_and_send_predictions(db_path="data/validator.db")
-                )
-                bt.logging.trace(f"result status: {result}")
-                if result:
-                    bt.logging.debug(
-                        "Predictions fetched and sent successfully:", result
-                    )
-                else:
-                    bt.logging.debug("Failed to fetch or send predictions")
-            
             # Get all axons
             all_axons = validator.metagraph.axons
             bt.logging.trace(f"All axons: {all_axons}")
@@ -222,19 +211,43 @@ async def main(validator: BettensorValidator):
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
 
-            if current_block - validator.last_updated_block > 199:
+            if current_block - validator.last_updated_block > 150:
+                # Sends data to the website
+                try:
+                    result = await validator.run_sync_in_async(lambda: fetch_and_send_predictions("data/validator.db"))
+                    bt.logging.info(f"Result status: {result}")
+                    if result:
+                        bt.logging.info("Predictions fetched and sent successfully")
+                    else:
+                        bt.logging.warning("No predictions were sent or an error occurred")
+                except Exception as e:
+                    bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
+
+            if current_block - validator.last_updated_block > 298:
                 # Update results before setting weights next block
                 await validator.run_sync_in_async(validator.update_recent_games)
                 
-            if current_block - validator.last_updated_block > 200:
-
+            if current_block - validator.last_updated_block > 300:
                 # Periodically update the weights on the Bittensor blockchain.
                 try:
-                    await validator.set_weights()
-                    # Update validators knowledge of the last updated block
-                    validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
-                except TimeoutError as e:
-                    bt.logging.error(f"Setting weights timed out: {e}")
+                    bt.logging.info("Attempting to update weights")
+                    if validator.subtensor is None:
+                        bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
+                        validator.subtensor = await validator.initialize_connection()
+                    
+                    if validator.subtensor is not None:
+                        success = await validator.set_weights()
+                        if success:
+                            # Update validators knowledge of the last updated block
+                            validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
+                            bt.logging.info("Successfully updated weights and last updated block")
+                        else:
+                            bt.logging.warning("Failed to set weights, continuing with next iteration.")
+                    else:
+                        bt.logging.error("Failed to reinitialize subtensor. Skipping weight update.")
+                except Exception as e:
+                    bt.logging.error(f"Error during weight update process: {str(e)}")
+                    bt.logging.warning("Continuing with next iteration despite weight update failure.")
 
             # End the current step and prepare for the next iteration.
             validator.step += 1

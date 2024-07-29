@@ -259,9 +259,11 @@ class SportsData:
                         and bet["name"] == "Match Winner"
                         and len(bet["values"]) >= 3
                     ):
-                        home_odds = float(bet["values"][0]["odd"])
-                        away_odds = float(bet["values"][1]["odd"])
-                        tie_odds = float(bet["values"][2]["odd"])
+                        # Use next() to find the correct odds regardless of order
+                        home_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Home"))
+                        away_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Away"))
+                        tie_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Draw"))
+                        
                         total_home_odds += home_odds
                         total_away_odds += away_odds
                         total_tie_odds += tie_odds
@@ -271,24 +273,17 @@ class SportsData:
                         and bet["name"] == "Home/Away"
                         and len(bet["values"]) >= 2
                     ):
-                        home_odds = float(bet["values"][0]["odd"])
-                        away_odds = float(bet["values"][1]["odd"])
+                        home_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Home"))
+                        away_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Away"))
                         total_home_odds += home_odds
                         total_away_odds += away_odds
                         count += 1
             # Calculate average odds if count is greater than 0
             if count > 0:
-                avg_home_odds = (
-                    round(total_home_odds / count, 2) if total_home_odds else None
-                )
-                avg_away_odds = (
-                    round(total_away_odds / count, 2) if total_away_odds else None
-                )
-                avg_tie_odds = (
-                    round(total_tie_odds / count, 2)
-                    if sport == "soccer" and total_tie_odds
-                    else None
-                )
+                avg_home_odds = round(total_home_odds / count, 2) if total_home_odds else None
+                avg_away_odds = round(total_away_odds / count, 2) if total_away_odds else None
+                avg_tie_odds = round(total_tie_odds / count, 2) if sport == "soccer" and total_tie_odds else None
+                
                 return {
                     "average_home_odds": avg_home_odds,
                     "average_away_odds": avg_away_odds,

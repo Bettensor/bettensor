@@ -3,6 +3,12 @@ import requests
 import json
 from datetime import datetime
 import bittensor as bt
+from bettensor.validator.bettensor_validator import BettensorValidator
+from argparse import ArgumentParser
+
+# Initialize the parser and validator
+parser = ArgumentParser()
+validator = BettensorValidator(parser=parser)
 
 def create_keys_table(db_path: str):
     """
@@ -21,8 +27,10 @@ def create_keys_table(db_path: str):
 
 def get_or_update_coldkey(db_path: str, hotkey: str) -> str:
     """
-    Retrieves coldkey from metagraph if it doesnt exist in keys table
+    Retrieves coldkey from metagraph if it doesn't exist in keys table
     """
+    validator.initialize_connection()  # Ensure subtensor is initialized
+
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
@@ -31,13 +39,12 @@ def get_or_update_coldkey(db_path: str, hotkey: str) -> str:
     result = cursor.fetchone()
 
     if result:
+        conn.close()
         return result[0]
     else:
-        # If not found, fetch from Bittensor and insert into the database
-        metagraph = bt.metagraph(netuid=30)
-        metagraph.sync()  # Sync with the network to get the latest data
-
-        for neuron in metagraph.neurons:
+        # If not found, fetch from Metagraph and insert into the database
+        validator.sync_metagraph()
+        for neuron in validator.metagraph.neurons:
             if neuron.hotkey == hotkey:
                 coldkey = neuron.coldkey
                 cursor.execute("INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)", (hotkey, coldkey))
@@ -97,10 +104,7 @@ def fetch_predictions_from_db(db_path):
         cursor.execute(query)
         rows = cursor.fetchall()
 
-        predictions = []
-        for row in rows:
-            predictions.append(dict(row))
-
+        predictions = [dict(row) for row in rows]
         return predictions
     except sqlite3.OperationalError as e:
         bt.logging.trace(e)
@@ -122,7 +126,7 @@ def update_sent_status(db_path, prediction_ids):
     except sqlite3.Error as e:
         print(f"Error updating sent_to_site status: {e}")
     finally:
-        conn.close()    
+        conn.close()
 
 def send_predictions(predictions, db_path):
     """
