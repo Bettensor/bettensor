@@ -109,6 +109,61 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                     execute_with_retry(cursor, 'ALTER TABLE predictions_new RENAME TO predictions')
                     
                     current_version = '0.0.4'
+                elif version.parse(current_version) < version.parse('0.0.5'):
+                    # Migration logic for 0.0.4 to 0.0.5
+                    bt.logging.info("Migrating from 0.0.4 to 0.0.5: Updating miner_stats table")
+                    
+                    # Create a new table with the updated structure
+                    execute_with_retry(cursor, """
+                        CREATE TABLE IF NOT EXISTS miner_stats_new (
+                            miner_hotkey TEXT PRIMARY KEY,
+                            miner_coldkey TEXT,
+                            miner_uid INTEGER,
+                            miner_rank INTEGER,
+                            miner_cash REAL,
+                            miner_current_incentive REAL,
+                            miner_last_prediction_date TEXT,
+                            miner_lifetime_earnings REAL,
+                            miner_lifetime_wager REAL,
+                            miner_lifetime_predictions INTEGER,
+                            miner_lifetime_wins INTEGER,
+                            miner_lifetime_losses INTEGER,
+                            miner_win_loss_ratio REAL,
+                            miner_status TEXT
+                        )
+                    """)
+                    
+                    # Copy data from the old table to the new table
+                    execute_with_retry(cursor, """
+                        INSERT OR REPLACE INTO miner_stats_new (
+                            miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_cash,
+                            miner_current_incentive, miner_last_prediction_date, miner_lifetime_earnings,
+                            miner_lifetime_wager, miner_lifetime_predictions, miner_lifetime_wins,
+                            miner_lifetime_losses, miner_win_loss_ratio, miner_status
+                        )
+                        SELECT
+                            miner_hotkey,
+                            '' as miner_coldkey,
+                            miner_uid,
+                            COALESCE(miner_rank, 0),
+                            miner_cash,
+                            COALESCE(miner_current_incentive, 0),
+                            miner_last_prediction_date,
+                            COALESCE(miner_lifetime_earnings, 0),
+                            COALESCE(miner_lifetime_wager, 0),
+                            COALESCE(miner_lifetime_predictions, 0),
+                            COALESCE(miner_lifetime_wins, 0),
+                            COALESCE(miner_lifetime_losses, 0),
+                            COALESCE(miner_win_loss_ratio, 0),
+                            'active' as miner_status
+                        FROM miner_stats
+                    """)
+                    
+                    # Drop the old table and rename the new one
+                    execute_with_retry(cursor, 'DROP TABLE IF EXISTS miner_stats')
+                    execute_with_retry(cursor, 'ALTER TABLE miner_stats_new RENAME TO miner_stats')
+                    
+                    current_version = '0.0.5'
                 else:
                     bt.logging.error(f"Unknown version {current_version}")
                     return False
