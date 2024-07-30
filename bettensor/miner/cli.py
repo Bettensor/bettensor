@@ -1192,6 +1192,7 @@ class WagerConfirm(InteractiveTable):
         """
         self.app.layout.focus(self.wager_input)
 
+
     def blur_wager_input(self):
         """
         Blur the wager input field.
