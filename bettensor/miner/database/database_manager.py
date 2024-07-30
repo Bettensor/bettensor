@@ -17,9 +17,8 @@ class DatabaseManager:
 
     def __init__(self, db_path=None, max_connections=10):
         if db_path is None:
-
-            # Use a relative path within the bettensor directory
-            db_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'miner.db')
+            # Use a relative path to ./data directory
+            db_path = os.path.join(os.getcwd(), 'data', 'miner.db')
         self.db_path = db_path
         self.target_version = __database_version__
         bt.logging.info(f"Initializing DatabaseManager with target version: {self.target_version}")
@@ -206,13 +205,11 @@ def get_db_manager(max_connections=10, state_manager=None, miner_uid=None):
     
     if db_path is None:
         bt.logging.warning("db_path not found in config. Using default path.")
-
-        # Use the same relative path as in the DatabaseManager __init__ method
-        db_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'miner.db')
+        db_path = os.path.join(os.getcwd(), 'data', 'miner.db')
     
     bt.logging.info(f"Using database path: {db_path}")
     
-    
-
+    # Ensure the directory exists
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
     return DatabaseManager.get_instance(db_path, max_connections)

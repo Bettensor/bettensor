@@ -88,6 +88,7 @@ class Application:
         self.miner_hotkey = self.available_miners[self.current_miner_index][1]
 
         self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid)
+        self.state_manager.load_state()  # This will recalculate the miner's cash
         
         self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_uid)
         self.games_handler = GamesHandler(self.db_manager)
@@ -252,14 +253,9 @@ class Application:
     def reload_data(self):
         """
         Reload all data for the current miner.
-
-        Behavior:
-            - Retrieves predictions, game data, and miner stats from the database
-            - Initializes default values if no stats are found
-            - Sets up active games and unsubmitted predictions
         """
         self.check_unsubmitted_predictions()
-        self.predictions = self.predictions_handler.get_predictions(self.miner_uid)  # Add miner_uid here
+        self.predictions = self.predictions_handler.get_predictions(self.miner_uid)
         self.games = self.games_handler.get_active_games()
         self.reload_miner_stats()
         
@@ -365,6 +361,7 @@ class Application:
         self.reload_data()
 
     def reload_miner_stats(self):
+        self.state_manager._reconcile_state()  # This will handle daily resets and recalculations
         self.miner_stats = self.state_manager.get_stats()
         self.miner_cash = self.miner_stats["miner_cash"]
 

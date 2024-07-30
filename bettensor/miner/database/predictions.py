@@ -31,107 +31,49 @@ class PredictionsHandler:
 
     def process_predictions(self, updated_games: Dict[str, TeamGame], new_games: Dict[str, TeamGame]) -> Dict[str, TeamGamePrediction]:
         bt.logging.info(f"Processing predictions for {len(updated_games)} updated and {len(new_games)} new games")
-        new_prediction_dict = {}
+        recent_predictions_dict = {}
         
         try:
             for game_id, game_data in updated_games.items():
                 self._update_prediction_outcomes(game_data)
         
             current_time = datetime.now(timezone.utc)
-            for game_id, game_data in new_games.items():
-                prediction = self._create_prediction(game_data, current_time)
-                if prediction:
-                    new_prediction_dict[prediction.predictionID] = prediction
+            three_days_ago = current_time - timedelta(days=3)
+            
+            recent_predictions = self._get_recent_predictions(three_days_ago)
+            
+            for prediction in recent_predictions:
+                recent_predictions_dict[prediction.predictionID] = prediction
 
-            bt.logging.info(f"Prediction processing complete. New predictions: {len(new_prediction_dict)}")
+            bt.logging.info(f"Prediction processing complete. Recent predictions: {len(recent_predictions_dict)}")
         except Exception as e:
             bt.logging.error(f"Error processing predictions: {e}")
             bt.logging.debug(f"Traceback: {traceback.format_exc()}")
 
-        return new_prediction_dict
+        return recent_predictions_dict
 
-    def _create_prediction(self, game_data: TeamGame, current_time: datetime) -> TeamGamePrediction:
-        """
-        Create a new prediction for a game.
-
-        Args:
-            game_data (TeamGame): The game data to create a prediction for.
-            current_time (datetime): The current time.
-
-        Returns:
-            TeamGamePrediction: A new prediction object.
-
-        Behavior:
-            - Generates a new prediction based on the game data.
-            - Uses a placeholder prediction logic (always predicts teamA).
-        """
-        bt.logging.trace(f"Creating new prediction for game: {game_data.externalId}")
-        try:
-            # Implement your prediction logic here
-            # This is a placeholder implementation
-            predicted_outcome = "teamA" if game_data.teamAodds > game_data.teamBodds else "teamB"
-            wager = 1.0  # Fixed wager for simplicity
-
-            prediction = TeamGamePrediction(
-                predictionID=str(uuid.uuid4()),
-                teamGameID=game_data.externalId,
-                minerID=self.miner_uid,
-                predictionDate=current_time.isoformat(),
-                predictedOutcome=predicted_outcome,
-                wager=wager,
-                teamAodds=game_data.teamAodds,
-                teamBodds=game_data.teamBodds,
-                tieOdds=game_data.tieOdds,
-                outcome="Unfinished",
-                teamA=game_data.teamA,
-                teamB=game_data.teamB
-            )
-            self._save_prediction(prediction)
-            bt.logging.trace(f"New prediction created for game: {game_data.externalId}")
-            return prediction
-        except Exception as e:
-            bt.logging.error(f"Error creating prediction for game {game_data.externalId}: {e}")
-            return None
-
-    def _save_prediction(self, prediction: TeamGamePrediction):
-        """
-        Save a prediction to the database.
-
-        Args:
-            prediction (TeamGamePrediction): The prediction to save.
-
-        Behavior:
-            - Inserts the prediction into the database.
-            - Updates the miner's state with the new prediction.
-        """
-        bt.logging.trace(f"Saving prediction: {prediction.predictionID}")
+    def _get_recent_predictions(self, start_date: datetime) -> List[TeamGamePrediction]:
+        bt.logging.trace(f"Retrieving predictions since {start_date}")
+        recent_predictions = []
         try:
             with self.db_manager.get_cursor() as cursor:
                 cursor.execute("""
-                    INSERT INTO predictions (
-                        predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-                        wager, teamAodds, teamBodds, tieOdds, outcome, teamA, teamB
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    prediction.predictionID,
-                    prediction.teamGameID,
-                    prediction.minerID,
-                    prediction.predictionDate,
-                    prediction.predictedOutcome,
-                    prediction.wager,
-                    prediction.teamAodds,
-                    prediction.teamBodds,
-                    prediction.tieOdds,
-                    prediction.outcome,
-                    prediction.teamA,
-                    prediction.teamB
-                ))
-                cursor.connection.commit()
-
-            self.state_manager.update_on_prediction({'wager': prediction.wager})
-            bt.logging.trace(f"Prediction saved: {prediction.predictionID}")
+                    SELECT * FROM predictions
+                    WHERE minerID = ? AND predictionDate >= ?
+                    ORDER BY predictionDate DESC
+                """, (self.miner_uid, start_date.isoformat()))
+                
+                columns = [column[0] for column in cursor.description]
+                for row in cursor.fetchall():
+                    prediction_dict = dict(zip(columns, row))
+                    prediction = TeamGamePrediction(**prediction_dict)
+                    recent_predictions.append(prediction)
+                
+            bt.logging.trace(f"Retrieved {len(recent_predictions)} recent predictions")
         except Exception as e:
-            bt.logging.error(f"Error saving prediction {prediction.predictionID}: {e}")
+            bt.logging.error(f"Error retrieving recent predictions: {e}")
+        
+        return recent_predictions
 
     def _update_prediction_outcomes(self, game_data: TeamGame):
         bt.logging.trace(f"Updating prediction outcomes for game: {game_data.externalId}")
