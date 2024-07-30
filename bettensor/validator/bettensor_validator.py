@@ -175,32 +175,6 @@ class BettensorValidator(BaseNeuron):
 
         return wallet, subtensor, dendrite, metagraph
 
-    def initialize_daily_database(self):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        
-        try:
-            # Create the daily_miner_stats table if it doesn't exist
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS daily_miner_stats (
-                    date DATE,
-                    minerId TEXT,
-                    total_predictions INT,
-                    correct_predictions INT,
-                    total_wager REAL,
-                    total_earnings REAL,
-                    PRIMARY KEY (date, minerId)
-                )
-            """)
-            
-            conn.commit()
-            bt.logging.info("Daily miner stats table initialized successfully")
-        except Exception as e:
-            bt.logging.error(f"Error initializing database: {e}")
-            conn.rollback()
-        finally:
-            conn.close()
-
     def serve_axon(self):
         """Serve the axon to the network"""
         bt.logging.info("Serving axon...")
@@ -294,8 +268,6 @@ class BettensorValidator(BaseNeuron):
         )
 
         self.weight_setter.update_all_daily_stats()
-
-        self.initialize_daily_database()
         return True
 
     def _parse_args(self, parser):

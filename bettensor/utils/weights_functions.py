@@ -16,9 +16,121 @@ class WeightSetter:
         self.thread_executor = thread_executor
         self.decay_factors = self.compute_decay_factors()
         self.db_path = db_path
+        self.initialize_daily_stats_table()
+        self.initialize_daily_database()
     
     def connect_db(self):
         return sqlite3.connect(self.db_path)
+    
+    def initialize_daily_stats_table(self):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Create the table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_miner_stats (
+                    date DATE,
+                    minerId TEXT,
+                    total_predictions INT,
+                    correct_predictions INT,
+                    total_wager REAL,
+                    total_earnings REAL,
+                    PRIMARY KEY (date, minerId)
+                )
+            """)
+            
+            # Check if the table is empty
+            cursor.execute("SELECT COUNT(*) FROM daily_miner_stats")
+            if cursor.fetchone()[0] == 0:
+                # If empty, initialize with data from July 28, 2024 to yesterday
+                start_date = datetime(2024, 7, 28).date()
+                end_date = datetime.now(timezone.utc).date() - timedelta(days=1)
+                current_date = start_date
+                
+                while current_date <= end_date:
+                    self.update_daily_stats(current_date)
+                    current_date += timedelta(days=1)
+                
+                bt.logging.info(f"Initialized daily stats from {start_date} to {end_date}")
+            else:
+                bt.logging.info("daily_miner_stats table already exists and contains data")
+        
+        except Exception as e:
+            bt.logging.error(f"Error initializing daily stats table: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def initialize_daily_database(self):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Create the daily_miner_stats table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_miner_stats (
+                    date DATE,
+                    minerId TEXT,
+                    total_predictions INT,
+                    correct_predictions INT,
+                    total_wager REAL,
+                    total_earnings REAL,
+                    PRIMARY KEY (date, minerId)
+                )
+            """)
+            
+            conn.commit()
+            bt.logging.info("Daily miner stats table initialized successfully")
+        except Exception as e:
+            bt.logging.error(f"Error initializing database: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def update_daily_stats(self, date):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Only process data from July 28, 2024 onwards and not for the current day
+            today = datetime.now(timezone.utc).date()
+            if date >= datetime(2024, 7, 28).date() and date < today:
+                cursor.execute("""
+                    INSERT INTO daily_miner_stats (date, minerId, total_predictions, correct_predictions, total_wager, total_earnings)
+                    SELECT 
+                        DATE(p.predictionDate) as date,
+                        p.minerId,
+                        COUNT(*) as total_predictions,
+                        SUM(CASE WHEN p.predictedOutcome = p.outcome THEN 1 ELSE 0 END) as correct_predictions,
+                        SUM(p.wager) as total_wager,
+                        SUM(CASE 
+                            WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '0' THEN p.wager * p.teamAodds
+                            WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '1' THEN p.wager * p.teamBodds
+                            WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '2' THEN p.wager * p.tieOdds
+                            ELSE 0
+                        END) as total_earnings
+                    FROM predictions p
+                    WHERE DATE(p.predictionDate) = ?
+                    GROUP BY DATE(p.predictionDate), p.minerId
+                    ON CONFLICT(date, minerId) DO UPDATE SET
+                        total_predictions = excluded.total_predictions,
+                        correct_predictions = excluded.correct_predictions,
+                        total_wager = excluded.total_wager,
+                        total_earnings = excluded.total_earnings
+                """, (date.isoformat(),))
+                
+                conn.commit()
+                bt.logging.debug(f"Updated daily stats for {date.isoformat()}")
+            elif date >= today:
+                bt.logging.debug(f"Skipped updating daily stats for {date.isoformat()} (current or future date)")
+            else:
+                bt.logging.debug(f"Skipped updating daily stats for {date.isoformat()} (before July 28, 2024)")
+        except Exception as e:
+            bt.logging.error(f"Error updating daily stats for {date.isoformat()}: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
 
     def logarithmic_penalty(self, count, min_count):
         if count >= min_count:
@@ -27,7 +139,7 @@ class WeightSetter:
             return math.log10(count + 1) / math.log10(min_count)
     
     def compute_decay_factors(self):
-        decay_rate = 0.05
+        decay_rate = 0.30
         max_age_days = 365
         return {
             age: math.exp(-decay_rate * min(age, max_age_days))
@@ -50,65 +162,6 @@ class WeightSetter:
         decayed_returns = np.exp((-k) * xdecay)
 
         return decayed_returns / np.sum(decayed_returns)
-
-    def get_current_day_performance(self, cursor):
-        now = datetime.now(timezone.utc)
-        today = now.date().isoformat()
-        
-        cursor.execute("""
-            SELECT minerId, COUNT(*) as total_predictions,
-                SUM(CASE WHEN predictedOutcome = outcome THEN 1 ELSE 0 END) as correct_predictions,
-                SUM(wager) as total_wager,
-                SUM(CASE 
-                    WHEN predictedOutcome = outcome AND predictedOutcome = '0' THEN wager * teamAodds
-                    WHEN predictedOutcome = outcome AND predictedOutcome = '1' THEN wager * teamBodds
-                    WHEN predictedOutcome = outcome AND predictedOutcome = '2' THEN wager * tieOdds
-                    ELSE 0
-                END) as total_earnings
-            FROM predictions
-            WHERE DATE(predictionDate) = ?
-            GROUP BY minerId
-        """, (today,))
-        
-        return cursor.fetchall()
-
-    def update_daily_stats(self, date):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        
-        try:
-            # Calculate daily stats
-            cursor.execute("""
-                INSERT INTO daily_miner_stats (date, minerId, total_predictions, correct_predictions, total_wager, total_earnings)
-                SELECT 
-                    DATE(p.predictionDate) as date,
-                    p.minerId,
-                    COUNT(*) as total_predictions,
-                    SUM(CASE WHEN p.predictedOutcome = p.outcome THEN 1 ELSE 0 END) as correct_predictions,
-                    SUM(p.wager) as total_wager,
-                    SUM(CASE 
-                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '0' THEN p.wager * p.teamAodds
-                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '1' THEN p.wager * p.teamBodds
-                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '2' THEN p.wager * p.tieOdds
-                        ELSE 0
-                    END) as total_earnings
-                FROM predictions p
-                WHERE DATE(p.predictionDate) = ?
-                GROUP BY DATE(p.predictionDate), p.minerId
-                ON CONFLICT(date, minerId) DO UPDATE SET
-                    total_predictions = excluded.total_predictions,
-                    correct_predictions = excluded.correct_predictions,
-                    total_wager = excluded.total_wager,
-                    total_earnings = excluded.total_earnings
-            """, (date.isoformat(),))
-            
-            conn.commit()
-            bt.logging.debug(f"Updated daily stats for {date.isoformat()}")
-        except Exception as e:
-            bt.logging.error(f"Error updating daily stats for {date.isoformat()}: {e}")
-            conn.rollback()
-        finally:
-            conn.close()
 
     def get_daily_profits(self, start_date, end_date):
         conn = self.connect_db()
@@ -179,13 +232,34 @@ class WeightSetter:
             return False
         finally:
             conn.close()
+    
+    def get_current_day_performance(self, cursor):
+        today = datetime.now(timezone.utc).date().isoformat()
+        
+        cursor.execute("""
+            SELECT minerId, COUNT(*) as total_predictions,
+                SUM(CASE WHEN predictedOutcome = outcome THEN 1 ELSE 0 END) as correct_predictions,
+                SUM(wager) as total_wager,
+                SUM(CASE 
+                    WHEN predictedOutcome = outcome AND predictedOutcome = '0' THEN wager * teamAodds
+                    WHEN predictedOutcome = outcome AND predictedOutcome = '1' THEN wager * teamBodds
+                    WHEN predictedOutcome = outcome AND predictedOutcome = '2' THEN wager * tieOdds
+                    ELSE 0
+                END) as total_earnings
+            FROM predictions
+            WHERE DATE(predictionDate) = ? AND outcome != 'Unfinished'
+            GROUP BY minerId
+        """, (today,))
+        
+        return cursor.fetchall()
 
     def get_historical_performance(self, cursor, start_date):
+        today = datetime.now(timezone.utc).date()
         cursor.execute("""
             SELECT minerId, date, total_predictions, correct_predictions, total_wager, total_earnings
             FROM daily_miner_stats
-            WHERE date >= ?
-        """, (start_date,))
+            WHERE date >= ? AND date < ?
+        """, (start_date, today.isoformat()))
         
         return cursor.fetchall()
 
@@ -198,7 +272,7 @@ class WeightSetter:
         now = datetime.now(timezone.utc)
         start_date = (now - timedelta(days=365)).date().isoformat()
         
-        # Fetch historical data
+        # Fetch historical data (excluding today)
         daily_stats = self.get_historical_performance(cursor, start_date)
         
         # Fetch current day data
@@ -233,7 +307,7 @@ class WeightSetter:
                 miner_prediction_counts[miner_id] = 0
             
             miner_prediction_counts[miner_id] += total_predictions
-            miner_performance[miner_id] += total_earnings  # No decay for current day
+            miner_performance[miner_id] += total_earnings
 
         # Apply penalty and calculate final scores
         for miner_id, total_earned in miner_performance.items():
@@ -272,8 +346,8 @@ class WeightSetter:
                 bt.logging.info("No predictions found in the database.")
                 return
 
-            # Get today's date
-            end_date = datetime.now(timezone.utc).date()
+            # Get yesterday's date
+            end_date = datetime.now(timezone.utc).date() - timedelta(days=1)
             
             current_date = datetime.strptime(start_date, '%Y-%m-%d').date()
             
