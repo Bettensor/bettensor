@@ -211,7 +211,7 @@ async def main(validator: BettensorValidator):
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
 
-            if current_block - validator.last_updated_block > 300:
+            if current_block - validator.last_updated_block > 299:
                 # Sends data to the website
                 try:
                     result = fetch_and_send_predictions("data/validator.db")
