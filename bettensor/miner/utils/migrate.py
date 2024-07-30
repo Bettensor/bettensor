@@ -142,7 +142,6 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                         )
                         SELECT
                             miner_hotkey,
-                            COALESCE(miner_coldkey, '') as miner_coldkey,
                             miner_uid,
                             COALESCE(miner_rank, 0),
                             miner_cash,
