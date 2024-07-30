@@ -119,7 +119,7 @@ Whether you're new to Bettensor or an experienced miner, the Miner Guide provide
 - Odds for the wager are updated frequently from sportsbook APIs, and recorded by the validator upon submission of a prediction.
 - When a game concludes, the outcome of the simulated wager is calculated with the Odds that were recorded on submission. The miner, if they won, then recieves an "earnings balance" equal to the simulated wager amount multiplied by the Odds of their prediction at time of submission.
 - Losses don't count against the earnings balance. Only wins affect it.
-- Validators score miners on their Lifetime history. There is an exponential decay algorithm used to incentivize new predictions; old predictions decrease in value over time. The top 30% of miners receive 90% of emissions. In the future, a few hundred predictions will be required to give a sufficient sample size, but that is not yet implemented.
+- Validators score miners on their Lifetime history. There is an exponential decay algorithm used to incentivize new predictions; old predictions decrease in value over time. The top 50% of miners receive 90% of emissions. In the future, a few hundred predictions will be required to give a sufficient sample size, but that is not yet implemented.
 
 This design incentivizes the best miners to provide their greatest alpha and be rewarded accordingly.
 
