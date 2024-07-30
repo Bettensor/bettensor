@@ -177,3 +177,4 @@ validator.sh
 bettensor/utills/print_db.py
 data/*
 !data/.gitkeep
+current_miner_index.txt

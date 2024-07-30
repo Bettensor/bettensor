@@ -17,10 +17,15 @@ class DatabaseManager:
 
     def __init__(self, db_path=None, max_connections=10):
         if db_path is None:
-            db_path = os.environ.get('BETTENSOR_DB_PATH', os.path.expanduser('~/bettensor/data/miner.db'))
+            # Use a relative path within the bettensor directory
+            db_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'miner.db')
         self.db_path = db_path
         self.target_version = __database_version__
         bt.logging.info(f"Initializing DatabaseManager with target version: {self.target_version}")
+        
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        
         self._initialize_database()
         self.connection_pool = Queue(maxsize=max_connections)
         for _ in range(max_connections):
@@ -199,12 +204,11 @@ def get_db_manager(max_connections=10, state_manager=None, miner_uid=None):
     
     if db_path is None:
         bt.logging.warning("db_path not found in config. Using default path.")
-        default_path = os.path.expanduser("~/bettensor/data/miner.db")
-        db_path = os.environ.get('DB_PATH', default_path)
+        # Use the same relative path as in the DatabaseManager __init__ method
+        db_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'miner.db')
     
     bt.logging.info(f"Using database path: {db_path}")
     
-    # Ensure the directory exists
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    
     
     return DatabaseManager.get_instance(db_path, max_connections)
