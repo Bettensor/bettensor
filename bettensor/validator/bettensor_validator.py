@@ -134,8 +134,6 @@ class BettensorValidator(BaseNeuron):
     async def get_subtensor(self):
         if self.subtensor is None:
             self.subtensor = await self.initialize_connection()
-        bt.logging.trace(f"Using chain endpoint:")
-        self.print_chain_endpoint()
         return self.subtensor
 
     async def sync_metagraph(self):
