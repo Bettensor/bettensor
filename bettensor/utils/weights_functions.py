@@ -148,8 +148,8 @@ class WeightSetter:
     
     @staticmethod
     def exponential_decay_returns(scale: int) -> np.ndarray:
-        top_miner_benefit = 0.90
-        top_miner_percent = 0.50
+        top_miner_benefit = 0.90 # The percentage of top miners that share the top_miner_percent rewards
+        top_miner_percent = 0.50 # The percentage of rewards that go to the top miners
 
         top_miner_benefit = np.clip(top_miner_benefit, a_min=0, a_max=0.99999999)
         top_miner_percent = np.clip(top_miner_percent, a_min=0.00000001, a_max=1)
