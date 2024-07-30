@@ -129,7 +129,7 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                             miner_lifetime_wins INTEGER,
                             miner_lifetime_losses INTEGER,
                             miner_win_loss_ratio REAL,
-                            miner_status TEXT
+                            last_daily_reset TEXT
                         )
                     """)
                     
@@ -139,11 +139,11 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                             miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_cash,
                             miner_current_incentive, miner_last_prediction_date, miner_lifetime_earnings,
                             miner_lifetime_wager, miner_lifetime_predictions, miner_lifetime_wins,
-                            miner_lifetime_losses, miner_win_loss_ratio, miner_status
+                            miner_lifetime_losses, miner_win_loss_ratio, last_daily_reset
                         )
                         SELECT
                             miner_hotkey,
-                            '' as miner_coldkey,
+                            COALESCE(miner_coldkey, '') as miner_coldkey,
                             miner_uid,
                             COALESCE(miner_rank, 0),
                             miner_cash,
@@ -155,7 +155,7 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                             COALESCE(miner_lifetime_wins, 0),
                             COALESCE(miner_lifetime_losses, 0),
                             COALESCE(miner_win_loss_ratio, 0),
-                            'active' as miner_status
+                            COALESCE(last_daily_reset, datetime('now'))
                         FROM miner_stats
                     """)
                     

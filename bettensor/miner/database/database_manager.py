@@ -135,7 +135,6 @@ class DatabaseManager:
                 miner_lifetime_wins INTEGER,
                 miner_lifetime_losses INTEGER,
                 miner_win_loss_ratio REAL,
-                miner_last_prediction_date TEXT,
                 last_daily_reset TEXT
             )
         """)
