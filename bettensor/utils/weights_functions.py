@@ -403,7 +403,7 @@ class WeightSetter:
                     success = result[0]
                     if success:
                         bt.logging.info("Successfully set weights.")
-                        return
+                        return True
                 else:
                     bt.logging.warning(f"Unexpected result format in setting weights: {result}")
             except TimeoutError:
