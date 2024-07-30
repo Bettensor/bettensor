@@ -24,6 +24,7 @@ import math
 import numpy as np
 import torch
 from bettensor.utils.weights_functions import WeightSetter
+from bettensor.utils.api_client import APIClient
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -72,18 +73,19 @@ class BettensorValidator(BaseNeuron):
             parser.add_argument('--logging.debug', action='store_true', help="Enable debug logging")
         if not any(arg.dest == 'logging.info' for arg in parser._actions):
             parser.add_argument('--logging.info', action='store_true', help="Enable info logging")
+        if not any(arg.dest == 'subtensor.chain_endpoint' for arg in parser._actions):
+            parser.add_argument('--subtensor.chain_endpoint', type=str, help="subtensor endpoint")
 
         args = parser.parse_args()
 
         self.timeout = 12
         self.neuron_config = None
         self.wallet = None
-        self.subtensor = None
         self.dendrite = None
         self.metagraph = None
         self.scores = None
         self.hotkeys = None
-        self.subtensor_connection = None
+        self.subtensor = None
         self.miner_responses = None
         self.max_targets = None
         self.target_group = None
@@ -103,6 +105,7 @@ class BettensorValidator(BaseNeuron):
 
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
+        self.api_client = APIClient(self.rapid_api_key)
 
         self.weight_setter = None
 
@@ -129,10 +132,16 @@ class BettensorValidator(BaseNeuron):
                 self.subtensor = None
         return self.subtensor
 
+    def print_chain_endpoint(self):
+        if self.subtensor:
+            bt.logging.info(f"Current chain endpoint: {self.subtensor.chain_endpoint}")
+        else:
+            bt.logging.info("Subtensor is not initialized yet.")
+
     async def get_subtensor(self):
-        if self.subtensor_connection is None:
-            self.subtensor = bt.subtensor(config=self.neuron_config)
-        return self.subtensor_connection
+        if self.subtensor is None:
+            self.subtensor = await self.initialize_connection()
+        return self.subtensor
 
     async def sync_metagraph(self):
         subtensor = await self.get_subtensor()
@@ -885,7 +894,6 @@ class BettensorValidator(BaseNeuron):
         return cursor.fetchall()
 
     def determine_winner(self, game_info):
-        """determines the winner of a game using an external api"""
         game_id, teamA, teamB, externalId = game_info
 
         conn = self.connect_db()
@@ -901,47 +909,33 @@ class BettensorValidator(BaseNeuron):
         sport = result[0]
 
         if sport == "baseball":
-            url = "https://api-baseball.p.rapidapi.com/games"
-            querystring = {"id": str(externalId)}
+            game_data = self.api_client.get_baseball_game(str(externalId))
         elif sport == "soccer":
-            url = "https://api-football-v1.p.rapidapi.com/v3/fixtures"
-            querystring = {"id": str(externalId)}
+            game_data = self.api_client.get_soccer_game(str(externalId))
         else:
             bt.logging.error(f"Unsupported sport: {sport}")
             return
 
-        headers = {
-            "x-rapidapi-host": self.api_hosts[sport],
-            "x-rapidapi-key": self.rapid_api_key,
-        }
+        if not game_data:
+            return
 
-        response = requests.get(url, headers=headers, params=querystring)
-
-        if response.status_code == 200:
-            data = response.json()
-            game_responses = data.get("response", [])
-
-            if not game_responses:
+            status = game_response["status"]["long"]
+            if status != "Finished":
+                bt.logging.trace(
+                    f"Game {externalId} is not finished yet. Current status: {status}"
+                )
                 return
 
-            game_response = game_responses[0]
+            home_score = game_response["scores"]["home"]["total"]
+            away_score = game_response["scores"]["away"]["total"]
+        elif sport == "soccer":
+            status = game_response["fixture"]["status"]["long"]
+            if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
+                bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
+                return
 
-            if sport == "baseball":
-                status = game_response["status"]["long"]
-                if status != "Finished":
-                    bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
-                    return
-
-                home_score = game_response["scores"]["home"]["total"]
-                away_score = game_response["scores"]["away"]["total"]
-            elif sport == "soccer":
-                status = game_response["fixture"]["status"]["long"]
-                if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
-                    bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
-                    return
-
-                home_score = game_response["goals"]["home"]
-                away_score = game_response["goals"]["away"]
+            home_score = game_response["goals"]["home"]
+            away_score = game_response["goals"]["away"]
 
             # Ensure home_score and away_score are not None
             if home_score is None or away_score is None:
