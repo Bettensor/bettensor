@@ -97,6 +97,7 @@ def main(miner: BettensorMiner):
                     bt.logging.debug(
                         f"Syncing metagraph: {miner.metagraph} with subtensor: {miner.subtensor}"
                     )
+                    miner.state_manager.update_current_incentive(miner.get_current_incentive())
 
                     miner.metagraph.sync(subtensor=miner.subtensor)
 

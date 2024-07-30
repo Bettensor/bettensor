@@ -45,7 +45,7 @@ from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor import protocol
 
 # from update_games import update_games
-from bettensor.utils.miner_stats import MinerStatsHandler
+
 from datetime import datetime, timezone, timedelta
 from bettensor.utils.website_handler import fetch_and_send_predictions
 
