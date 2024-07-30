@@ -217,6 +217,18 @@ async def main(validator: BettensorValidator):
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
 
+            if current_block - validator.last_updated_block > 150:
+                # Sends data to the website
+                try:
+                    result = fetch_and_send_predictions("data/validator.db")
+                    bt.logging.info(f"Result status: {result}")
+                    if result:
+                        bt.logging.info("Predictions fetched and sent successfully")
+                    else:
+                        bt.logging.warning("No predictions were sent or an error occurred")
+                except Exception as e:
+                    bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
+
             if current_block - validator.last_updated_block > 298:
                 # Update results before setting weights next block
                 await validator.run_sync_in_async(validator.update_recent_games)

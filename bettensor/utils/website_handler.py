@@ -142,11 +142,11 @@ def send_predictions(predictions, db_path):
 
     for prediction in predictions:
         hotkey = prediction["minerId"]
-        try:
-            coldkey = get_or_update_coldkey(db_path, hotkey)
-        except ValueError as e:
-            bt.logging.error(e)
-            coldkey = "dummy_coldkey"
+        #try:
+            #coldkey = get_or_update_coldkey(db_path, hotkey)
+        #except ValueError as e:
+            #bt.logging.error(e)
+        coldkey = "dummy_coldkey"
 
         transformed_prediction = {
             "externalGameId": prediction["teamGameID"],
