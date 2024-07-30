@@ -117,7 +117,6 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                     execute_with_retry(cursor, """
                         CREATE TABLE IF NOT EXISTS miner_stats_new (
                             miner_hotkey TEXT PRIMARY KEY,
-                            miner_coldkey TEXT,
                             miner_uid INTEGER,
                             miner_rank INTEGER,
                             miner_cash REAL,
@@ -136,7 +135,7 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                     # Copy data from the old table to the new table
                     execute_with_retry(cursor, """
                         INSERT OR REPLACE INTO miner_stats_new (
-                            miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_cash,
+                            miner_hotkey, miner_uid, miner_rank, miner_cash,
                             miner_current_incentive, miner_last_prediction_date, miner_lifetime_earnings,
                             miner_lifetime_wager, miner_lifetime_predictions, miner_lifetime_wins,
                             miner_lifetime_losses, miner_win_loss_ratio, last_daily_reset

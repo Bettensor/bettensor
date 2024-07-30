@@ -123,7 +123,6 @@ class DatabaseManager:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS miner_stats (
                 miner_hotkey TEXT PRIMARY KEY,
-                miner_coldkey TEXT,
                 miner_uid INTEGER,
                 miner_rank INTEGER,
                 miner_cash REAL,
