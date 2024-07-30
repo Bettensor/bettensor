@@ -56,27 +56,68 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
         if version.parse(current_version) < version.parse('0.0.5'):
             bt.logging.info("Starting migration to 0.0.5")
             
-            if not table_exists(cursor, 'miner_stats'):
-                bt.logging.warning("miner_stats table does not exist. Creating new table.")
+            # Migrate predictions table
+            if table_exists(cursor, 'predictions'):
+                bt.logging.info("Migrating predictions table")
                 execute_with_retry(cursor, """
-                    CREATE TABLE miner_stats (
-                        miner_hotkey TEXT PRIMARY KEY,
-                        miner_uid INTEGER,
-                        miner_rank INTEGER,
-                        miner_cash REAL,
-                        miner_current_incentive REAL,
-                        miner_last_prediction_date TEXT,
-                        miner_lifetime_earnings REAL,
-                        miner_lifetime_wager REAL,
-                        miner_lifetime_predictions INTEGER,
-                        miner_lifetime_wins INTEGER,
-                        miner_lifetime_losses INTEGER,
-                        miner_win_loss_ratio REAL,
-                        last_daily_reset TEXT
+                    CREATE TABLE IF NOT EXISTS predictions_new (
+                        predictionID TEXT PRIMARY KEY, 
+                        teamGameID TEXT, 
+                        minerID TEXT, 
+                        predictionDate TEXT, 
+                        predictedOutcome TEXT,
+                        teamA TEXT,
+                        teamB TEXT,
+                        wager REAL,
+                        teamAodds REAL,
+                        teamBodds REAL,
+                        tieOdds REAL,
+                        outcome TEXT
                     )
                 """)
-            else:
-                bt.logging.info("Creating miner_stats_new table")
+                execute_with_retry(cursor, """
+                    INSERT INTO predictions_new 
+                    SELECT predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
+                           teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
+                    FROM predictions
+                """)
+                execute_with_retry(cursor, "DROP TABLE predictions")
+                execute_with_retry(cursor, "ALTER TABLE predictions_new RENAME TO predictions")
+            
+            # Migrate games table
+            if table_exists(cursor, 'games'):
+                bt.logging.info("Migrating games table")
+                execute_with_retry(cursor, """
+                    CREATE TABLE IF NOT EXISTS games_new (
+                        gameID TEXT PRIMARY KEY,
+                        teamA TEXT,
+                        teamAodds REAL,
+                        teamB TEXT,
+                        teamBodds REAL,
+                        sport TEXT,
+                        league TEXT,
+                        externalID TEXT,
+                        createDate TEXT,
+                        lastUpdateDate TEXT,
+                        eventStartDate TEXT,
+                        active INTEGER,
+                        outcome TEXT,
+                        tieOdds REAL,
+                        canTie BOOLEAN
+                    )
+                """)
+                execute_with_retry(cursor, """
+                    INSERT INTO games_new 
+                    SELECT gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID,
+                           createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
+                    FROM games
+                """)
+                execute_with_retry(cursor, "DROP TABLE games")
+                execute_with_retry(cursor, "ALTER TABLE games_new RENAME TO games")
+            
+            # Migrate miner_stats table
+            if table_exists(cursor, 'miner_stats'):
+                bt.logging.info("Migrating miner_stats table")
                 execute_with_retry(cursor, """
                     CREATE TABLE IF NOT EXISTS miner_stats_new (
                         miner_hotkey TEXT PRIMARY KEY,
@@ -94,36 +135,22 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                         last_daily_reset TEXT
                     )
                 """)
-                
-                bt.logging.info("Copying data to miner_stats_new table")
                 execute_with_retry(cursor, """
-                    INSERT OR REPLACE INTO miner_stats_new (
-                        miner_hotkey, miner_uid, miner_rank, miner_cash,
-                        miner_current_incentive, miner_last_prediction_date, miner_lifetime_earnings,
-                        miner_lifetime_wager, miner_lifetime_predictions, miner_lifetime_wins,
-                        miner_lifetime_losses, miner_win_loss_ratio, last_daily_reset
+                    INSERT INTO miner_stats_new (
+                        miner_hotkey, miner_uid, miner_rank, miner_cash, miner_current_incentive,
+                        miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager,
+                        miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses,
+                        miner_win_loss_ratio
                     )
-                    SELECT
-                        miner_hotkey, miner_uid,
-                        COALESCE(miner_rank, 0),
-                        miner_cash,
-                        COALESCE(miner_current_incentive, 0),
-                        miner_last_prediction_date,
-                        COALESCE(miner_lifetime_earnings, 0),
-                        COALESCE(miner_lifetime_wager, 0),
-                        COALESCE(miner_lifetime_predictions, 0),
-                        COALESCE(miner_lifetime_wins, 0),
-                        COALESCE(miner_lifetime_losses, 0),
-                        COALESCE(miner_win_loss_ratio, 0),
-                        COALESCE(last_daily_reset, datetime('now'))
+                    SELECT miner_hotkey, miner_uid, miner_rank, miner_cash, miner_current_incentive,
+                           miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager,
+                           miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses,
+                           miner_win_loss_ratio
                     FROM miner_stats
                 """)
-                
-                bt.logging.info("Dropping old miner_stats table")
-                execute_with_retry(cursor, 'DROP TABLE IF EXISTS miner_stats')
-                
-                bt.logging.info("Renaming miner_stats_new to miner_stats")
-                execute_with_retry(cursor, 'ALTER TABLE miner_stats_new RENAME TO miner_stats')
+                execute_with_retry(cursor, "UPDATE miner_stats_new SET last_daily_reset = datetime('now')")
+                execute_with_retry(cursor, "DROP TABLE miner_stats")
+                execute_with_retry(cursor, "ALTER TABLE miner_stats_new RENAME TO miner_stats")
             
             bt.logging.info("Migration to 0.0.5 completed")
             current_version = '0.0.5'

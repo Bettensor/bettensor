@@ -73,6 +73,10 @@ class DatabaseManager:
                     bt.logging.info(f"Database version updated to {__database_version__}")
                 else:
                     bt.logging.info("Database is already at the latest version")
+                
+                # Ensure all necessary tables exist
+                self._create_tables(cursor)
+                
         except Exception as e:
             bt.logging.error(f"Failed to initialize database: {e}")
             raise
