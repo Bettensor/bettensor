@@ -175,7 +175,7 @@ class BettensorValidator(BaseNeuron):
 
         return wallet, subtensor, dendrite, metagraph
 
-    def initialize_database(self):
+    def initialize_daily_database(self):
         conn = self.connect_db()
         cursor = conn.cursor()
         
@@ -295,7 +295,7 @@ class BettensorValidator(BaseNeuron):
 
         self.weight_setter.update_all_daily_stats()
 
-        self.initialize_database()
+        self.initialize_daily_database()
         return True
 
     def update_daily_stats(self, date):
