@@ -919,11 +919,12 @@ class BettensorValidator(BaseNeuron):
         if not game_data:
             return
 
+        game_response = game_data.get("response", [])[0]
+
+        if sport == "baseball":
             status = game_response["status"]["long"]
             if status != "Finished":
-                bt.logging.trace(
-                    f"Game {externalId} is not finished yet. Current status: {status}"
-                )
+                bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
                 return
 
             home_score = game_response["scores"]["home"]["total"]
