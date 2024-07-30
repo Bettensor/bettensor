@@ -168,8 +168,11 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                     bt.logging.error(f"Unknown version {current_version}")
                     return False
                 
-                # Update the database version after each migration step
-                execute_with_retry(cursor, "INSERT INTO database_version (version, timestamp) VALUES (?, datetime('now'))", (current_version,))
+            # Update the database version after all migration steps
+            execute_with_retry(cursor, """
+                INSERT OR REPLACE INTO database_version (version, timestamp)
+                VALUES (?, datetime('now'))
+            """, (target_version,))
             
             conn.commit()
             bt.logging.info(f"Database migration to version {target_version} completed successfully")
