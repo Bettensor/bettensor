@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 import os
 import asyncio
 import concurrent.futures
+from bettensor.utils.api_client import APIClient
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -68,18 +69,19 @@ class BettensorValidator(BaseNeuron):
             parser.add_argument('--logging.debug', action='store_true', help="Enable debug logging")
         if not any(arg.dest == 'logging.info' for arg in parser._actions):
             parser.add_argument('--logging.info', action='store_true', help="Enable info logging")
+        if not any(arg.dest == 'subtensor.chain_endpoint' for arg in parser._actions):
+            parser.add_argument('--subtensor.chain_endpoint', type=str, help="subtensor endpoint")
 
         args = parser.parse_args()
 
         self.timeout = 12
         self.neuron_config = None
         self.wallet = None
-        self.subtensor = None
         self.dendrite = None
         self.metagraph = None
         self.scores = None
         self.hotkeys = None
-        self.subtensor_connection = None
+        self.subtensor = None
         self.miner_responses = None
         self.max_targets = None
         self.target_group = None
@@ -90,9 +92,15 @@ class BettensorValidator(BaseNeuron):
         self.loop = asyncio.get_event_loop()
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
         self.axon_port = getattr(args, 'axon.port', None) 
+        self.db_path = "data/validator.db"
+        self.api_hosts = {
+            "baseball": "api-baseball.p.rapidapi.com",
+            "soccer": "api-football-v1.p.rapidapi.com",
+        }
 
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
+        self.api_client = APIClient(self.rapid_api_key)
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -117,10 +125,18 @@ class BettensorValidator(BaseNeuron):
                 self.subtensor = None
         return self.subtensor
 
+    def print_chain_endpoint(self):
+        if self.subtensor:
+            bt.logging.info(f"Current chain endpoint: {self.subtensor.chain_endpoint}")
+        else:
+            bt.logging.info("Subtensor is not initialized yet.")
+
     async def get_subtensor(self):
-        if self.subtensor_connection is None:
-            self.subtensor = bt.subtensor(config=self.neuron_config)
-        return self.subtensor_connection
+        if self.subtensor is None:
+            self.subtensor = await self.initialize_connection()
+        bt.logging.trace(f"Using chain endpoint:")
+        self.print_chain_endpoint()
+        return self.subtensor
 
     async def sync_metagraph(self):
         subtensor = await self.get_subtensor()
@@ -235,6 +251,7 @@ class BettensorValidator(BaseNeuron):
 
         # self.miner_stats = MinerStatsHandler(self.db_path, "validator")
         self.create_table()
+
         return True
 
     def _parse_args(self, parser):
@@ -795,65 +812,68 @@ class BettensorValidator(BaseNeuron):
         return cursor.fetchall()
 
     def determine_winner(self, game_info):
-        """determines the winner of a game using an external api"""
         game_id, teamA, teamB, externalId = game_info
 
-        url = "https://api-baseball.p.rapidapi.com/games"
-        headers = {
-            "x-rapidapi-host": "api-baseball.p.rapidapi.com",
-            "x-rapidapi-key": self.rapid_api_key,
-        }
-        querystring = {"id": str(externalId)}
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT sport FROM game_data WHERE externalId = ?", (externalId,))
+        result = cursor.fetchone()
+        conn.close()
 
-        response = requests.get(url, headers=headers, params=querystring)
+        if not result:
+            bt.logging.error(f"No game found with externalId {externalId}")
+            return
 
-        if response.status_code == 200:
-            data = response.json()
-            game_responses = data.get("response", [])
+        sport = result[0]
 
-            if not game_responses:
-                return
+        if sport == "baseball":
+            game_data = self.api_client.get_baseball_game(str(externalId))
+        elif sport == "soccer":
+            game_data = self.api_client.get_soccer_game(str(externalId))
+        else:
+            bt.logging.error(f"Unsupported sport: {sport}")
+            return
 
-            game_response = game_responses[0]
+        if not game_data:
+            return
 
+        game_response = game_data.get("response", [])[0]
+
+        if sport == "baseball":
             status = game_response["status"]["long"]
             if status != "Finished":
-                bt.logging.trace(
-                    f"Game {externalId} is not finished yet. Current status: {status}"
-                )
+                bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
                 return
 
-            home_team = game_response["teams"]["home"]["name"]
-            away_team = game_response["teams"]["away"]["name"]
             home_score = game_response["scores"]["home"]["total"]
             away_score = game_response["scores"]["away"]["total"]
+        elif sport == "soccer":
+            status = game_response["fixture"]["status"]["long"]
+            if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
+                bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
+                return
+
+            home_score = game_response["goals"]["home"]
+            away_score = game_response["goals"]["away"]
+
             # Ensure home_score and away_score are not None
             if home_score is None or away_score is None:
                 bt.logging.trace(f"Score data is incomplete for game {externalId}")
                 return
 
-            if home_score != None and away_score != None:
-                if home_score > away_score:
-                    numeric_outcome = 0
-                elif away_score > home_score:
-                    numeric_outcome = 1
-                else:
-                    numeric_outcome = 2
+            if home_score > away_score:
+                numeric_outcome = 0
+            elif away_score > home_score:
+                numeric_outcome = 1
             else:
                 numeric_outcome = 2
-                home_score = 0
-                away_score = 0
 
-            bt.logging.trace(
-                f"Game {externalId} result: {home_team} {home_score} - {away_score} {away_team}"
-            )
+            bt.logging.trace(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
             bt.logging.trace(f"Numeric outcome: {numeric_outcome}")
 
             self.update_game_outcome(externalId, numeric_outcome)
         else:
-            bt.logging.error(
-                f"Failed to fetch game data for {externalId}. Status code: {response.status_code}"
-            )
+            bt.logging.error(f"Failed to fetch game data for {externalId}. Status code: {response.status_code}")
 
     def update_recent_games(self):
         """Updates the outcomes of recent games and corresponding predictions"""
@@ -1006,7 +1026,7 @@ class BettensorValidator(BaseNeuron):
                     earned = wager * team_a_odds
                 elif predicted_outcome == "1":
                     earned = wager * team_b_odds
-                elif predicted_outcome.lower() == "tie":
+                elif predicted_outcome.lower() == "2":
                     earned = wager * tie_odds
                 else:
                     bt.logging.warning(
@@ -1024,7 +1044,7 @@ class BettensorValidator(BaseNeuron):
         bt.logging.trace(miner_performance)
 
         return earnings
-        
+
     async def set_weights(self):
         bt.logging.info("Entering set_weights method")
         # Calculate miner scores and normalize weights as before

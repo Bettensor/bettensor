@@ -201,5 +201,5 @@ def fetch_and_send_predictions(db_path):
         bt.logging.debug("Sending predictions to the Bettensor website.")
         return send_predictions(predictions, db_path)
     else:
-        print("No predictions found in the database.")
+        print("No new predictions found in the database.")
         return None
