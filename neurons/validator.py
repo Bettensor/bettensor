@@ -211,7 +211,7 @@ async def main(validator: BettensorValidator):
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
 
-            if current_block - validator.last_updated_block > 150:
+            if current_block - validator.last_updated_block > 300:
                 # Sends data to the website
                 try:
                     result = fetch_and_send_predictions("data/validator.db")
@@ -223,7 +223,7 @@ async def main(validator: BettensorValidator):
                 except Exception as e:
                     bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
-            if current_block - validator.last_updated_block > 298:
+            if current_block - validator.last_updated_block > 299:
                 # Update results before setting weights next block
                 await validator.run_sync_in_async(validator.update_recent_games)
                 
@@ -268,6 +268,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
 
     parser.add_argument('--subtensor.network', type=str, help="The subtensor network to connect to")
+    parser.add_argument('--subtensor.chain_endpoint', type=str, help="The subtensor network to connect to")
     parser.add_argument('--wallet.name', type=str, help="The name of the wallet to use")
     parser.add_argument('--wallet.hotkey', type=str, help="The hotkey of the wallet to use")
     parser.add_argument('--logging.trace', action='store_true', help="Enable trace logging")
