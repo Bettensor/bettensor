@@ -166,7 +166,7 @@ testing/
 
 bettensor/utils/games.db
 
-data/miner_env.txt
+
 miner.db
 validator.db
 cli_errors.log
@@ -175,3 +175,5 @@ games_data.json
 miner.sh
 validator.sh
 bettensor/utills/print_db.py
+data/*
+!data/.gitkeep

@@ -45,7 +45,7 @@ from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor import protocol
 
 # from update_games import update_games
-from bettensor.utils.miner_stats import MinerStatsHandler
+
 from datetime import datetime, timezone, timedelta
 from bettensor.utils.website_handler import fetch_and_send_predictions
 
@@ -103,6 +103,12 @@ async def main(validator: BettensorValidator):
                 # Save state
                 validator.save_state()
 
+            # Update daily stats at the end of each day
+            current_date = datetime.now(timezone.utc).date()
+            if current_date > validator.last_stats_update:
+                await validator.run_sync_in_async(lambda: validator.update_daily_stats(current_date - timedelta(days=1)))
+                validator.last_stats_update = current_date
+            
             # Get all axons
             all_axons = validator.metagraph.axons
             bt.logging.trace(f"All axons: {all_axons}")
@@ -228,7 +234,7 @@ async def main(validator: BettensorValidator):
                 await validator.run_sync_in_async(validator.update_recent_games)
                 
             if current_block - validator.last_updated_block > 300:
-                # Periodically update the weights on the Bittensor blockchain.
+
                 try:
                     bt.logging.info("Attempting to update weights")
                     if validator.subtensor is None:
@@ -238,7 +244,6 @@ async def main(validator: BettensorValidator):
                     if validator.subtensor is not None:
                         success = await validator.set_weights()
                         if success:
-                            # Update validators knowledge of the last updated block
                             validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                             bt.logging.info("Successfully updated weights and last updated block")
                         else:

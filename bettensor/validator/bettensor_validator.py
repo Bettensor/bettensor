@@ -1,5 +1,4 @@
 from argparse import ArgumentParser
-from bettensor.utils.miner_stats import MinerStatsHandler
 import bittensor as bt
 import json
 from typing import Tuple
@@ -89,6 +88,7 @@ class BettensorValidator(BaseNeuron):
         self.load_validator_state = None
         self.data_entry = None
         self.uid = None
+        self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
         self.loop = asyncio.get_event_loop()
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
         self.axon_port = getattr(args, 'axon.port', None) 
@@ -101,6 +101,8 @@ class BettensorValidator(BaseNeuron):
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
         self.api_client = APIClient(self.rapid_api_key)
+
+        
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -167,6 +169,32 @@ class BettensorValidator(BaseNeuron):
         self.hotkeys = copy.deepcopy(metagraph.hotkeys)
 
         return wallet, subtensor, dendrite, metagraph
+
+    def initialize_database(self):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Create the daily_miner_stats table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_miner_stats (
+                    date DATE,
+                    minerId TEXT,
+                    total_predictions INT,
+                    correct_predictions INT,
+                    total_wager REAL,
+                    total_earnings REAL,
+                    PRIMARY KEY (date, minerId)
+                )
+            """)
+            
+            conn.commit()
+            bt.logging.info("Daily miner stats table initialized successfully")
+        except Exception as e:
+            bt.logging.error(f"Error initializing database: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
 
     def serve_axon(self):
         """Serve the axon to the network"""
@@ -509,7 +537,7 @@ class BettensorValidator(BaseNeuron):
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
         if self.hotkeys:
-            # check if known state len matches with current metagraph hotkey length
+            # check if known state len matches with current metagraph hotkey lengt
             if len(self.hotkeys) == len(self.metagraph.hotkeys):
                 current_hotkeys = self.metagraph.hotkeys
                 for i, hotkey in enumerate(current_hotkeys):
@@ -521,7 +549,7 @@ class BettensorValidator(BaseNeuron):
                         self.scores[i] = 0.0
                         bt.logging.debug(f"score after reset: {self.scores[i]}")
             else:
-                # init default scores
+                # TODO: Here, instead of resetting to default scores, we should just 
                 bt.logging.info(
                     f"init default scores because of state and metagraph hotkey length mismatch. expected: {len(self.metagraph.hotkeys)} had: {len(self.hotkeys)}"
                 )
@@ -531,13 +559,20 @@ class BettensorValidator(BaseNeuron):
         else:
             self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
-    def init_default_scores(self) -> None:
-        """validators without previous validation knowledge should start
-        with default score of 0.0 for each uid. the method can also be
+    def init_default_scores(self):
+        """Initialize default scores for all miners in the network. This method is
         used to reset the scores in case of an internal error"""
 
-        bt.logging.info("initiating validator with default scores for each uid")
-        self.scores = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
+        bt.logging.info("initiating validator with default scores for all miners")
+        
+        if self.metagraph is None or self.metagraph.S is None:
+            bt.logging.error("Metagraph or metagraph.S is not initialized")
+            self.scores = torch.zeros(1, dtype=torch.float32)
+        else:
+            # Convert numpy array to PyTorch tensor
+            metagraph_S_tensor = torch.from_numpy(self.metagraph.S).float()
+            self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
+        
         bt.logging.info(f"validation weights have been initialized: {self.scores}")
 
     def evaluate_miner(self, minerId):
