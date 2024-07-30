@@ -97,6 +97,22 @@ class BettensorMiner(BaseNeuron):
         self.incentive_update_interval = 600  # Update every 10 minutes
 
     def forward(self, synapse: GameData) -> GameData:
+        bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
+
+        # Print version information and perform version checks
+        print(
+            f"Synapse version: {synapse.metadata.subnet_version}, our version: {self.subnet_version}"
+        )
+        if synapse.metadata.subnet_version > self.subnet_version:
+            bt.logging.warning(
+                f"Received a synapse from a validator with higher subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
+            )
+        if synapse.metadata.subnet_version < self.subnet_version:
+            bt.logging.warning(
+                f"Received a synapse from a validator with lower subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version}). You can safely ignore this warning."
+            )
+
+
         bt.logging.debug(f"Processing game data: {len(synapse.gamedata_dict)} games")
 
         try:
