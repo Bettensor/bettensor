@@ -19,10 +19,7 @@ from dotenv import load_dotenv
 import os
 import asyncio
 import concurrent.futures
-import math
-import numpy as np
-import torch
-from bettensor.utils.weights_functions import WeightSetter
+from bettensor.utils.api_client import APIClient
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -71,18 +68,19 @@ class BettensorValidator(BaseNeuron):
             parser.add_argument('--logging.debug', action='store_true', help="Enable debug logging")
         if not any(arg.dest == 'logging.info' for arg in parser._actions):
             parser.add_argument('--logging.info', action='store_true', help="Enable info logging")
+        if not any(arg.dest == 'subtensor.chain_endpoint' for arg in parser._actions):
+            parser.add_argument('--subtensor.chain_endpoint', type=str, help="subtensor endpoint")
 
         args = parser.parse_args()
 
         self.timeout = 12
         self.neuron_config = None
         self.wallet = None
-        self.subtensor = None
         self.dendrite = None
         self.metagraph = None
         self.scores = None
         self.hotkeys = None
-        self.subtensor_connection = None
+        self.subtensor = None
         self.miner_responses = None
         self.max_targets = None
         self.target_group = None
@@ -95,11 +93,16 @@ class BettensorValidator(BaseNeuron):
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
         self.axon_port = getattr(args, 'axon.port', None) 
         self.db_path = "data/validator.db"
+        self.api_hosts = {
+            "baseball": "api-baseball.p.rapidapi.com",
+            "soccer": "api-football-v1.p.rapidapi.com",
+        }
 
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
+        self.api_client = APIClient(self.rapid_api_key)
 
-        self.weight_setter = None
+        
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -124,10 +127,16 @@ class BettensorValidator(BaseNeuron):
                 self.subtensor = None
         return self.subtensor
 
+    def print_chain_endpoint(self):
+        if self.subtensor:
+            bt.logging.info(f"Current chain endpoint: {self.subtensor.chain_endpoint}")
+        else:
+            bt.logging.info("Subtensor is not initialized yet.")
+
     async def get_subtensor(self):
-        if self.subtensor_connection is None:
-            self.subtensor = bt.subtensor(config=self.neuron_config)
-        return self.subtensor_connection
+        if self.subtensor is None:
+            self.subtensor = await self.initialize_connection()
+        return self.subtensor
 
     async def sync_metagraph(self):
         subtensor = await self.get_subtensor()
@@ -269,56 +278,6 @@ class BettensorValidator(BaseNeuron):
         # self.miner_stats = MinerStatsHandler(self.db_path, "validator")
         self.create_table()
 
-        self.weight_setter = WeightSetter(
-            metagraph=self.metagraph,
-            wallet=self.wallet,
-            subtensor=self.subtensor,
-            neuron_config=self.neuron_config,
-            loop=self.loop,
-            thread_executor=self.thread_executor,
-            db_path=self.db_path
-        )
-
-        self.initialize_database()
-        return True
-    
-    def update_daily_stats(self, date):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        
-        try:
-            # Calculate daily stats
-            cursor.execute("""
-                INSERT INTO daily_miner_stats (date, minerId, total_predictions, correct_predictions, total_wager, total_earnings)
-                SELECT 
-                    DATE(p.predictionDate) as date,
-                    p.minerId,
-                    COUNT(*) as total_predictions,
-                    SUM(CASE WHEN p.predictedOutcome = p.outcome THEN 1 ELSE 0 END) as correct_predictions,
-                    SUM(p.wager) as total_wager,
-                    SUM(CASE 
-                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '0' THEN p.wager * p.teamAodds
-                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '1' THEN p.wager * p.teamBodds
-                        WHEN p.predictedOutcome = p.outcome AND p.predictedOutcome = '2' THEN p.wager * p.tieOdds
-                        ELSE 0
-                    END) as total_earnings
-                FROM predictions p
-                WHERE DATE(p.predictionDate) = DATE(?)
-                GROUP BY DATE(p.predictionDate), p.minerId
-                ON CONFLICT(date, minerId) DO UPDATE SET
-                    total_predictions = excluded.total_predictions,
-                    correct_predictions = excluded.correct_predictions,
-                    total_wager = excluded.total_wager,
-                    total_earnings = excluded.total_earnings
-            """, (date,))
-            
-            conn.commit()
-        except Exception as e:
-            bt.logging.error(f"Error updating daily stats: {e}")
-            conn.rollback()
-        finally:
-            conn.close()
-        
         return True
 
     def _parse_args(self, parser):
@@ -886,65 +845,68 @@ class BettensorValidator(BaseNeuron):
         return cursor.fetchall()
 
     def determine_winner(self, game_info):
-        """determines the winner of a game using an external api"""
         game_id, teamA, teamB, externalId = game_info
 
-        url = "https://api-baseball.p.rapidapi.com/games"
-        headers = {
-            "x-rapidapi-host": "api-baseball.p.rapidapi.com",
-            "x-rapidapi-key": self.rapid_api_key,
-        }
-        querystring = {"id": str(externalId)}
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT sport FROM game_data WHERE externalId = ?", (externalId,))
+        result = cursor.fetchone()
+        conn.close()
 
-        response = requests.get(url, headers=headers, params=querystring)
+        if not result:
+            bt.logging.error(f"No game found with externalId {externalId}")
+            return
 
-        if response.status_code == 200:
-            data = response.json()
-            game_responses = data.get("response", [])
+        sport = result[0]
 
-            if not game_responses:
-                return
+        if sport == "baseball":
+            game_data = self.api_client.get_baseball_game(str(externalId))
+        elif sport == "soccer":
+            game_data = self.api_client.get_soccer_game(str(externalId))
+        else:
+            bt.logging.error(f"Unsupported sport: {sport}")
+            return
 
-            game_response = game_responses[0]
+        if not game_data:
+            return
 
+        game_response = game_data.get("response", [])[0]
+
+        if sport == "baseball":
             status = game_response["status"]["long"]
             if status != "Finished":
-                bt.logging.trace(
-                    f"Game {externalId} is not finished yet. Current status: {status}"
-                )
+                bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
                 return
 
-            home_team = game_response["teams"]["home"]["name"]
-            away_team = game_response["teams"]["away"]["name"]
             home_score = game_response["scores"]["home"]["total"]
             away_score = game_response["scores"]["away"]["total"]
+        elif sport == "soccer":
+            status = game_response["fixture"]["status"]["long"]
+            if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
+                bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
+                return
+
+            home_score = game_response["goals"]["home"]
+            away_score = game_response["goals"]["away"]
+
             # Ensure home_score and away_score are not None
             if home_score is None or away_score is None:
                 bt.logging.trace(f"Score data is incomplete for game {externalId}")
                 return
 
-            if home_score != None and away_score != None:
-                if home_score > away_score:
-                    numeric_outcome = 0
-                elif away_score > home_score:
-                    numeric_outcome = 1
-                else:
-                    numeric_outcome = 2
+            if home_score > away_score:
+                numeric_outcome = 0
+            elif away_score > home_score:
+                numeric_outcome = 1
             else:
                 numeric_outcome = 2
-                home_score = 0
-                away_score = 0
 
-            bt.logging.trace(
-                f"Game {externalId} result: {home_team} {home_score} - {away_score} {away_team}"
-            )
+            bt.logging.trace(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
             bt.logging.trace(f"Numeric outcome: {numeric_outcome}")
 
             self.update_game_outcome(externalId, numeric_outcome)
         else:
-            bt.logging.error(
-                f"Failed to fetch game data for {externalId}. Status code: {response.status_code}"
-            )
+            bt.logging.error(f"Failed to fetch game data for {externalId}. Status code: {response.status_code}")
 
     def update_recent_games(self):
         """Updates the outcomes of recent games and corresponding predictions"""
@@ -1027,5 +989,142 @@ class BettensorValidator(BaseNeuron):
     async def run_sync_in_async(self, fn):
         return await self.loop.run_in_executor(self.thread_executor, fn)
 
+    def calculate_miner_scores(self):
+        """
+        Calculates the scores for miners based on their performance for games that started in the last 48 hours, 
+        considering only predictions submitted in the last 8 days and excluding future predictions.
+        All times are in UTC.
+        """
+        earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        now = datetime.now(timezone.utc)
+        forty_eight_hours_ago = now - timedelta(hours=48)
+        eight_days_ago = now - timedelta(days=8)
+
+        cursor.execute(
+            """
+            SELECT p.predictionID, p.teamGameID, p.minerId, p.predictedOutcome, p.outcome, 
+                p.teamA, p.teamB, p.wager, p.teamAodds, p.teamBodds, p.tieOdds, 
+                p.predictionDate, g.eventStartDate
+            FROM predictions p
+            JOIN game_data g ON p.teamGameID = g.externalId
+            WHERE p.predictionDate >= ? AND p.predictionDate <= ? AND g.eventStartDate >= ?
+            """,
+            (eight_days_ago.isoformat(), now.isoformat(), forty_eight_hours_ago.isoformat())
+        )
+        prediction_rows = cursor.fetchall()
+
+        conn.close()
+
+        miner_performance = {}
+        miner_id_to_index = {miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)}
+
+        for row in prediction_rows:
+            (
+                prediction_id, team_game_id, miner_id, predicted_outcome, outcome,
+                team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds,
+                prediction_date, event_start_date
+            ) = row
+
+            try:
+                prediction_datetime = datetime.fromisoformat(prediction_date).replace(tzinfo=timezone.utc)
+                event_start_datetime = datetime.fromisoformat(event_start_date).replace(tzinfo=timezone.utc)
+            except ValueError:
+                bt.logging.warning(f"Invalid date format for prediction {prediction_id}. Skipping.")
+                continue
+
+            # Skip future predictions
+            if prediction_datetime > now:
+                bt.logging.warning(f"Future prediction date detected for prediction {prediction_id}. Skipping.")
+                continue
+
+            # Ensure the prediction was made before the game started
+            if prediction_datetime >= event_start_datetime:
+                bt.logging.warning(f"Prediction {prediction_id} was made after the game started. Skipping.")
+                continue
+
+            # Check if the event started within the last 48 hours
+            if event_start_datetime < forty_eight_hours_ago:
+                bt.logging.debug(f"Game {team_game_id} started more than 48 hours ago. Skipping.")
+                continue
+
+            if miner_id not in miner_performance:
+                miner_performance[miner_id] = 0.0
+
+            if predicted_outcome == outcome:
+                if predicted_outcome == "0":
+                    earned = wager * team_a_odds
+                elif predicted_outcome == "1":
+                    earned = wager * team_b_odds
+                elif predicted_outcome.lower() == "2":
+                    earned = wager * tie_odds
+                else:
+                    bt.logging.warning(
+                        f"Unexpected outcome {predicted_outcome} for {team_game_id}. Please notify Bettensor Developers, as this is likely a larger API issue."
+                    )
+                    continue
+                miner_performance[miner_id] += earned
+
+        for miner_id, total_earned in miner_performance.items():
+            if miner_id in miner_id_to_index:
+                idx = miner_id_to_index[miner_id]
+                earnings[idx] = total_earned
+
+        bt.logging.trace("Miner performance calculated")
+        bt.logging.trace(miner_performance)
+
+        return earnings
+
     async def set_weights(self):
-        await self.weight_setter.set_weights(self.db_path)
+        bt.logging.info("Entering set_weights method")
+        # Calculate miner scores and normalize weights as before
+        earnings = self.calculate_miner_scores()
+        weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
+        bt.logging.info(f"Normalized weights: {weights}")
+
+        # Check stake
+        uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        stake = float(self.metagraph.S[uid])
+        if stake < 1000.0:
+            bt.logging.error("Insufficient stake. Failed in setting weights.")
+            return False
+
+        if self.subtensor is None:
+            bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
+            self.subtensor = await self.initialize_connection()
+            if self.subtensor is None:
+                bt.logging.error("Failed to reinitialize subtensor. Cannot set weights.")
+                return False
+
+        try:
+            bt.logging.info("Attempting to set weights with 120 second timeout")
+            result = await asyncio.wait_for(
+                self.run_sync_in_async(lambda: self.subtensor.set_weights(
+                    netuid=self.neuron_config.netuid,
+                    wallet=self.wallet,
+                    uids=self.metagraph.uids,
+                    weights=weights,
+                    wait_for_inclusion=False,
+                    wait_for_finalization=True,
+                )),
+                timeout=120  # 120 second timeout
+            )
+            bt.logging.trace(f"Set weights result: {result}")
+            
+            if isinstance(result, tuple) and len(result) >= 1:
+                success = result[0]
+                if success:
+                    bt.logging.info("Successfully set weights.")
+                    return True
+            else:
+                bt.logging.warning(f"Unexpected result format in setting weights: {result}")
+        except asyncio.TimeoutError:
+            bt.logging.error("Timeout occurred while setting weights (120 seconds elapsed).")
+        except Exception as e:
+            bt.logging.error(f"Error setting weights: {str(e)}")
+        
+        bt.logging.error("Failed to set weights.")
+        return False
