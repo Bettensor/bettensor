@@ -93,6 +93,9 @@ class BettensorMiner(BaseNeuron):
         
         bt.logging.info("BettensorMiner initialization complete")
 
+        self.last_incentive_update = None
+        self.incentive_update_interval = 600  # Update every 10 minutes
+
     def forward(self, synapse: GameData) -> GameData:
         bt.logging.debug(f"Processing game data: {len(synapse.gamedata_dict)} games")
 
@@ -249,3 +252,31 @@ class BettensorMiner(BaseNeuron):
 
         bt.logging.debug(f"Prioritized: {synapse.dendrite.hotkey} (UID: {uid} - Stake: {stake})")
         return stake
+
+    def get_current_incentive(self):
+        current_time = time.time()
+        
+        # Check if it's time to update the incentive
+        if self.last_incentive_update is None or (current_time - self.last_incentive_update) >= self.incentive_update_interval:
+            bt.logging.info("Updating current incentive")
+            try:
+                # Sync the metagraph to get the latest data
+                self.metagraph.sync()
+                
+                # Get the incentive for this miner
+                incentive = float(self.metagraph.I[self.miner_uid])
+                
+                # Update the state manager with the new incentive
+                self.state_manager.update_current_incentive(incentive)
+                
+                self.last_incentive_update = current_time
+                
+                bt.logging.info(f"Updated current incentive to: {incentive}")
+                return incentive
+            except Exception as e:
+                bt.logging.error(f"Error updating current incentive: {e}")
+                return None
+        else:
+            # If it's not time to update, return the last known incentive from the state manager
+            return self.state_manager.get_current_incentive()
+

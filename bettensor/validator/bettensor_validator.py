@@ -1,5 +1,4 @@
 from argparse import ArgumentParser
-from bettensor.miner.utils.miner_stats import MinerStatsHandler
 import bittensor as bt
 import json
 from typing import Tuple
@@ -601,13 +600,20 @@ class BettensorValidator(BaseNeuron):
         else:
             self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
-    def init_default_scores(self) -> None:
-        """validators without previous validation knowledge should start
-        with default score of 0.0 for each uid. the method can also be
+    def init_default_scores(self):
+        """Initialize default scores for all miners in the network. This method is
         used to reset the scores in case of an internal error"""
 
-        bt.logging.info("initiating validator with default scores for each uid")
-        self.scores = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
+        bt.logging.info("initiating validator with default scores for all miners")
+        
+        if self.metagraph is None or self.metagraph.S is None:
+            bt.logging.error("Metagraph or metagraph.S is not initialized")
+            self.scores = torch.zeros(1, dtype=torch.float32)
+        else:
+            # Convert numpy array to PyTorch tensor
+            metagraph_S_tensor = torch.from_numpy(self.metagraph.S).float()
+            self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
+        
         bt.logging.info(f"validation weights have been initialized: {self.scores}")
 
     def evaluate_miner(self, minerId):

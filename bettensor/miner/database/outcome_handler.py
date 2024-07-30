@@ -14,7 +14,7 @@ class OutcomeHandler:
         elif game_outcome_str in outcomes.values():
             return "Wager Lost"
         else:
-            return "Unknown"
+            return game_outcome_str  # Return the original outcome if it doesn't match known patterns
 
     @staticmethod
     def update_stats(db_manager, miner_uid, prediction):

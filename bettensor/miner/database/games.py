@@ -84,7 +84,7 @@ class GamesHandler:
                     """INSERT INTO games (
                     gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, 
                     createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         game_data.id, game_data.teamA, game_data.teamAodds, game_data.teamB, game_data.teamBodds,
                         game_data.sport, game_data.league, game_data.externalId, game_data.createDate,

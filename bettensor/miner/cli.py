@@ -13,14 +13,11 @@ import prompt_toolkit
 from prompt_toolkit.shortcuts import clear
 from rich.console import Console
 from rich.table import Table
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application as PTApplication
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.widgets import Frame, TextArea, Label
 from prompt_toolkit.styles import Style
-from prompt_toolkit.application import Application as PTApplication
-from argparse import ArgumentParser
-import time
 from prompt_toolkit.layout.containers import Window, HSplit
 import logging
 import os
@@ -32,17 +29,27 @@ import threading
 import os
 import sys
 import subprocess
+import atexit
+from prompt_toolkit.output import Output
 
+# Create logs directory if it doesn't exist
 log_dir = "./logs"
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
+# Set up logging for CLI
+cli_log_file = os.path.join(log_dir, f"cli_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 logging.basicConfig(
-    filename="./logs/cli_errors.log",
-    level=logging.DEBUG,
-    format="%(asctime)s %(levelname)s %(message)s",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(cli_log_file),
+        logging.StreamHandler()  # This will still print to console
+    ]
 )
 
+# Create a logger for the CLI
+cli_logger = logging.getLogger("cli")
 
 global_style = Style.from_dict(
     {
@@ -78,19 +85,126 @@ class Application:
         # Load the saved miner index
         self.current_miner_index = self.get_saved_miner_index()
         self.miner_uid = self.available_miners[self.current_miner_index][0]
-        self.load_miner_data()
+        self.miner_hotkey = self.available_miners[self.current_miner_index][1]
 
         self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid)
         
         self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_uid)
         self.games_handler = GamesHandler(self.db_manager)
 
+        # Initialize unsubmitted_predictions
+        self.unsubmitted_predictions = {}
+
         self.reload_data()
+        self.running = True
+        self.bindings = self.setup_key_bindings()
+        self.layout = self.setup_layout()
+        self.app = PTApplication(
+            layout=self.layout,
+            key_bindings=self.bindings,
+            full_screen=True,
+            style=global_style,
+        )
+        self.app.custom_app = self
+        atexit.register(self.cleanup)
+
+    def setup_key_bindings(self):
+        kb = KeyBindings()
+
+        @kb.add('c-c')
+        @kb.add('c-q')
+        def _(event):
+            self.quit()
+
+        @kb.add('up')
+        def _(event):
+            if hasattr(self, 'current_view'):
+                self.current_view.move_up()
+
+        @kb.add('down')
+        def _(event):
+            if hasattr(self, 'current_view'):
+                self.current_view.move_down()
+
+        @kb.add('enter')
+        def _(event):
+            if hasattr(self, 'current_view'):
+                self.current_view.handle_enter()
+
+        @kb.add('left')
+        def _(event):
+            if hasattr(self, 'current_view') and isinstance(self.current_view, GamesList):
+                self.current_view.move_left()
+
+        @kb.add('right')
+        def _(event):
+            if hasattr(self, 'current_view') and isinstance(self.current_view, GamesList):
+                self.current_view.move_right()
+
+        return kb
+
+    def setup_layout(self):
         self.current_view = MainMenu(self)
-        root_container = self.current_view.box
-        self.layout = Layout(root_container)
-        self.style = global_style
-        self.check_db_init()
+        return Layout(self.current_view.box)
+
+    def cleanup(self):
+        if self.app and self.app.output:
+            self.app.output.reset_attributes()
+            self.app.output.enable_autowrap()
+            self.app.output.quit_alternate_screen()
+            self.app.output.flush()
+        os.system('reset')
+
+    def quit(self):
+        cli_logger.info("Initiating shutdown...")
+        self.running = False
+        try:
+            self.state_manager.save_state()  # Save state before exiting
+            cli_logger.info(f"Final miner cash: {self.state_manager.get_stats()['miner_cash']}")
+        except Exception as e:
+            cli_logger.error(f"Error during shutdown: {e}")
+            cli_logger.error(traceback.format_exc())
+        finally:
+            try:
+                if self.app.is_running:
+                    self.app.exit()
+            except Exception as e:
+                cli_logger.error(f"Error during application exit: {e}")
+                cli_logger.error(traceback.format_exc())
+
+        # Ensure terminal is reset
+        self.cleanup()
+
+        # Restart the application if we're selecting a new miner
+        if self.current_view and isinstance(self.current_view, MainMenu) and self.current_view.selected_index == 2:
+            python = sys.executable
+            os.execl(python, python, *sys.argv)
+        else:
+            # If not restarting, exit explicitly
+            sys.exit(0)
+
+    def run(self):
+        def run_app():
+            try:
+                self.app.run()
+            except Exception as e:
+                cli_logger.error(f"Error in app: {e}")
+                cli_logger.error(traceback.format_exc())
+            finally:
+                self.running = False
+
+        app_thread = threading.Thread(target=run_app, daemon=True)
+        app_thread.start()
+
+        try:
+            while self.running:
+                if not app_thread.is_alive():
+                    break
+                app_thread.join(0.1)
+        except KeyboardInterrupt:
+            cli_logger.info("Keyboard interrupt received. Shutting down...")
+        finally:
+            self.quit()
 
     def get_available_miners(self):
         """
@@ -121,9 +235,8 @@ class Application:
         with open('current_miner_index.txt', 'w') as f:
             f.write(str(self.current_miner_index))
         
-        # Restart the application
-        python = sys.executable
-        os.execl(python, python, *sys.argv)
+        # Quit the application, which will trigger a restart
+        self.quit()
 
     @staticmethod
     def get_saved_miner_index():
@@ -136,32 +249,6 @@ class Application:
         except FileNotFoundError:
             return 0
 
-    def load_miner_data(self):
-        """
-        Load data for the selected miner.
-
-        Behavior:
-            - Retrieves miner stats from the state manager
-            - If no stats exist, initializes with default values
-            - Updates the miner_stats attribute
-        """
-        miner_stats = self.state_manager.get_miner_stats()
-        if not miner_stats:
-            miner_stats = {
-                'miner_hotkey': self.miner_hotkey,
-                'miner_uid': self.miner_uid,
-                'miner_rank': 0,
-                'miner_cash': 1000,
-                'miner_current_incentive': 0,
-                'miner_last_prediction_date': None,
-                'miner_lifetime_earnings': 0,
-                'miner_lifetime_wager': 0,
-                'miner_lifetime_wins': 0,
-                'miner_lifetime_losses': 0,
-                'miner_win_loss_ratio': 0,
-            }
-        self.miner_stats = miner_stats
-
     def reload_data(self):
         """
         Reload all data for the current miner.
@@ -171,17 +258,18 @@ class Application:
             - Initializes default values if no stats are found
             - Sets up active games and unsubmitted predictions
         """
-        self.predictions = self.predictions_handler.get_predictions()
+        self.check_unsubmitted_predictions()
+        self.predictions = self.predictions_handler.get_predictions(self.miner_uid)  # Add miner_uid here
         self.games = self.games_handler.get_active_games()
-        self.miner_stats = self.state_manager.get_stats()
+        self.reload_miner_stats()
         
         if self.miner_stats is None:
-            bt.logging.warning(f"No stats found for miner {self.miner_uid}. Initializing new miner row.")
-            self.state_manager.stats_handler.init_miner_row()
+            cli_logger.warning(f"No stats found for miner {self.miner_uid}. Initializing new miner row.")
+            self.state_manager.load_state()
             self.miner_stats = self.state_manager.get_stats()
 
         self.active_games = {}
-        self.unsubmitted_predictions = {}
+        self.check_unsubmitted_predictions()
         self.miner_cash = self.miner_stats["miner_cash"]
 
     def change_view(self, new_view):
@@ -195,28 +283,14 @@ class Application:
             - Updates the current_view attribute
             - Changes the layout container to the new view
         """
+        self.reload_miner_stats()  # Reload stats before changing view
         self.current_view = new_view
         self.layout.container = new_view.box
+        self.app.invalidate()
 
         # If changing to MainMenu, update miner data
         if isinstance(new_view, MainMenu):
             new_view.update_text_area()
-
-    def run(self):
-        """
-        Run the CLI application.
-
-        Behavior:
-            - Creates and runs the prompt_toolkit Application
-        """
-        self.app = PTApplication(
-            layout=self.layout,
-            key_bindings=bindings,
-            full_screen=True,
-            style=self.style,
-        )
-        self.app.custom_app = self
-        self.app.run()
 
     def check_db_init(self):
         """
@@ -232,31 +306,34 @@ class Application:
         except Exception as e:
             raise ValueError(f"Database not initialized properly, restart your miner first: {e}")
 
-    def submit_predictions(self):
-        """
-        Submit unsubmitted predictions to the database.
+    def check_unsubmitted_predictions(self):
+        pass
 
-        Behavior:
-            - Iterates through unsubmitted predictions
-            - Inserts or replaces predictions in the database
-            - Logs warnings for any insertion failures
-        """
-        for prediction in self.unsubmitted_predictions.values():
-            self.predictions_handler.add_prediction(prediction)
+    def submit_predictions(self):
+        self.check_unsubmitted_predictions()
+        for prediction_id, prediction in self.unsubmitted_predictions.items():
+            try:
+                self.predictions_handler.add_prediction(prediction)
+                self.reload_miner_stats()  # Reload stats after each prediction
+            except Exception as e:
+                cli_logger.error(f"Failed to submit prediction {prediction_id}: {str(e)}")
+        self.check_unsubmitted_predictions()
         self.unsubmitted_predictions.clear()
+        self.check_unsubmitted_predictions()
+        self.reload_miner_stats()  # Reload stats after all predictions are submitted
 
     def get_predictions(self):
         """
-        Retrieve all predictions from the database.
+        Retrieve all predictions from the database for the current miner.
 
         Returns:
             Dict[str, Dict]: A dictionary of predictions, keyed by prediction ID.
 
         Behavior:
-            - Queries the database for all predictions
+            - Queries the database for all predictions for the current miner
             - Constructs a dictionary of prediction data
         """
-        return self.predictions_handler.get_predictions()
+        return self.predictions_handler.get_predictions(self.miner_uid)
 
     def get_game_data(self):
         """
@@ -271,55 +348,25 @@ class Application:
         """
         return self.games_handler.get_active_games()
 
-    def get_miner_stats(self, uid=None):
+    def get_miner_stats(self):
         """
-        Retrieve stats for a specific miner.
-
-        Args:
-            uid (str, optional): The UID of the miner to retrieve stats for.
+        Retrieve stats for the current miner.
 
         Returns:
-            Dict or None: A dictionary of miner stats if found, None otherwise.
+            Dict: A dictionary of miner stats.
 
         Behavior:
-            - Queries the database for miner stats based on the provided UID
-            - Constructs a dictionary of miner stats if found
+            - Retrieves the current miner stats from the state manager
         """
         return self.state_manager.get_stats()
 
-    def insert_miner_stats(self, stats):
-        """
-        Insert miner stats into the database.
-
-        Args:
-            stats (Dict): A dictionary of miner stats to insert.
-
-        Behavior:
-            - Constructs an SQL INSERT statement from the provided stats
-            - Executes the INSERT statement
-        """
-        columns = ", ".join(stats.keys())
-        placeholders = ", ".join("?" * len(stats))
-        values = tuple(stats.values())
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute(f"INSERT INTO miner_stats ({columns}) VALUES ({placeholders})", values)
-            cursor.connection.commit()
-
     def update_miner_stats(self, wager, prediction_date):
-        """
-        Update miner stats in the database.
-
-        Args:
-            wager (float): The wager amount for the prediction.
-            prediction_date (str): The date of the prediction.
-
-        Behavior:
-            - Updates miner cash, last prediction date, lifetime wager, and lifetime predictions
-            - Commits the changes to the database
-            - Reloads the miner stats after update
-        """
         self.state_manager.update_on_prediction({'wager': wager, 'predictionDate': prediction_date})
         self.reload_data()
+
+    def reload_miner_stats(self):
+        self.miner_stats = self.state_manager.get_stats()
+        self.miner_cash = self.miner_stats["miner_cash"]
 
 
 class InteractiveTable:
@@ -423,6 +470,7 @@ class MainMenu(InteractiveTable):
             - Updates the text area with initial content
         """
         super().__init__(app)
+        app.reload_miner_stats()  # Reload stats when initializing MainMenu
 
         self.header = Label(
             " BetTensor Miner Main Menu", style="bold"
@@ -443,6 +491,7 @@ class MainMenu(InteractiveTable):
             - Formats the miner stats and menu options
             - Updates the text area content
         """
+        self.app.reload_miner_stats()  # Reload stats before updating text area
         header_text = self.header.text
         divider = "-" * len(header_text)
 
@@ -450,10 +499,10 @@ class MainMenu(InteractiveTable):
         miner_stats_text = (
             f" Miner Hotkey: {self.app.miner_stats['miner_hotkey']}\n"
             f" Miner UID: {self.app.miner_stats['miner_uid']}\n"
-            f" Miner Rank: {self.app.miner_stats['miner_rank']}\n"
+            f" Miner Rank: {self.app.miner_stats.get('miner_rank', 'N/A')}\n"
             f" Miner Cash: {self.app.miner_stats['miner_cash']:.2f}\n"
             f" Current Incentive: {self.app.miner_stats['miner_current_incentive']:.2f} τ per day\n"
-            f" Last Prediction: {self.app.miner_stats['miner_last_prediction_date']}\n"
+            f" Last Prediction: {self.app.miner_stats.get('miner_last_prediction_date', 'N/A')}\n"
             f" Lifetime Earnings: ${self.app.miner_stats['miner_lifetime_earnings']:.2f}\n"
             f" Lifetime Wager Amount: {self.app.miner_stats['miner_lifetime_wager']:.2f}\n"
             f" Lifetime Wins: {self.app.miner_stats['miner_lifetime_wins']}\n"
@@ -483,9 +532,14 @@ class MainMenu(InteractiveTable):
         elif self.selected_index == 1:
             self.app.change_view(GamesList(self.app))
         elif self.selected_index == 2:
+            self.show_loading_message()
             self.app.select_next_miner()
         elif self.selected_index == 3:
-            graceful_shutdown(self.app, submit=True)
+            self.app.quit()
+
+    def show_loading_message(self):
+        self.text_area.text = "Loading next miner... Please wait."
+        self.app.app.invalidate()
 
     def move_up(self):
         """
@@ -523,6 +577,7 @@ class PredictionsList(InteractiveTable):
             - Initializes pagination
         """
         super().__init__(app)
+        app.reload_miner_stats()  # Reload stats when initializing PredictionsList
         app.reload_data()
         self.message = ""
         self.predictions_per_page = 25
@@ -569,7 +624,7 @@ class PredictionsList(InteractiveTable):
         end_idx = min(start_idx + self.predictions_per_page, len(self.sorted_predictions))
         
         # Calculate maximum widths for each column
-        max_date_len = max(len("Prediction Date"), max(len(self.format_prediction_date(pred["predictionDate"])) for pred in self.sorted_predictions))
+        max_date_len = max(len("Prediction Date"), max(len(self.format_date(pred["predictionDate"])) for pred in self.sorted_predictions))
         max_prediction_len = max(len("Predicted Outcome"), max(len(str(pred["predictedOutcome"])) for pred in self.sorted_predictions))
         max_teamA_len = max(len("Team A"), max(len(str(pred["teamA"])) for pred in self.sorted_predictions))
         max_teamB_len = max(len("Team B"), max(len(str(pred["teamB"])) for pred in self.sorted_predictions))
@@ -577,7 +632,7 @@ class PredictionsList(InteractiveTable):
         max_teamAodds_len = max(len("Team A Odds"), max(len(self.format_odds(pred["teamAodds"])) for pred in self.sorted_predictions))
         max_teamBodds_len = max(len("Team B Odds"), max(len(self.format_odds(pred["teamBodds"])) for pred in self.sorted_predictions))
         max_tieOdds_len = max(len("Tie Odds"), max(len(self.format_odds(pred["tieOdds"])) for pred in self.sorted_predictions))
-        max_outcome_len = max(len("Outcome"), max(len(str(pred["outcome"])) for pred in self.sorted_predictions))
+        max_outcome_len = max(len("Outcome"), max(len(self.format_outcome(pred["outcome"])) for pred in self.sorted_predictions))
 
         # Define the header with calculated widths, adding a space at the beginning for cursor alignment
         self.header = (
@@ -596,7 +651,7 @@ class PredictionsList(InteractiveTable):
         self.options = []
         for pred in self.sorted_predictions[start_idx:end_idx]:
             self.options.append(
-                f"{self.format_prediction_date(pred['predictionDate']):<{max_date_len}} | "
+                f"{self.format_date(pred['predictionDate']):<{max_date_len}} | "
                 f"{pred['predictedOutcome']:<{max_prediction_len}} | "
                 f"{pred['teamA']:<{max_teamA_len}} | "
                 f"{pred['teamB']:<{max_teamB_len}} | "
@@ -604,7 +659,7 @@ class PredictionsList(InteractiveTable):
                 f"{self.format_odds(pred['teamAodds']):<{max_teamAodds_len}} | "
                 f"{self.format_odds(pred['teamBodds']):<{max_teamBodds_len}} | "
                 f"{self.format_odds(pred['tieOdds']):<{max_tieOdds_len}} | "
-                f"{pred['outcome']:<{max_outcome_len}}"
+                f"{self.format_outcome(pred['outcome']):<{max_outcome_len}}"
             )
         self.options.append("Go Back")
 
@@ -616,6 +671,7 @@ class PredictionsList(InteractiveTable):
             - Formats the header, options, and pagination information
             - Updates the text area content
         """
+        self.app.reload_miner_stats()  # Reload stats before updating text area
         header_text = self.header
         divider = "-" * len(header_text)
         if len(self.options) <= 1:  # Only "Go Back" is present
@@ -627,23 +683,6 @@ class PredictionsList(InteractiveTable):
             )
         page_info = f"\nPage {self.current_page + 1}/{self.total_pages} (Use left/right arrow keys to navigate)"
         self.text_area.text = f"{header_text}\n{divider}\n{options_text}{page_info}\n\n{self.message}"
-
-    def format_prediction_date(self, date_string):
-        """
-        Format a prediction date string.
-
-        Args:
-            date_string (str): The date string to format.
-
-        Returns:
-            str: The formatted date string.
-
-        Behavior:
-            - Converts the date string to a datetime object
-            - Formats the datetime object as "YYYY-MM-DD HH:MM"
-        """
-        dt = datetime.datetime.fromisoformat(date_string)
-        return dt.strftime("%Y-%m-%d %H:%M")
 
     def handle_enter(self):
         """
@@ -722,6 +761,17 @@ class PredictionsList(InteractiveTable):
         else:
             return str(value)
 
+    def format_outcome(self, outcome):
+        """
+        Format the outcome string.
+        """
+        return outcome  # We're now returning the outcome as-is
+
+    def format_date(self, date_string):
+        date_obj = datetime.datetime.fromisoformat(date_string)
+        return date_obj.strftime("%Y-%m-%d %H:%M:%S")
+
+import datetime  # Modify this import at the top of the file
 
 class GamesList(InteractiveTable):
     def __init__(self, app):
@@ -737,6 +787,7 @@ class GamesList(InteractiveTable):
             - Initializes pagination and filtering
         """
         super().__init__(app)
+        app.reload_miner_stats()  # Reload stats when initializing GamesList
         app.reload_data()
         self.available_sports = sorted(set(game.sport for game in self.app.games.values()))
         self.current_filter = "All Sports"
@@ -850,6 +901,7 @@ class GamesList(InteractiveTable):
             - Formats the header, options, and pagination information
             - Updates the text area content
         """
+        self.app.reload_miner_stats()  # Reload stats before updating text area
         header_text = self.header
         divider = "-" * len(header_text)
         if len(self.options) == 2:  # Only "Filter" and "Go Back" are present
@@ -1005,6 +1057,8 @@ class GamesList(InteractiveTable):
         return datetime.datetime.fromisoformat(date_string.replace('Z', '+00:00'))
 
 
+
+
 class WagerConfirm(InteractiveTable):
     """
     Wager confirmation view
@@ -1026,12 +1080,13 @@ class WagerConfirm(InteractiveTable):
             - Sets up options for confirming or canceling the wager
         """
         super().__init__(app)
+        app.reload_miner_stats()  # Reload stats when initializing WagerConfirm
         self.game_data = game_data
         self.previous_view = previous_view
         self.miner_cash = app.miner_stats["miner_cash"]
         self.selected_team = game_data.teamA  # Default to teamA
         self.wager_input = TextArea(
-            text=str(wager_amount),  # Set the initial wager amount
+            text=str(wager_amount),
             multiline=False,
             password=False,
             focusable=True,
@@ -1053,6 +1108,7 @@ class WagerConfirm(InteractiveTable):
             - Formats the game info, miner cash, selected team, wager amount, and options
             - Updates the text area content
         """
+        self.app.reload_miner_stats()  # Reload stats before updating text area
         game_info = (
             f" {self.game_data.sport} | {self.game_data.teamA} vs {self.game_data.teamB} | {self.game_data.eventStartDate} | "
             f"Team A Odds: {self.game_data.teamAodds} | Team B Odds: {self.game_data.teamBodds} | Tie Odds: {self.game_data.tieOdds}"
@@ -1068,15 +1124,6 @@ class WagerConfirm(InteractiveTable):
         self.box = HSplit([self.text_area, self.wager_input])
 
     def handle_enter(self):
-        """
-        Handle the enter key press in the wager confirmation view.
-
-        Behavior:
-            - If the "Change Selected Team" option is selected, toggles the selected team
-            - If the "Enter Wager Amount" option is selected, focuses the wager input field
-            - If the "Confirm Wager" option is selected, validates and submits the wager
-            - If the "Go Back" option is selected, returns to the previous view
-        """
         if self.selected_index == 0:  # Change Selected Team
             self.toggle_selected_team()
         elif self.selected_index == 1:  # Enter Wager Amount
@@ -1086,11 +1133,11 @@ class WagerConfirm(InteractiveTable):
                 wager_amount = float(self.wager_input.text.strip())
                 if wager_amount <= 0 or wager_amount > self.miner_cash:
                     raise ValueError("Invalid wager amount")
+                
                 prediction_id = str(uuid.uuid4())
                 prediction = {
                     "predictionID": prediction_id,
                     "teamGameID": self.game_data.externalId,
-                    "minerID": self.app.miner_uid,
                     "predictionDate": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "predictedOutcome": self.selected_team,
                     "wager": wager_amount,
@@ -1098,19 +1145,16 @@ class WagerConfirm(InteractiveTable):
                     "teamBodds": self.game_data.teamBodds,
                     "tieOdds": self.game_data.tieOdds,
                     "outcome": "Unfinished",
-                    "canOverwrite": True,
                     "teamA": self.game_data.teamA,
                     "teamB": self.game_data.teamB
                 }
                 self.app.unsubmitted_predictions[prediction_id] = prediction
-                self.app.update_miner_stats(wager_amount, prediction["predictionDate"], self.app.miner_uid)
-                self.confirmation_message = "Wager confirmed! Submitting Prediction to Validators..."
-                self.update_text_area()
+                bt.logging.info(f"Added prediction to unsubmitted_predictions: {prediction}")
+                
                 self.app.submit_predictions()
-                self.app.load_miner_data()  # Reload miner data to ensure we have the latest stats
-                threading.Timer(2.0, lambda: self.app.change_view(self.previous_view)).start()
-            except ValueError:
-                self.wager_input.text = "Invalid amount. Try again."
+                self.app.change_view(MainMenu(self.app))
+            except ValueError as e:
+                self.confirmation_message = str(e)
                 self.update_text_area()
         elif self.selected_index == 3:  # Go Back
             self.app.change_view(self.previous_view)
@@ -1188,209 +1232,11 @@ class WagerConfirm(InteractiveTable):
             self.selected_team = self.game_data.teamA
         self.update_text_area()
 
-
-bindings = KeyBindings()
-
-
-@bindings.add("up")
-def _(event):
-    """
-    Handle the up arrow key press.
-
-    Args:
-        event: The key press event.
-
-    Behavior:
-        - Moves the selection up in the current view
-        - Blurs the wager input field if in the WagerConfirm view
-    """
-    try:
-        custom_app = event.app.custom_app
-        if hasattr(custom_app, "current_view"):
-            custom_app.current_view.move_up()
-            if isinstance(custom_app.current_view, WagerConfirm):
-                custom_app.current_view.blur_wager_input()
-    except AttributeError as e:
-        logging.error(f"Failed to move up: {e}")
-        print("Failed to move up:", str(e))
-
-
-@bindings.add("down")
-def _(event):
-    """
-    Handle the down arrow key press.
-
-    Args:
-        event: The key press event.
-
-    Behavior:
-        - Moves the selection down in the current view
-        - Blurs the wager input field if in the WagerConfirm view
-    """
-    try:
-        custom_app = event.app.custom_app
-        if hasattr(custom_app, "current_view"):
-            custom_app.current_view.move_down()
-            if isinstance(custom_app.current_view, WagerConfirm):
-                custom_app.current_view.blur_wager_input()
-    except AttributeError as e:
-        logging.error(f"Failed to move down: {e}")
-        print("Failed to move down:", str(e))
-
-
-@bindings.add("enter")
-def _(event):
-    """
-    Handle the enter key press.
-
-    Args:
-        event: The key press event.
-
-    Behavior:
-        - Handles the enter key press in the current view
-        - If in the WagerConfirm view and the wager input field is focused, handles the wager input enter event
-    """
-    try:
-        custom_app = event.app.custom_app
-        if hasattr(custom_app, "current_view"):
-            if isinstance(custom_app.current_view, WagerConfirm):
-                if custom_app.current_view.app.layout.has_focus(
-                    custom_app.current_view.wager_input
-                ):
-                    custom_app.current_view.handle_wager_input_enter()
-                else:
-                    custom_app.current_view.handle_enter()
-            else:
-                custom_app.current_view.handle_enter()
-    except AttributeError as e:
-        logging.error(f"Failed to handle enter: {e}")
-        print("Failed to handle enter:", str(e))
-
-
-@bindings.add("q")
-def _(event):
-    """
-    Handle the 'q' key press.
-
-    Args:
-        event: The key press event.
-
-    Behavior:
-        - Performs a graceful shutdown of the application
-    """
-    custom_app = event.app.custom_app
-    graceful_shutdown(custom_app, submit=False)
-
-
-@bindings.add("c-z", eager=True)
-def _(event):
-    """
-    Handle the Ctrl+Z key press.
-
-    Args:
-        event: The key press event.
-
-    Behavior:
-        - Performs a graceful shutdown of the application
-    """
-    custom_app = event.app.custom_app
-    graceful_shutdown(custom_app, submit=False)
-
-
-@bindings.add("c-c", eager=True)
-def _(event):
-    """
-    Handle the Ctrl+C key press.
-
-    Args:
-        event: The key press event.
-
-    Behavior:
-        - Performs a graceful shutdown of the application
-    """
-    custom_app = event.app.custom_app
-    graceful_shutdown(custom_app, submit=False)
-
-
-@bindings.add("left")
-def _(event):
-    """
-    Handle the left arrow key press.
-
-    Args:
-        event: The key press event.
-
-    Behavior:
-        - Moves to the previous page in the GamesList view
-    """
-    try:
-        custom_app = event.app.custom_app
-        if hasattr(custom_app, "current_view") and isinstance(custom_app.current_view, GamesList):
-            custom_app.current_view.move_left()
-    except AttributeError as e:
-        logging.error(f"Failed to move left: {e}")
-        print("Failed to move left:", str(e))
-
-
-@bindings.add("right")
-def _(event):
-    """
-    Handle the right arrow key press.
-
-    Args:
-        event: The key press event.
-
-    Behavior:
-        - Moves to the next page in the GamesList view
-    """
-    try:
-        custom_app = event.app.custom_app
-        if hasattr(custom_app, "current_view") and isinstance(custom_app.current_view, GamesList):
-            custom_app.current_view.move_right()
-    except AttributeError as e:
-        logging.error(f"Failed to move right: {e}")
-        print("Failed to move right:", str(e))
-
-
-def graceful_shutdown(app, submit: bool):
-    """
-    Perform a graceful shutdown of the application.
-
-    Args:
-        app: The main Application instance.
-        submit (bool): Whether to submit predictions before shutting down.
-
-    Behavior:
-        - Submits predictions if specified
-        - Exits the application
-    """
-    if submit:
-        print("Submitting predictions...")
-        logging.info("Submitting predictions...")
-        app.submit_predictions()  # Call the method directly on the app instance
-    app.app.exit()
-
-
-def signal_handler(signal, frame):
-    """
-    Handle system signals for graceful shutdown.
-
-    Args:
-        signal: The received signal.
-        frame: The current stack frame.
-
-    Behavior:
-        - Logs the received signal
-        - Calls the graceful_shutdown function
-    """
-    logging.info(f"Signal received, shutting down gracefully...")
-    graceful_shutdown(app)
-
-
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
-
 if __name__ == "__main__":
-    app = Application()
-    app.run()
+    app = None
+    try:
+        app = Application()
+        app.run()
+    except Exception as e:
+        bt.logging.error(f"Unhandled exception: {e}")
+        bt.logging.error(traceback.format_exc())  # Add this line to get the full traceback

@@ -26,6 +26,7 @@ class PredictionsHandler:
         self.state_manager = state_manager
         self.miner_uid = miner_uid
         self.new_prediction_window = timedelta(hours=2)
+        self.outcome_handler = OutcomeHandler()
         bt.logging.trace("Predictions handler initialization complete")
 
     def process_predictions(self, updated_games: Dict[str, TeamGame], new_games: Dict[str, TeamGame]) -> Dict[str, TeamGamePrediction]:
@@ -82,7 +83,6 @@ class PredictionsHandler:
                 teamBodds=game_data.teamBodds,
                 tieOdds=game_data.tieOdds,
                 outcome="Unfinished",
-                can_overwrite=True,
                 teamA=game_data.teamA,
                 teamB=game_data.teamB
             )
@@ -110,8 +110,8 @@ class PredictionsHandler:
                 cursor.execute("""
                     INSERT INTO predictions (
                         predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-                        wager, teamAodds, teamBodds, tieOdds, outcome, canOverwrite, teamA, teamB
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        wager, teamAodds, teamBodds, tieOdds, outcome, teamA, teamB
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     prediction.predictionID,
                     prediction.teamGameID,
@@ -123,7 +123,6 @@ class PredictionsHandler:
                     prediction.teamBodds,
                     prediction.tieOdds,
                     prediction.outcome,
-                    prediction.can_overwrite,
                     prediction.teamA,
                     prediction.teamB
                 ))
@@ -229,12 +228,9 @@ class PredictionsHandler:
         
         return {p[0]: TeamGamePrediction(*p) for p in predictions}
 
-    def get_predictions(self, filters=None) -> Dict[str, Dict[str, Any]]:
+    def get_predictions(self, miner_uid) -> Dict[str, Dict[str, Any]]:
         """
         Retrieve predictions for the miner.
-
-        Args:
-            filters (optional): Filters for retrieving predictions. Defaults to None.
 
         Returns:
             Dict[str, Dict[str, Any]]: A dictionary of predictions.
@@ -245,76 +241,63 @@ class PredictionsHandler:
         """
         bt.logging.trace("Retrieving predictions")
         with self.db_manager.get_cursor() as cursor:
-            if filters:
-                # TODO: Implement filter logic here
-                pass
-            else:
-                cursor.execute("SELECT * FROM predictions WHERE minerID = ?", (self.miner_uid,))
-            
-            predictions_raw = cursor.fetchall()
-
-        prediction_dict = {}
-        for prediction in predictions_raw:
-            numeric_outcome = prediction[11]  # Assuming outcome is at index 11 now
-            predicted_outcome = prediction[4]  # Assuming predictedOutcome is at index 4
-            readable_outcome = OutcomeHandler.convert_outcome(numeric_outcome, predicted_outcome)
-            
-            prediction_dict[prediction[0]] = {
-                "predictionID": prediction[0],
-                "teamGameID": prediction[1],
-                "minerID": prediction[2],
-                "predictionDate": prediction[3],
-                "predictedOutcome": prediction[4],
-                "teamA": prediction[5],
-                "teamB": prediction[6],
-                "wager": prediction[7],
-                "teamAodds": prediction[8],
-                "teamBodds": prediction[9],
-                "tieOdds": prediction[10],
-                "outcome": readable_outcome,
-                
-            }
-
-        bt.logging.trace(f"Retrieved {len(prediction_dict)} predictions")
-        return prediction_dict
-
-    def add_prediction(self, prediction: TeamGamePrediction):
-        """
-        Add a new prediction for the miner.
-
-        Args:
-            prediction (TeamGamePrediction): The prediction data to add.
-
-        Behavior:
-            - Inserts the prediction into the database.
-            - Updates the miner's state with the new prediction.
-        """
-        bt.logging.trace(f"Adding new prediction: {prediction}")
-        with self.db_manager.get_cursor() as cursor:
             cursor.execute("""
-                INSERT INTO predictions (
-                    predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-                    teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                prediction.predictionID,
-                prediction.teamGameID,
-                prediction.minerID,
-                prediction.predictionDate,
-                prediction.predictedOutcome,
-                prediction.teamA,
-                prediction.teamB,
-                prediction.wager,
-                prediction.teamAodds,
-                prediction.teamBodds,
-                prediction.tieOdds,
-                prediction.outcome
-            ))
+                SELECT p.*, g.eventStartDate
+                FROM predictions p
+                JOIN games g ON p.teamGameID = g.externalId
+                WHERE p.minerID = ?
+                ORDER BY p.predictionDate DESC
+            """, (miner_uid,))
+            columns = [column[0] for column in cursor.description]
+            rows = cursor.fetchall()
+            predictions = {}
+            for row in rows:
+                prediction = dict(zip(columns, row))
+                # Convert the numeric outcome to a string representation
+                prediction['outcome'] = self.outcome_handler.convert_outcome(
+                    prediction['outcome'],
+                    prediction['predictedOutcome']
+                )
+                # Check if the game is more than a week old and still unfinished
+                if prediction['outcome'] == "Unfinished":
+                    event_start_date = datetime.fromisoformat(prediction['eventStartDate'].replace('Z', '+00:00'))
+                    if datetime.now(event_start_date.tzinfo) - event_start_date > timedelta(days=7):
+                        prediction['outcome'] = "Unknown"
+                predictions[prediction['predictionID']] = prediction
 
-        # Update miner stats
-        self.state_manager.update_on_prediction(prediction)
+        bt.logging.trace(f"Retrieved {len(predictions)} predictions")
+        return predictions
 
-        bt.logging.info(f"New prediction added: {prediction.predictionID}")
+    def add_prediction(self, prediction):
+        bt.logging.info(f"Adding prediction: {prediction}")
+        try:
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO predictions (
+                        predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
+                        wager, teamAodds, teamBodds, tieOdds, outcome, teamA, teamB
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    prediction['predictionID'],
+                    prediction['teamGameID'],
+                    self.miner_uid,
+                    prediction['predictionDate'],
+                    prediction['predictedOutcome'],
+                    prediction['wager'],
+                    prediction['teamAodds'],
+                    prediction['teamBodds'],
+                    prediction['tieOdds'],
+                    prediction['outcome'],
+                    prediction['teamA'],
+                    prediction['teamB']
+                ))
+            bt.logging.info(f"Successfully added prediction: {prediction['predictionID']}")
+            
+            # Update the state manager with the new prediction
+            self.state_manager.update_on_prediction(prediction)
+        except Exception as e:
+            bt.logging.error(f"Error adding prediction {prediction['predictionID']}: {str(e)}")
+            raise
 
     def get_prediction(self, prediction_id):
         """
@@ -352,7 +335,6 @@ class PredictionsHandler:
                     teamBodds=row[7],
                     tieOdds=row[8],
                     outcome=row[9],
-                    can_overwrite=row[10],
                     teamA=row[11],
                     teamB=row[12]
                 )
@@ -400,7 +382,7 @@ class PredictionsHandler:
                 game = updated_games[pred['teamGameID']]
                 bt.logging.trace(f"Checking game {game.externalId}: Current outcome: {game.outcome}, Prediction outcome: {pred['outcome']}")
                 
-                new_outcome = OutcomeHandler.convert_outcome(game.outcome, pred['predictedOutcome'])
+                new_outcome = self.outcome_handler.convert_outcome(game.outcome, pred['predictedOutcome'])
                 
                 if new_outcome != pred['outcome']:
                     self.update_prediction_outcome(pred['predictionID'], new_outcome)

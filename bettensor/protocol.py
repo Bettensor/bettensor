@@ -184,17 +184,17 @@ class GameData(bt.Synapse):
     @classmethod
     def create(
         cls,
-        db_path,
+        db_path: str,
         wallet: bt.wallet,
-        subnet_version,
-        neuron_uid,
+        subnet_version: str,
+        neuron_uid: int,  # Note: This is an int
         synapse_type: str,
         prediction_dict: Dict[str, TeamGamePrediction] = None,
     ):
         metadata = Metadata.create(
             wallet=wallet,
             subnet_version=subnet_version,
-            neuron_uid=neuron_uid,
+            neuron_uid=str(neuron_uid),  # Convert to string here
             synapse_type=synapse_type,
         )
         if synapse_type == "prediction":

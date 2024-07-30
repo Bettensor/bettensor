@@ -45,7 +45,7 @@ from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor import protocol
 
 # from update_games import update_games
-from bettensor.miner.utils.miner_stats import MinerStatsHandler
+
 from datetime import datetime, timezone, timedelta
 from bettensor.utils.website_handler import fetch_and_send_predictions
 
@@ -216,18 +216,6 @@ async def main(validator: BettensorValidator):
             bt.logging.debug(
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
-
-            if current_block - validator.last_updated_block > 150:
-                # Sends data to the website
-                try:
-                    result = await fetch_and_send_predictions(db_path="data/validator.db")
-                    bt.logging.info(f"Result status: {result}")
-                    if result:
-                        bt.logging.info("Predictions fetched and sent successfully")
-                    else:
-                        bt.logging.warning("No predictions were sent or an error occurred")
-                except Exception as e:
-                    bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
             if current_block - validator.last_updated_block > 298:
                 # Update results before setting weights next block
