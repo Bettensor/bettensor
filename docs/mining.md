@@ -32,6 +32,7 @@ Clone the Bettensor repository and install the required dependencies:
 git clone https://github.com/bettensor/bettensor.git
 cd bettensor
 pip install -r requirements.txt
+pip install -e .
 ```
 
 ## Miner Setup
@@ -96,7 +97,7 @@ The Central Server option connects your miner to our web dashboard, allowing for
 After setup, your miner will start automatically. You can check the logs to ensure it's running correctly:
 
 ```bash
-pm2 logs miner
+pm2 logs miner0
 ```
 
 Wait for some game data to be received before proceeding to submit predictions.
@@ -127,13 +128,9 @@ If you chose the Central Server option, log in to our [web dashboard](https://be
 
 
 
-When running multiple miners locally, use the `--uid` flag to specify which miner you want to interact with:
+When running multiple miners locally, you can switch between them in the CLI, there will be a slight delay as the application restarts.
 
-```bash
-python bettensor/miner/cli.py --uid <UID>
-```
 
-You can find your miner UIDs in the `./data/miner_env.txt` file.
 
 ### Central Server
 

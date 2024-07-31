@@ -114,15 +114,14 @@ Whether you're new to Bettensor or an experienced miner, the Miner Guide provide
 
 
 ## Incentive Mechanism and Scoring
-- In the current version, our scoring system is quite simple. 
 - Miners get a simulated daily balance of $1000 which is reset daily at 00:00 UTC. 
-- They can select games to predict on by placing a **simulated** moneyline wager. 
+- Miners can select games to predict on by placing a **simulated** moneyline wager. 
 - Odds for the wager are updated frequently from sportsbook APIs, and recorded by the validator upon submission of a prediction.
 - When a game concludes, the outcome of the simulated wager is calculated with the Odds that were recorded on submission. The miner, if they won, then recieves an "earnings balance" equal to the simulated wager amount multiplied by the Odds of their prediction at time of submission.
 - Losses don't count against the earnings balance. Only wins affect it.
-- Validators score miners on a rolling 2-day period of earnings. Reward is linearly proportional to earnings.
+- Validators score miners on their Lifetime history. There is an exponential decay algorithm used to incentivize new predictions; old predictions decrease in value over time. The top 50% of miners receive 90% of emissions. In the future, a few hundred predictions will be required to give a sufficient sample size, but that is not yet implemented.
 
-With this design, we heavily incentivize correct predictions. Danger of deregistration is high with just one bad day of predictions. Potential of earning high rewards is there too, if you know something other people don't.
+This design incentivizes the best miners to provide their greatest alpha and be rewarded accordingly.
 
 
 ## Details for Current Release Version (v0.0.4, Beta)

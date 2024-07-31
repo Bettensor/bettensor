@@ -1,5 +1,4 @@
 from argparse import ArgumentParser
-from bettensor.utils.miner_stats import MinerStatsHandler
 import bittensor as bt
 import json
 from typing import Tuple
@@ -20,6 +19,10 @@ from dotenv import load_dotenv
 import os
 import asyncio
 import concurrent.futures
+import math
+import numpy as np
+import torch
+from bettensor.utils.weights_functions import WeightSetter
 from bettensor.utils.api_client import APIClient
 
 # Get the current file's directory
@@ -89,6 +92,7 @@ class BettensorValidator(BaseNeuron):
         self.load_validator_state = None
         self.data_entry = None
         self.uid = None
+        self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
         self.loop = asyncio.get_event_loop()
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
         self.axon_port = getattr(args, 'axon.port', None) 
@@ -101,6 +105,8 @@ class BettensorValidator(BaseNeuron):
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
         self.api_client = APIClient(self.rapid_api_key)
+
+        
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -250,6 +256,17 @@ class BettensorValidator(BaseNeuron):
         # self.miner_stats = MinerStatsHandler(self.db_path, "validator")
         self.create_table()
 
+        self.weight_setter = WeightSetter(
+            metagraph=self.metagraph,
+            wallet=self.wallet,
+            subtensor=self.subtensor,
+            neuron_config=self.neuron_config,
+            loop=self.loop,
+            thread_executor=self.thread_executor,
+            db_path=self.db_path
+        )
+
+        self.weight_setter.update_all_daily_stats()
         return True
 
     def _parse_args(self, parser):
@@ -509,7 +526,7 @@ class BettensorValidator(BaseNeuron):
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
         if self.hotkeys:
-            # check if known state len matches with current metagraph hotkey length
+            # check if known state len matches with current metagraph hotkey lengt
             if len(self.hotkeys) == len(self.metagraph.hotkeys):
                 current_hotkeys = self.metagraph.hotkeys
                 for i, hotkey in enumerate(current_hotkeys):
@@ -521,7 +538,7 @@ class BettensorValidator(BaseNeuron):
                         self.scores[i] = 0.0
                         bt.logging.debug(f"score after reset: {self.scores[i]}")
             else:
-                # init default scores
+                # TODO: Here, instead of resetting to default scores, we should just 
                 bt.logging.info(
                     f"init default scores because of state and metagraph hotkey length mismatch. expected: {len(self.metagraph.hotkeys)} had: {len(self.hotkeys)}"
                 )
@@ -531,13 +548,20 @@ class BettensorValidator(BaseNeuron):
         else:
             self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
-    def init_default_scores(self) -> None:
-        """validators without previous validation knowledge should start
-        with default score of 0.0 for each uid. the method can also be
+    def init_default_scores(self):
+        """Initialize default scores for all miners in the network. This method is
         used to reset the scores in case of an internal error"""
 
-        bt.logging.info("initiating validator with default scores for each uid")
-        self.scores = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
+        bt.logging.info("initiating validator with default scores for all miners")
+        
+        if self.metagraph is None or self.metagraph.S is None:
+            bt.logging.error("Metagraph or metagraph.S is not initialized")
+            self.scores = torch.zeros(1, dtype=torch.float32)
+        else:
+            # Convert numpy array to PyTorch tensor
+            metagraph_S_tensor = torch.from_numpy(self.metagraph.S).float()
+            self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
+        
         bt.logging.info(f"validation weights have been initialized: {self.scores}")
 
     def evaluate_miner(self, minerId):
@@ -954,142 +978,5 @@ class BettensorValidator(BaseNeuron):
     async def run_sync_in_async(self, fn):
         return await self.loop.run_in_executor(self.thread_executor, fn)
 
-    def calculate_miner_scores(self):
-        """
-        Calculates the scores for miners based on their performance for games that started in the last 48 hours, 
-        considering only predictions submitted in the last 8 days and excluding future predictions.
-        All times are in UTC.
-        """
-        earnings = torch.zeros_like(self.metagraph.S, dtype=torch.float32)
-
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        now = datetime.now(timezone.utc)
-        forty_eight_hours_ago = now - timedelta(hours=48)
-        eight_days_ago = now - timedelta(days=8)
-
-        cursor.execute(
-            """
-            SELECT p.predictionID, p.teamGameID, p.minerId, p.predictedOutcome, p.outcome, 
-                p.teamA, p.teamB, p.wager, p.teamAodds, p.teamBodds, p.tieOdds, 
-                p.predictionDate, g.eventStartDate
-            FROM predictions p
-            JOIN game_data g ON p.teamGameID = g.externalId
-            WHERE p.predictionDate >= ? AND p.predictionDate <= ? AND g.eventStartDate >= ?
-            """,
-            (eight_days_ago.isoformat(), now.isoformat(), forty_eight_hours_ago.isoformat())
-        )
-        prediction_rows = cursor.fetchall()
-
-        conn.close()
-
-        miner_performance = {}
-        miner_id_to_index = {miner_id: idx for idx, miner_id in enumerate(self.metagraph.hotkeys)}
-
-        for row in prediction_rows:
-            (
-                prediction_id, team_game_id, miner_id, predicted_outcome, outcome,
-                team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds,
-                prediction_date, event_start_date
-            ) = row
-
-            try:
-                prediction_datetime = datetime.fromisoformat(prediction_date).replace(tzinfo=timezone.utc)
-                event_start_datetime = datetime.fromisoformat(event_start_date).replace(tzinfo=timezone.utc)
-            except ValueError:
-                bt.logging.warning(f"Invalid date format for prediction {prediction_id}. Skipping.")
-                continue
-
-            # Skip future predictions
-            if prediction_datetime > now:
-                bt.logging.warning(f"Future prediction date detected for prediction {prediction_id}. Skipping.")
-                continue
-
-            # Ensure the prediction was made before the game started
-            if prediction_datetime >= event_start_datetime:
-                bt.logging.warning(f"Prediction {prediction_id} was made after the game started. Skipping.")
-                continue
-
-            # Check if the event started within the last 48 hours
-            if event_start_datetime < forty_eight_hours_ago:
-                bt.logging.debug(f"Game {team_game_id} started more than 48 hours ago. Skipping.")
-                continue
-
-            if miner_id not in miner_performance:
-                miner_performance[miner_id] = 0.0
-
-            if predicted_outcome == outcome:
-                if predicted_outcome == "0":
-                    earned = wager * team_a_odds
-                elif predicted_outcome == "1":
-                    earned = wager * team_b_odds
-                elif predicted_outcome.lower() == "2":
-                    earned = wager * tie_odds
-                else:
-                    bt.logging.warning(
-                        f"Unexpected outcome {predicted_outcome} for {team_game_id}. Please notify Bettensor Developers, as this is likely a larger API issue."
-                    )
-                    continue
-                miner_performance[miner_id] += earned
-
-        for miner_id, total_earned in miner_performance.items():
-            if miner_id in miner_id_to_index:
-                idx = miner_id_to_index[miner_id]
-                earnings[idx] = total_earned
-
-        bt.logging.trace("Miner performance calculated")
-        bt.logging.trace(miner_performance)
-
-        return earnings
-
     async def set_weights(self):
-        bt.logging.info("Entering set_weights method")
-        # Calculate miner scores and normalize weights as before
-        earnings = self.calculate_miner_scores()
-        weights = torch.nn.functional.normalize(earnings, p=1.0, dim=0)
-        bt.logging.info(f"Normalized weights: {weights}")
-
-        # Check stake
-        uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
-        stake = float(self.metagraph.S[uid])
-        if stake < 1000.0:
-            bt.logging.error("Insufficient stake. Failed in setting weights.")
-            return False
-
-        if self.subtensor is None:
-            bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
-            self.subtensor = await self.initialize_connection()
-            if self.subtensor is None:
-                bt.logging.error("Failed to reinitialize subtensor. Cannot set weights.")
-                return False
-
-        try:
-            bt.logging.info("Attempting to set weights with 120 second timeout")
-            result = await asyncio.wait_for(
-                self.run_sync_in_async(lambda: self.subtensor.set_weights(
-                    netuid=self.neuron_config.netuid,
-                    wallet=self.wallet,
-                    uids=self.metagraph.uids,
-                    weights=weights,
-                    wait_for_inclusion=False,
-                    wait_for_finalization=True,
-                )),
-                timeout=120  # 120 second timeout
-            )
-            bt.logging.trace(f"Set weights result: {result}")
-            
-            if isinstance(result, tuple) and len(result) >= 1:
-                success = result[0]
-                if success:
-                    bt.logging.info("Successfully set weights.")
-                    return True
-            else:
-                bt.logging.warning(f"Unexpected result format in setting weights: {result}")
-        except asyncio.TimeoutError:
-            bt.logging.error("Timeout occurred while setting weights (120 seconds elapsed).")
-        except Exception as e:
-            bt.logging.error(f"Error setting weights: {str(e)}")
-        
-        bt.logging.error("Failed to set weights.")
-        return False
+        return await self.weight_setter.set_weights(self.db_path)

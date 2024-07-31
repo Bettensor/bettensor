@@ -79,7 +79,7 @@ def submit_prediction():
     
     return jsonify({'message': 'Prediction submitted successfully'}), 200
 
-@app.route('/get_games', methods=['GET'])
+""" @app.route('/get_games', methods=['GET'])
 def get_games():
     if not config.LOCAL_INTERFACE:
         return jsonify({'message': 'Endpoint not available'}), 403
@@ -97,7 +97,7 @@ def get_games():
         for row in cursor.fetchall():
             games[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
     
-    return jsonify(games), 200
+    return jsonify(games), 200 """
 
 @app.route('/get_predictions', methods=['GET'])
 def get_predictions():
@@ -121,8 +121,34 @@ def get_predictions():
 
 @app.route('/get_miners', methods=['GET'])
 def get_miners():
+    '''
+    called from website - returns a list of miner uids for the coldkey
+    '''
     miner_uids = get_miner_uids()
     return jsonify(miner_uids), 200
+
+@app.route('/submit_prediction', methods=['POST'])
+@token_required
+def submit_prediction():
+    '''
+    called from website - submits a prediction to the miner, which is then submitted to validators
+    '''
+    data = request.json
+    miner_uid = data.get('miner_uid')
+    if not miner_uid:
+        return jsonify({'message': 'Miner UID is required'}), 400
+
+@app.route('/heartbeat', methods=['GET'])
+@token_required
+def heartbeat():
+    '''
+    called every 15 seconds - returns the most recent miner stats
+    
+    '''
+    return jsonify({'message': 'Miner is alive'}), 200
+
+
+
 
 def start_server():
     if config.LOCAL_INTERFACE:
