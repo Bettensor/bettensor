@@ -85,14 +85,30 @@ class Application:
         self.current_miner_index = self.get_saved_miner_index()
         bt.logging.info(f"Loaded miner index: {self.current_miner_index}")
 
-        if self.current_miner_index >= len(self.available_miners):
-            bt.logging.warning(f"Saved miner index {self.current_miner_index} is out of range. Using index 0.")
-            self.current_miner_index = 0
-            self.save_miner_index(self.current_miner_index)
+        # Try to find a valid miner
+        valid_miner_found = False
+        original_index = self.current_miner_index
+        while not valid_miner_found:
+            if self.current_miner_index >= len(self.available_miners):
+                self.current_miner_index = 0  # Wrap around to the beginning
 
-        self.miner_uid = self.available_miners[self.current_miner_index][0]
-        self.miner_hotkey = self.available_miners[self.current_miner_index][1]
-        bt.logging.info(f"Selected miner UID: {self.miner_uid}, Hotkey: {self.miner_hotkey}")
+            self.miner_uid = self.available_miners[self.current_miner_index][0]
+            self.miner_hotkey = self.available_miners[self.current_miner_index][1]
+
+            if self.miner_uid is not None and self.miner_hotkey is not None:
+                valid_miner_found = True
+                bt.logging.info(f"Selected miner UID: {self.miner_uid}, Hotkey: {self.miner_hotkey}")
+            else:
+                bt.logging.warning(f"Miner at index {self.current_miner_index} has invalid UID or hotkey. Trying next miner.")
+                self.current_miner_index += 1
+
+            # If we've checked all miners and come back to the original index, raise an error
+            if self.current_miner_index == original_index and not valid_miner_found:
+                raise ValueError("Error: No valid miners found in the database. Please check your miner configurations.")
+
+        # Save the current miner index if it has changed
+        if self.current_miner_index != original_index:
+            self.save_miner_index(self.current_miner_index)
 
         self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid)
         self.state_manager.load_state()  # This will recalculate the miner's cash
