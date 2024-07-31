@@ -25,6 +25,7 @@ import os
 from bettensor.protocol import GameData, Metadata
 
 from bettensor.utils.sports_data import SportsData
+from bettensor.utils.watchdog import Watchdog
 
 # Bittensor
 import bittensor as bt
@@ -79,9 +80,12 @@ async def main(validator: BettensorValidator):
     validator.serve_axon()
     await validator.initialize_connection()
 
+    watchdog = Watchdog(timeout=300)  # 5 minutes timeout
+
     while True:
 
         try:
+            watchdog.reset()
             current_time = datetime.now()
             if current_time - last_api_call >= timedelta(hours=1):
                 # Update games every hour
@@ -250,7 +254,8 @@ async def main(validator: BettensorValidator):
 
             # End the current step and prepare for the next iteration.
             validator.step += 1
-
+            time.sleep(500)
+            watchdog.reset()
             # Sleep for a duration equivalent to the block time (i.e., time between successive blocks).
             bt.logging.debug("Sleeping for: 18 seconds")
             await asyncio.sleep(18)
