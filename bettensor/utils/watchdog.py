@@ -1,7 +1,9 @@
+import threading
 import os
 import signal
 import sys
 import subprocess
+import bittensor as bt
 
 class Watchdog:
     """
@@ -26,13 +28,13 @@ class Watchdog:
             # Get command line arguments of the current process
             args = sys.argv[:]
             args.insert(0, sys.executable)
-            
+
             # Log restart attempt
             bt.logging.info(f"Attempting to restart with command: {' '.join(args)}")
-            
+
             # Start new process
             subprocess.Popen(args)
-            
+
             # Exit current process
             os._exit(0)
         except Exception as e:
