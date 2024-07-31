@@ -118,25 +118,19 @@ class BettensorMiner(BaseNeuron):
         try:
             # Process games and create new predictions
             updated_games, new_games = self.games_handler.process_games(synapse.gamedata_dict)
-            new_prediction_dict = self.predictions_handler.process_predictions(updated_games, new_games)
+            recent_predictions = self.predictions_handler.process_predictions(updated_games, new_games)
 
-            if new_prediction_dict is None:
+            if not recent_predictions:
                 bt.logging.warning("Failed to process games")
                 return self._clean_synapse(synapse)
 
-            # Update prediction outcomes
-            updated_predictions = self.predictions_handler.update_predictions_from_games(updated_games)
-
             # Update miner stats
-            self.state_manager.update_stats_from_predictions(updated_predictions, updated_games)
+            self.state_manager.update_stats_from_predictions(recent_predictions.values(), updated_games)
 
             # Periodic database update
             self.state_manager.periodic_db_update()
 
-            # Add this line to fix existing prediction outcomes
-            self.predictions_handler.fix_existing_prediction_outcomes()
-
-            synapse.prediction_dict = new_prediction_dict
+            synapse.prediction_dict = recent_predictions
             synapse.gamedata_dict = None
             synapse.metadata = Metadata.create(
                 wallet=self.wallet,

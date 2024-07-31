@@ -227,17 +227,15 @@ class MinerStateManager:
 
     def update_on_game_result(self, result_data):
         with self.lock:
-            if result_data['outcome'] == 'win':
+            if result_data['outcome'] == 'Wager Won':
                 self.state['miner_lifetime_wins'] += 1
-                # Only update lifetime earnings, not cash
                 self.state['miner_lifetime_earnings'] += result_data['earnings']
-            else:
+            elif result_data['outcome'] == 'Wager Lost':
                 self.state['miner_lifetime_losses'] += 1
+                self.state['miner_lifetime_earnings'] += result_data['earnings']  # earnings will be negative for losses
             
             total_games = self.state['miner_lifetime_wins'] + self.state['miner_lifetime_losses']
-            if total_games > 0:
-                self.state['miner_win_loss_ratio'] = self.state['miner_lifetime_wins'] / total_games
-            
+            self.state['miner_win_loss_ratio'] = self.state['miner_lifetime_wins'] / total_games if total_games > 0 else 0
             self.save_state()
 
     def update_current_incentive(self, incentive):
@@ -278,33 +276,21 @@ class MinerStateManager:
                 bt.logging.trace(f"Insufficient funds. Current balance: {current_cash}, Wager amount: {amount}")
                 return False
 
-    def update_stats_from_predictions(self, updated_predictions: List[Dict], updated_games: Dict[str, TeamGame]):
-        bt.logging.trace("Updating miner stats based on new prediction outcomes")
-        try:
-            for pred in updated_predictions:
-                game = updated_games[pred['teamGameID']]
-                self.update_stats_on_game_result(pred, game)
-            
-            bt.logging.trace(f"Updated stats for {len(updated_predictions)} predictions")
-        except Exception as e:
-            bt.logging.error(f"Error updating stats from predictions: {e}")
-
-    def update_stats_on_game_result(self, prediction, game):
-        wager = prediction['wager']
-        predicted_outcome = prediction['predictedOutcome']
-        game_outcome = game.outcome
-
-        if predicted_outcome == game_outcome:
-            self.state['miner_lifetime_wins'] += 1
-            odds = prediction['teamAodds'] if game_outcome == "Team A Win" else prediction['teamBodds'] if game_outcome == "Team B Win" else prediction['tieOdds']
-            earnings = wager * (odds - 1)
-            self.state['miner_lifetime_earnings'] += earnings
-        else:
-            self.state['miner_lifetime_losses'] += 1
-            self.state['miner_lifetime_earnings'] -= wager
-
-        self.state['miner_lifetime_predictions'] += 1
-        total_games = self.state['miner_lifetime_wins'] + self.state['miner_lifetime_losses']
-        self.state['miner_win_loss_ratio'] = self.state['miner_lifetime_wins'] / total_games if total_games > 0 else 0
-
-        self.save_state()
+    def update_stats_from_predictions(self, predictions, updated_games):
+        for prediction in predictions:
+            game = updated_games.get(prediction.teamGameID)
+            if game:
+                if prediction.outcome == 'Wager Won':
+                    odds = (prediction.teamAodds if game.outcome == 0 else 
+                            prediction.teamBodds if game.outcome == 1 else 
+                            prediction.tieOdds)
+                    earnings = prediction.wager * (odds - 1)
+                else:
+                    earnings = -prediction.wager
+                
+                self.update_on_game_result({
+                    'outcome': prediction.outcome,
+                    'earnings': earnings,
+                    'wager': prediction.wager,
+                    'prediction': prediction
+                })

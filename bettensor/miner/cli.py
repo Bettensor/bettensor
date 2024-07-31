@@ -1,6 +1,7 @@
 import argparse
 import datetime
 import json
+import logging
 import signal
 import sqlite3
 import traceback
@@ -19,8 +20,6 @@ from prompt_toolkit.layout import Layout
 from prompt_toolkit.widgets import Frame, TextArea, Label
 from prompt_toolkit.styles import Style
 from prompt_toolkit.layout.containers import Window, HSplit
-import logging
-import os
 from bettensor.miner.database.database_manager import get_db_manager
 from bettensor.miner.database.predictions import PredictionsHandler
 from bettensor.miner.database.games import GamesHandler
@@ -84,8 +83,16 @@ class Application:
 
         # Load the saved miner index
         self.current_miner_index = self.get_saved_miner_index()
+        bt.logging.info(f"Loaded miner index: {self.current_miner_index}")
+
+        if self.current_miner_index >= len(self.available_miners):
+            bt.logging.warning(f"Saved miner index {self.current_miner_index} is out of range. Using index 0.")
+            self.current_miner_index = 0
+            self.save_miner_index(self.current_miner_index)
+
         self.miner_uid = self.available_miners[self.current_miner_index][0]
         self.miner_hotkey = self.available_miners[self.current_miner_index][1]
+        bt.logging.info(f"Selected miner UID: {self.miner_uid}, Hotkey: {self.miner_hotkey}")
 
         self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid)
         self.state_manager.load_state()  # This will recalculate the miner's cash
@@ -95,6 +102,10 @@ class Application:
 
         # Initialize unsubmitted_predictions
         self.unsubmitted_predictions = {}
+
+        bt.logging.info("Initializing Application")
+        self.miner_stats = self.get_miner_stats(self.miner_uid)
+        bt.logging.info(f"Loaded miner stats: {self.miner_stats}")
 
         self.reload_data()
         self.running = True
@@ -233,8 +244,7 @@ class Application:
         self.current_miner_index = (self.current_miner_index + 1) % len(self.available_miners)
         
         # Save the current miner index to a file
-        with open('current_miner_index.txt', 'w') as f:
-            f.write(str(self.current_miner_index))
+        self.save_miner_index(self.current_miner_index)
         
         # Quit the application, which will trigger a restart
         self.quit()
@@ -243,30 +253,55 @@ class Application:
     def get_saved_miner_index():
         """
         Retrieve the saved miner index from file.
+        If the file doesn't exist, create it with a default value of 0.
         """
+        file_path = 'current_miner_index.txt'
         try:
-            with open('current_miner_index.txt', 'r') as f:
+            with open(file_path, 'r') as f:
                 return int(f.read().strip())
         except FileNotFoundError:
+            bt.logging.warning(f"{file_path} not found. Creating with default index 0.")
+            Application.save_miner_index(0)
             return 0
+        except ValueError:
+            bt.logging.warning(f"Invalid value in {file_path}. Resetting to default index 0.")
+            Application.save_miner_index(0)
+            return 0
+
+    @staticmethod
+    def save_miner_index(index):
+        """
+        Save the current miner index to a file.
+        """
+        file_path = 'current_miner_index.txt'
+        with open(file_path, 'w') as f:
+            f.write(str(index))
+        bt.logging.info(f"Saved miner index {index} to {file_path}")
 
     def reload_data(self):
         """
         Reload all data for the current miner.
-        """
-        self.check_unsubmitted_predictions()
-        self.predictions = self.predictions_handler.get_predictions(self.miner_uid)
-        self.games = self.games_handler.get_active_games()
-        self.reload_miner_stats()
-        
-        if self.miner_stats is None:
-            cli_logger.warning(f"No stats found for miner {self.miner_uid}. Initializing new miner row.")
-            self.state_manager.load_state()
-            self.miner_stats = self.state_manager.get_stats()
 
-        self.active_games = {}
-        self.check_unsubmitted_predictions()
-        self.miner_cash = self.miner_stats["miner_cash"]
+        Behavior:
+            - Reloads games and predictions from the database
+            - Processes recent predictions
+            - Updates the miner's stats
+        """
+        bt.logging.trace("Reloading data")
+        self.games = self.games_handler.get_active_games()
+        updated_games = {game.externalId: game for game in self.games.values() if game.outcome != "Unfinished"}
+        new_games = {game.externalId: game for game in self.games.values() if game.outcome == "Unfinished"}
+        
+        # Process recent predictions (this updates the database if needed)
+        #self.predictions_handler.process_predictions(updated_games, new_games)
+        
+        # Get all predictions after processing
+        self.predictions = self.predictions_handler.get_predictions(self.miner_uid)
+        
+        bt.logging.trace(f"Retrieved {len(self.predictions)} total predictions for display")
+        
+        self.reload_miner_stats()
+        bt.logging.trace("Data reload complete")
 
     def change_view(self, new_view):
         """
@@ -344,7 +379,7 @@ class Application:
         """
         return self.games_handler.get_active_games()
 
-    def get_miner_stats(self):
+    def get_miner_stats(self, miner_uid):
         """
         Retrieve stats for the current miner.
 
@@ -354,7 +389,10 @@ class Application:
         Behavior:
             - Retrieves the current miner stats from the state manager
         """
-        return self.state_manager.get_stats()
+        bt.logging.info(f"Getting miner stats for UID: {miner_uid}")
+        stats = self.state_manager.get_stats()
+        bt.logging.info(f"Retrieved miner stats: {stats}")
+        return stats
 
     def update_miner_stats(self, wager, prediction_date):
         self.state_manager.update_on_prediction({'wager': wager, 'predictionDate': prediction_date})
@@ -487,24 +525,34 @@ class MainMenu(InteractiveTable):
         Behavior:
             - Formats the miner stats and menu options
             - Updates the text area content
+            - Handles potential None values in miner stats
         """
         self.app.reload_miner_stats()  # Reload stats before updating text area
         header_text = self.header.text
         divider = "-" * len(header_text)
 
+        # Helper function to safely format miner stat values
+        def safe_format(key, format_spec=None):
+            value = self.app.miner_stats.get(key, 'N/A')
+            if value is None:
+                return 'N/A'
+            if format_spec:
+                return format_spec.format(value)
+            return str(value)
+
         # Miner stats
         miner_stats_text = (
-            f" Miner Hotkey: {self.app.miner_stats['miner_hotkey']}\n"
-            f" Miner UID: {self.app.miner_stats['miner_uid']}\n"
-            f" Miner Rank: {self.app.miner_stats.get('miner_rank', 'N/A')}\n"
-            f" Miner Cash: {self.app.miner_stats['miner_cash']:.2f}\n"
-            f" Current Incentive: {self.app.miner_stats['miner_current_incentive']:.2f} τ per day\n"
-            f" Last Prediction: {self.app.miner_stats.get('miner_last_prediction_date', 'N/A')}\n"
-            f" Lifetime Earnings: ${self.app.miner_stats['miner_lifetime_earnings']:.2f}\n"
-            f" Lifetime Wager Amount: {self.app.miner_stats['miner_lifetime_wager']:.2f}\n"
-            f" Lifetime Wins: {self.app.miner_stats['miner_lifetime_wins']}\n"
-            f" Lifetime Losses: {self.app.miner_stats['miner_lifetime_losses']}\n"
-            f" Win/Loss Ratio: {self.app.miner_stats['miner_win_loss_ratio']:.2f}\n"
+            f" Miner Hotkey: {safe_format('miner_hotkey')}\n"
+            f" Miner UID: {safe_format('miner_uid')}\n"
+            f" Miner Rank: {safe_format('miner_rank')}\n"
+            f" Miner Cash: {safe_format('miner_cash', '{:.2f}')}\n"
+            f" Current Incentive: {safe_format('miner_current_incentive', '{:.2f}')} τ per day\n"
+            f" Last Prediction: {safe_format('miner_last_prediction_date')}\n"
+            f" Lifetime Earnings: ${safe_format('miner_lifetime_earnings', '{:.2f}')}\n"
+            f" Lifetime Wager Amount: {safe_format('miner_lifetime_wager', '{:.2f}')}\n"
+            f" Lifetime Wins: {safe_format('miner_lifetime_wins')}\n"
+            f" Lifetime Losses: {safe_format('miner_lifetime_losses')}\n"
+            f" Win/Loss Ratio: {safe_format('miner_win_loss_ratio', '{:.2f}')}\n"
         )
 
         options_text = "\n".join(
@@ -597,6 +645,7 @@ class PredictionsList(InteractiveTable):
             key=lambda x: datetime.datetime.fromisoformat(x["predictionDate"]),
             reverse=True
         ) if self.app.predictions else []
+        #bt.logging.info(f"Number of sorted predictions: {len(self.sorted_predictions)}")
 
     def update_total_pages(self):
         """
@@ -634,7 +683,7 @@ class PredictionsList(InteractiveTable):
         max_teamAodds_len = max(len("Team A Odds"), max(len(self.format_odds(pred["teamAodds"])) for pred in self.sorted_predictions))
         max_teamBodds_len = max(len("Team B Odds"), max(len(self.format_odds(pred["teamBodds"])) for pred in self.sorted_predictions))
         max_tieOdds_len = max(len("Tie Odds"), max(len(self.format_odds(pred["tieOdds"])) for pred in self.sorted_predictions))
-        max_outcome_len = max(len("Outcome"), max(len(self.format_outcome(pred["outcome"])) for pred in self.sorted_predictions))
+        max_outcome_len = max(len("Outcome"), max(len(self.format_outcome(pred["outcome"], pred["predictedOutcome"], pred["teamA"])) for pred in self.sorted_predictions))
 
         # Define the header with calculated widths
         self.header = (
@@ -661,7 +710,7 @@ class PredictionsList(InteractiveTable):
                 f"{self.format_odds(pred['teamAodds']):<{max_teamAodds_len}} | "
                 f"{self.format_odds(pred['teamBodds']):<{max_teamBodds_len}} | "
                 f"{self.format_odds(pred['tieOdds']):<{max_tieOdds_len}} | "
-                f"{self.format_outcome(pred['outcome']):<{max_outcome_len}}"
+                f"{self.format_outcome(pred['outcome'], pred['predictedOutcome'], pred['teamA']):<{max_outcome_len}}"
             )
         self.options.append("Go Back")
 
@@ -764,11 +813,17 @@ class PredictionsList(InteractiveTable):
         else:
             return str(value)
 
-    def format_outcome(self, outcome):
+    def format_outcome(self, outcome, predicted_outcome, teamA):
         """
-        Format the outcome string.
+        Format the outcome string with detailed information.
         """
-        return outcome  # We're now returning the outcome as-is
+        bt.logging.debug(f"Formatting outcome: outcome={outcome}, predicted_outcome={predicted_outcome}, teamA={teamA}")
+        
+        # Extract the actual game outcome from the outcome string
+        game_outcome = "Team A Win" if "Team A Win" in outcome else "Team B Win" if "Team B Win" in outcome else "Tie" if "Tie" in outcome else "Unknown"
+        
+        bt.logging.debug(f"Formatted outcome: {outcome}")
+        return f"{outcome} (Pred: {predicted_outcome}, Game: {game_outcome})"
 
     def format_date(self, date_string):
         date_obj = datetime.datetime.fromisoformat(date_string)
