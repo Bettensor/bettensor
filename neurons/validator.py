@@ -254,7 +254,6 @@ async def main(validator: BettensorValidator):
 
             # End the current step and prepare for the next iteration.
             validator.step += 1
-            time.sleep(500)
             watchdog.reset()
             # Sleep for a duration equivalent to the block time (i.e., time between successive blocks).
             bt.logging.debug("Sleeping for: 18 seconds")
