@@ -338,6 +338,10 @@ class BettensorValidator(BaseNeuron):
                 predictedOutcome = res.predictedOutcome
                 wager = res.wager
 
+                if wager <= 0:
+                    bt.logging.warning(f"Skipping prediction with non-positive wager: {wager} for UID {uid}")
+                    continue
+
                 # Check if the predictionID already exists
                 cursor.execute(
                     "SELECT COUNT(*) FROM predictions WHERE predictionID = ?",
