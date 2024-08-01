@@ -1016,6 +1016,9 @@ class BettensorValidator(BaseNeuron):
 
     async def run_sync_in_async(self, fn):
         return await self.loop.run_in_executor(self.thread_executor, fn)
+    
+    def recalculate_all_profits(self):
+        self.weight_setter.recalculate_daily_profits()
 
     async def set_weights(self):
         return await self.weight_setter.set_weights(self.db_path)

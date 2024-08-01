@@ -82,6 +82,9 @@ async def main(validator: BettensorValidator):
 
     watchdog = Watchdog(timeout=300)  # 5 minutes timeout
 
+    bt.logging.info("Recalculating daily profits...")
+    validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
+
     while True:
 
         try:
