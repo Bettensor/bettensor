@@ -834,6 +834,7 @@ class BettensorValidator(BaseNeuron):
         return cursor.fetchall()
 
     def determine_winner(self, game_info):
+        time.sleep(0.1) # RapidAPI rate limits these individual calls
         game_id, teamA, teamB, externalId = game_info
 
         conn = self.connect_db()
@@ -862,13 +863,38 @@ class BettensorValidator(BaseNeuron):
         game_response = game_data.get("response", [])[0]
 
         if sport == "baseball":
-            status = game_response["status"]["long"]
-            if status != "Finished":
-                bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
+            game_data = self.api_client.get_baseball_game(str(externalId))
+            if not game_data:
+                bt.logging.error(f"Failed to fetch baseball game data for {externalId}")
                 return
 
-            home_score = game_response["scores"]["home"]["total"]
-            away_score = game_response["scores"]["away"]["total"]
+            game_response = game_data.get("response", [])[0]
+
+            status = game_response.get("status", {}).get("long")
+            if status != "Finished":
+                bt.logging.trace(f"Baseball game {externalId} is not finished yet. Current status: {status}")
+                return
+
+            home_score = game_response.get("scores", {}).get("home", {}).get("total")
+            away_score = game_response.get("scores", {}).get("away", {}).get("total")
+            bt.logging.trace(f"Baseball game {externalId} scores - Home: {home_score}, Away: {away_score}")
+
+            if home_score is None or away_score is None:
+                bt.logging.trace(f"Unable to extract scores for baseball game {externalId}")
+                return
+
+            if home_score > away_score:
+                numeric_outcome = 0
+            elif away_score > home_score:
+                numeric_outcome = 1
+            else:
+                numeric_outcome = 2
+
+            bt.logging.trace(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
+            bt.logging.trace(f"Numeric outcome: {numeric_outcome}")
+
+            self.update_game_outcome(externalId, numeric_outcome)
+
         elif sport == "soccer":
             status = game_response["fixture"]["status"]["long"]
             if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
