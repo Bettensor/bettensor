@@ -1,3 +1,4 @@
+import queue
 import sqlite3
 import os
 import threading
@@ -33,9 +34,20 @@ class DatabaseManager:
             self.connection_pool.put(self._create_connection())
 
     def _create_connection(self):
-        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
-        conn.execute("PRAGMA busy_timeout = 30000;")
-        return conn
+        max_retries = 5
+        retry_delay = 1
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
+                conn.execute("PRAGMA busy_timeout = 30000;")
+                return conn
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    bt.logging.warning(f"Database is locked. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                else:
+                    raise
+        raise sqlite3.OperationalError("Failed to create database connection after multiple attempts")
 
     def _initialize_database(self):
         bt.logging.info("Initializing database")
@@ -142,6 +154,11 @@ class DatabaseManager:
             )
         """)
 
+    def get_table_info(self, table_name):
+        with self.get_cursor() as cursor:
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            return cursor.fetchall()
+
     @classmethod
     def get_instance(cls, db_path, max_connections=10):
         if cls._instance is None:
@@ -152,17 +169,35 @@ class DatabaseManager:
 
     @contextmanager
     def get_cursor(self):
-        connection = self.connection_pool.get()
-        try:
-            cursor = connection.cursor()
-            yield cursor
-            connection.commit()
-        except Exception as e:
-            bt.logging.error(f"Database error: {e}")
-            connection.rollback()
-            raise
-        finally:
-            self.connection_pool.put(connection)
+        max_retries = 5
+        retry_delay = 1
+        for attempt in range(max_retries):
+            try:
+                connection = self.connection_pool.get(timeout=30)
+                try:
+                    cursor = connection.cursor()
+                    yield cursor
+                    connection.commit()
+                    bt.logging.debug("Database transaction committed successfully")
+                    return
+                except sqlite3.OperationalError as e:
+                    if "database is locked" in str(e) and attempt < max_retries - 1:
+                        bt.logging.warning(f"Database is locked. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                    else:
+                        bt.logging.error(f"Database operation failed: {e}")
+                        raise
+                finally:
+                    self.connection_pool.put(connection)
+            except queue.Empty:
+                if attempt < max_retries - 1:
+                    bt.logging.warning(f"Connection pool is empty. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                else:
+                    bt.logging.error("Failed to get a database connection from the pool after multiple attempts")
+                    raise sqlite3.OperationalError("Failed to get a database connection from the pool after multiple attempts")
+        bt.logging.error("Failed to execute database operation after multiple attempts")
+        raise sqlite3.OperationalError("Failed to execute database operation after multiple attempts")
 
     def close_all(self):
         while not self.connection_pool.empty():

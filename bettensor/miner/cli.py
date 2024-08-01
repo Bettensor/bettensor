@@ -76,10 +76,33 @@ class Application:
         if not os.path.exists(self.db_manager.db_path):
             raise ValueError("Error: Database not found. Please start the miner first.")
 
-        self.available_miners = self.get_available_miners()
-        
+        # Debug: Print the contents of the miner_stats table
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM miner_stats")
+            miner_stats_data = cursor.fetchall()
+            bt.logging.info(f"Miner stats data: {miner_stats_data}")
+
+        # Debug: Print the contents of the predictions table
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT DISTINCT minerID FROM predictions")
+            predictions_data = cursor.fetchall()
+            bt.logging.info(f"Distinct miner IDs from predictions: {predictions_data}")
+
+        # Query for available miners using miner_stats table
+        with self.db_manager.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT miner_hotkey, miner_uid, miner_cash, miner_rank
+                FROM miner_stats
+                ORDER BY miner_rank DESC
+            """)
+            self.available_miners = cursor.fetchall()
+
+        bt.logging.info(f"Available miners: {self.available_miners}")
+
         if not self.available_miners:
             raise ValueError("Error: No miners found in the database. Please start the miner first.")
+
+        self.miner_stats = {row[0]: {'miner_uid': row[1], 'miner_cash': row[2], 'miner_rank': row[3]} for row in self.available_miners}
 
         # Load the saved miner index
         self.current_miner_index = self.get_saved_miner_index()
@@ -92,15 +115,18 @@ class Application:
             if self.current_miner_index >= len(self.available_miners):
                 self.current_miner_index = 0  # Wrap around to the beginning
 
-            self.miner_uid = self.available_miners[self.current_miner_index][0]
-            self.miner_hotkey = self.available_miners[self.current_miner_index][1]
+            if self.available_miners:
+                self.miner_hotkey = self.available_miners[self.current_miner_index][0]
+                self.miner_uid = self.available_miners[self.current_miner_index][1]
 
-            if self.miner_uid is not None and self.miner_hotkey is not None:
-                valid_miner_found = True
-                bt.logging.info(f"Selected miner UID: {self.miner_uid}, Hotkey: {self.miner_hotkey}")
+                if self.miner_hotkey is not None and self.miner_uid is not None:
+                    valid_miner_found = True
+                    bt.logging.info(f"Selected miner Hotkey: {self.miner_hotkey}, UID: {self.miner_uid}")
+                else:
+                    bt.logging.warning(f"Miner at index {self.current_miner_index} has invalid hotkey or UID. Trying next miner.")
+                    self.current_miner_index += 1
             else:
-                bt.logging.warning(f"Miner at index {self.current_miner_index} has invalid UID or hotkey. Trying next miner.")
-                self.current_miner_index += 1
+                raise ValueError("Error: No miners available in the database.")
 
             # If we've checked all miners and come back to the original index, raise an error
             if self.current_miner_index == original_index and not valid_miner_found:
@@ -114,13 +140,12 @@ class Application:
         self.state_manager.load_state()  # This will recalculate the miner's cash
         
         self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_uid)
-        self.games_handler = GamesHandler(self.db_manager)
+        self.games_handler = GamesHandler(self.db_manager, self.predictions_handler)
 
         # Initialize unsubmitted_predictions
         self.unsubmitted_predictions = {}
 
         bt.logging.info("Initializing Application")
-        self.miner_stats = self.get_miner_stats(self.miner_uid)
         bt.logging.info(f"Loaded miner stats: {self.miner_stats}")
 
         self.reload_data()
@@ -556,6 +581,16 @@ class MainMenu(InteractiveTable):
                 return format_spec.format(value)
             return str(value)
 
+        # Helper function to format the last prediction date
+        def format_last_prediction_date(date_str):
+            if date_str:
+                try:
+                    date = datetime.datetime.fromisoformat(date_str)
+                    return date.strftime("%Y-%m-%d %H:%M:%S UTC")
+                except ValueError:
+                    return date_str
+            return 'N/A'
+
         # Miner stats
         miner_stats_text = (
             f" Miner Hotkey: {safe_format('miner_hotkey')}\n"
@@ -563,7 +598,7 @@ class MainMenu(InteractiveTable):
             f" Miner Rank: {safe_format('miner_rank')}\n"
             f" Miner Cash: {safe_format('miner_cash', '{:.2f}')}\n"
             f" Current Incentive: {safe_format('miner_current_incentive', '{:.2f}')} τ per day\n"
-            f" Last Prediction: {safe_format('miner_last_prediction_date')}\n"
+            f" Last Prediction: {format_last_prediction_date(self.app.miner_stats.get('miner_last_prediction_date'))}\n"
             f" Lifetime Earnings: ${safe_format('miner_lifetime_earnings', '{:.2f}')}\n"
             f" Lifetime Wager Amount: {safe_format('miner_lifetime_wager', '{:.2f}')}\n"
             f" Lifetime Wins: {safe_format('miner_lifetime_wins')}\n"
@@ -830,16 +865,8 @@ class PredictionsList(InteractiveTable):
             return str(value)
 
     def format_outcome(self, outcome, predicted_outcome, teamA):
-        """
-        Format the outcome string with detailed information.
-        """
         bt.logging.debug(f"Formatting outcome: outcome={outcome}, predicted_outcome={predicted_outcome}, teamA={teamA}")
-        
-        # Extract the actual game outcome from the outcome string
-        game_outcome = "Team A Win" if "Team A Win" in outcome else "Team B Win" if "Team B Win" in outcome else "Tie" if "Tie" in outcome else "Unknown"
-        
-        bt.logging.debug(f"Formatted outcome: {outcome}")
-        return f"{outcome} (Pred: {predicted_outcome}, Game: {game_outcome})"
+        return outcome
 
     def format_date(self, date_string):
         date_obj = datetime.datetime.fromisoformat(date_string)

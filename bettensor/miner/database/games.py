@@ -3,11 +3,13 @@ from typing import Dict, Tuple
 from bettensor.protocol import TeamGame
 import bittensor as bt
 from datetime import timedelta
+from bettensor.miner.database.predictions import PredictionsHandler
 
 class GamesHandler:
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, predictions_handler):
         bt.logging.trace("Initializing GamesHandler")
         self.db_manager = db_manager
+        self.predictions_handler = predictions_handler
         self.inactive_game_window = timedelta(days=30)
         bt.logging.trace("GamesHandler initialization complete")
 
@@ -39,7 +41,6 @@ class GamesHandler:
         Add a new game to the database or update an existing one.
 
         Args:
-            cursor: The database cursor.
             game_data (TeamGame): The game data to add or update.
             current_time (datetime.datetime): The current time.
 
@@ -51,7 +52,7 @@ class GamesHandler:
             - If it exists, updates the game data.
             - If it doesn't exist, inserts a new game record.
         """
-        #bt.logging.trace(f"Adding or updating game: {game_data.externalId}")
+        bt.logging.debug(f"Adding or updating game: {game_data.externalId}")
         event_start_date = datetime.datetime.fromisoformat(game_data.eventStartDate.replace('Z', '+00:00'))
         is_active = 1 if current_time <= event_start_date else 0
 
@@ -61,25 +62,33 @@ class GamesHandler:
 
             if existing_game:
                 existing_outcome = existing_game[12]  # Assuming 'outcome' is at index 12
+                bt.logging.debug(f"Existing game found: {game_data.externalId}, Current outcome: {existing_outcome}, New outcome: {game_data.outcome}")
+                
                 if existing_outcome != game_data.outcome:
-                    bt.logging.debug(f"Game {game_data.externalId} outcome changed from {existing_outcome} to {game_data.outcome}")
+                    bt.logging.info(f"Game {game_data.externalId} outcome changed from {existing_outcome} to {game_data.outcome}")
                 
                 cursor.execute(
                     """UPDATE games SET 
-                    teamA = ?, teamB = ?, sport = ?, league = ?, 
+                    teamA = ?, teamAodds = ?, teamB = ?, teamBodds = ?, sport = ?, league = ?, 
                     createDate = ?, lastUpdateDate = ?, eventStartDate = ?, active = ?, 
-                    outcome = ?, canTie = ? 
+                    outcome = ?, tieOdds = ?, canTie = ? 
                     WHERE externalID = ?""",
                     (
-                        game_data.teamA, game_data.teamB,
+                        game_data.teamA, game_data.teamAodds, game_data.teamB, game_data.teamBodds,
                         game_data.sport, game_data.league, game_data.createDate, game_data.lastUpdateDate,
-                        game_data.eventStartDate, is_active, game_data.outcome,
+                        game_data.eventStartDate, is_active, game_data.outcome, game_data.tieOdds,
                         game_data.canTie, game_data.externalId
                     )
                 )
                 bt.logging.debug(f"Game updated: {game_data.externalId}, New outcome: {game_data.outcome}")
+                
+                # Trigger prediction update
+                bt.logging.debug(f"Triggering prediction update for game: {game_data.externalId}")
+                self.predictions_handler.process_game_results({game_data.id: game_data})
+                
                 return False
             else:
+                bt.logging.debug(f"Adding new game: {game_data.externalId}")
                 cursor.execute(
                     """INSERT INTO games (
                     gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, 
@@ -93,6 +102,11 @@ class GamesHandler:
                     )
                 )
                 bt.logging.debug(f"New game added: {game_data.externalId}, Outcome: {game_data.outcome}")
+                
+                # Trigger prediction update
+                bt.logging.debug(f"Triggering prediction update for new game: {game_data.externalId}")
+                self.predictions_handler.process_game_results({game_data.id: game_data})
+                
                 return True
 
     def _mark_old_games_inactive(self, current_time: datetime.datetime):
