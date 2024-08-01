@@ -82,7 +82,7 @@ class BettensorValidator(BaseNeuron):
         self.wallet = None
         self.dendrite = None
         self.metagraph = None
-        self.scores = None
+        self.scores = torch.tensor([], dtype=torch.float32)
         self.hotkeys = None
         self.subtensor = None
         self.miner_responses = None
@@ -225,6 +225,9 @@ class BettensorValidator(BaseNeuron):
         self.subtensor = subtensor
         self.dendrite = dendrite
         self.metagraph = metagraph
+
+        if self.scores.numel() == 0:
+            self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
 
         # read command line arguments and perform actions based on them
         args = self._parse_args(parser=self.parser)
