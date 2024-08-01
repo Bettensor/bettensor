@@ -559,8 +559,14 @@ class BettensorValidator(BaseNeuron):
             self.scores = torch.zeros(1, dtype=torch.float32)
         else:
             # Convert numpy array to PyTorch tensor
-            metagraph_S_tensor = torch.from_numpy(self.metagraph.S).float()
-            self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
+            if isinstance(self.metagraph.S, np.ndarray):
+                metagraph_S_tensor = torch.from_numpy(self.metagraph.S).float()
+            elif isinstance(self.metagraph.S, torch.Tensor):
+                metagraph_S_tensor = self.metagraph.S.float()
+            else:
+                bt.logging.error(f"Unexpected type for metagraph.S: {type(self.metagraph.S)}")
+                metagraph_S_tensor = torch.zeros(len(self.metagraph.hotkeys), dtype=torch.float32)
+                self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
         
         bt.logging.info(f"validation weights have been initialized: {self.scores}")
 
