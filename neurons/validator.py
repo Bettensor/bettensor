@@ -112,6 +112,9 @@ async def main(validator: BettensorValidator):
             bt.logging.trace(f"All axons: {all_axons}")
 
             # If there are more axons than scores, append the scores list and add new miners to the database
+            if validator.scores is None:
+                bt.logging.warning("Scores were None. Reinitializing...")
+                validator.init_default_scores()
             if len(validator.metagraph.uids.tolist()) > len(validator.scores):
                 bt.logging.info(
                     f"Discovered new Axons, current scores: {validator.scores}"
