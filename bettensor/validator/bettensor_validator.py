@@ -82,7 +82,7 @@ class BettensorValidator(BaseNeuron):
         self.wallet = None
         self.dendrite = None
         self.metagraph = None
-        self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
+        self.scores = None
         self.hotkeys = None
         self.subtensor = None
         self.miner_responses = None
@@ -226,7 +226,7 @@ class BettensorValidator(BaseNeuron):
         self.dendrite = dendrite
         self.metagraph = metagraph
 
-        if self.scores.numel() == 0:
+        if self.metagraph is not None:
             self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
 
         # read command line arguments and perform actions based on them
@@ -533,7 +533,11 @@ class BettensorValidator(BaseNeuron):
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
         if self.scores is None:
-            self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
+            if self.metagraph is not None:
+                self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
+            else:
+                bt.logging.warning("Metagraph is None, unable to initialize scores")
+                return
         if self.hotkeys:
             # check if known state len matches with current metagraph hotkey lengt
             if len(self.hotkeys) == len(self.metagraph.hotkeys):
