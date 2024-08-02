@@ -132,6 +132,7 @@ class BettensorMiner(BaseNeuron):
                 # Process only changed games
                 updated_games, new_games = self.games_handler.process_games(changed_games)
                 recent_predictions = self.predictions_handler.process_predictions(updated_games, new_games)
+                bt.logging.info(f"Number of recent predictions processed: {len(recent_predictions)}")
 
                 # Update cache with new predictions
                 self.cache_manager.update_cached_predictions(recent_predictions)
@@ -148,6 +149,7 @@ class BettensorMiner(BaseNeuron):
             self.state_manager.periodic_db_update()
 
             synapse.prediction_dict = recent_predictions
+            bt.logging.info(f"Number of predictions added to synapse: {len(recent_predictions)}")
             synapse.gamedata_dict = None
             synapse.metadata = Metadata.create(
                 wallet=self.wallet,
@@ -162,7 +164,11 @@ class BettensorMiner(BaseNeuron):
             return self._clean_synapse(synapse)
 
     def _clean_synapse(self, synapse: GameData) -> GameData:
-        bt.logging.debug("Cleaning synapse due to error")
+        if not synapse.prediction_dict:
+            bt.logging.debug("Cleaning synapse due to no predictions available")
+        else:
+            bt.logging.debug("Cleaning synapse due to error")
+        
         synapse.gamedata_dict = None
         synapse.prediction_dict = None
         synapse.metadata = Metadata.create(

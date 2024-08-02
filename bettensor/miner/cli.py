@@ -76,17 +76,10 @@ class Application:
         if not os.path.exists(self.db_manager.db_path):
             raise ValueError("Error: Database not found. Please start the miner first.")
 
-        # Debug: Print the contents of the miner_stats table
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT * FROM miner_stats")
-            miner_stats_data = cursor.fetchall()
-            bt.logging.info(f"Miner stats data: {miner_stats_data}")
-
-        # Debug: Print the contents of the predictions table
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT DISTINCT minerID FROM predictions")
-            predictions_data = cursor.fetchall()
-            bt.logging.info(f"Distinct miner IDs from predictions: {predictions_data}")
+        # Parse command-line arguments
+        parser = argparse.ArgumentParser(description="BetTensor Miner CLI")
+        parser.add_argument("--uid", help="Specify the miner UID to start with")
+        args = parser.parse_args()
 
         # Query for available miners using miner_stats table
         with self.db_manager.get_cursor() as cursor:
@@ -102,39 +95,30 @@ class Application:
         if not self.available_miners:
             raise ValueError("Error: No miners found in the database. Please start the miner first.")
 
-        self.miner_stats = {row[0]: {'miner_uid': row[1], 'miner_cash': row[2], 'miner_rank': row[3]} for row in self.available_miners}
+        self.miner_stats = {row[1]: {'miner_hotkey': row[0], 'miner_cash': row[2], 'miner_rank': row[3]} for row in self.available_miners}
 
-        # Load the saved miner index
-        self.current_miner_index = self.get_saved_miner_index()
-        bt.logging.info(f"Loaded miner index: {self.current_miner_index}")
+        # Load the saved miner UID or use the one specified in the command-line argument
+        self.current_miner_uid = args.uid if args.uid else self.get_saved_miner_uid()
+        bt.logging.info(f"Loaded miner UID: {self.current_miner_uid}")
 
         # Try to find a valid miner
         valid_miner_found = False
-        original_index = self.current_miner_index
-        while not valid_miner_found:
-            if self.current_miner_index >= len(self.available_miners):
-                self.current_miner_index = 0  # Wrap around to the beginning
+        for miner in self.available_miners:
+            if miner[1] == self.current_miner_uid:
+                self.miner_hotkey = miner[0]
+                self.miner_uid = miner[1]
+                valid_miner_found = True
+                break
 
-            if self.available_miners:
-                self.miner_hotkey = self.available_miners[self.current_miner_index][0]
-                self.miner_uid = self.available_miners[self.current_miner_index][1]
+        if not valid_miner_found:
+            bt.logging.warning(f"Miner with UID {self.current_miner_uid} not found. Using the first available miner.")
+            self.miner_hotkey = self.available_miners[0][0]
+            self.miner_uid = self.available_miners[0][1]
 
-                if self.miner_hotkey is not None and self.miner_uid is not None:
-                    valid_miner_found = True
-                    bt.logging.info(f"Selected miner Hotkey: {self.miner_hotkey}, UID: {self.miner_uid}")
-                else:
-                    bt.logging.warning(f"Miner at index {self.current_miner_index} has invalid hotkey or UID. Trying next miner.")
-                    self.current_miner_index += 1
-            else:
-                raise ValueError("Error: No miners available in the database.")
+        bt.logging.info(f"Selected miner Hotkey: {self.miner_hotkey}, UID: {self.miner_uid}")
 
-            # If we've checked all miners and come back to the original index, raise an error
-            if self.current_miner_index == original_index and not valid_miner_found:
-                raise ValueError("Error: No valid miners found in the database. Please check your miner configurations.")
-
-        # Save the current miner index if it has changed
-        if self.current_miner_index != original_index:
-            self.save_miner_index(self.current_miner_index)
+        # Save the current miner UID
+        self.save_miner_uid(self.miner_uid)
 
         self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid)
         self.state_manager.load_state()  # This will recalculate the miner's cash
@@ -279,45 +263,42 @@ class Application:
 
         Behavior:
             - Cycles through available miners
-            - Saves the new miner index
+            - Saves the new miner UID
             - Restarts the entire application
         """
-        self.current_miner_index = (self.current_miner_index + 1) % len(self.available_miners)
+        current_index = next((i for i, miner in enumerate(self.available_miners) if miner[1] == self.miner_uid), -1)
+        next_index = (current_index + 1) % len(self.available_miners)
+        next_miner_uid = self.available_miners[next_index][1]
         
-        # Save the current miner index to a file
-        self.save_miner_index(self.current_miner_index)
+        # Save the next miner UID to a file
+        self.save_miner_uid(next_miner_uid)
         
         # Quit the application, which will trigger a restart
         self.quit()
 
     @staticmethod
-    def get_saved_miner_index():
+    def get_saved_miner_uid():
         """
-        Retrieve the saved miner index from file.
-        If the file doesn't exist, create it with a default value of 0.
+        Retrieve the saved miner UID from file.
+        If the file doesn't exist, return None.
         """
-        file_path = 'current_miner_index.txt'
+        file_path = 'current_miner_uid.txt'
         try:
             with open(file_path, 'r') as f:
-                return int(f.read().strip())
+                return f.read().strip()
         except FileNotFoundError:
-            bt.logging.warning(f"{file_path} not found. Creating with default index 0.")
-            Application.save_miner_index(0)
-            return 0
-        except ValueError:
-            bt.logging.warning(f"Invalid value in {file_path}. Resetting to default index 0.")
-            Application.save_miner_index(0)
-            return 0
+            bt.logging.warning(f"{file_path} not found. Will use the first available miner.")
+            return None
 
     @staticmethod
-    def save_miner_index(index):
+    def save_miner_uid(uid):
         """
-        Save the current miner index to a file.
+        Save the current miner UID to a file.
         """
-        file_path = 'current_miner_index.txt'
+        file_path = 'current_miner_uid.txt'
         with open(file_path, 'w') as f:
-            f.write(str(index))
-        bt.logging.info(f"Saved miner index {index} to {file_path}")
+            f.write(str(uid))
+        bt.logging.info(f"Saved miner UID {uid} to {file_path}")
 
     def reload_data(self):
         """

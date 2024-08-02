@@ -11,7 +11,7 @@ class PredictionsHandler:
         self.db_manager = db_manager
         self.state_manager = state_manager
         self.miner_uid = miner_uid
-        self.new_prediction_window = timedelta(hours=2)
+        self.new_prediction_window = timedelta(hours=24)
 
     def process_predictions(self, updated_games: Dict[str, TeamGame], new_games: Dict[str, TeamGame]) -> Dict[str, TeamGamePrediction]:
         updated_predictions = self.process_game_results(updated_games)
@@ -172,3 +172,6 @@ class PredictionsHandler:
                 prediction = TeamGamePrediction(**prediction_dict)
                 return prediction, prediction_dict['teamA'], prediction_dict['teamB']
         return None, None, None
+
+    def update_miner_uid(self, new_miner_uid):
+        self.miner_uid = new_miner_uid
