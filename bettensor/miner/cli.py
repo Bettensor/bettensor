@@ -4,6 +4,7 @@ import json
 import logging
 import signal
 import sqlite3
+import time
 import traceback
 import uuid
 import pytz
@@ -1231,10 +1232,14 @@ class WagerConfirm(InteractiveTable):
                     "teamB": self.game_data.teamB
                 }
                 self.app.unsubmitted_predictions[prediction_id] = prediction
-                bt.logging.info(f"Added prediction to unsubmitted_predictions: {prediction}")
+                #bt.logging.info(f"Added prediction to unsubmitted_predictions: {prediction}")
                 
                 self.app.submit_predictions()
-                self.app.change_view(MainMenu(self.app))
+                self.confirmation_message = "Wager submitted successfully!"
+                self.text_area.text = self.confirmation_message
+                self.update_text_area()
+                time.sleep(.5)
+                self.app.change_view(GamesList(self.app))
             except ValueError as e:
                 self.confirmation_message = str(e)
                 self.update_text_area()
