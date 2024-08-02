@@ -758,7 +758,7 @@ class PredictionsList(InteractiveTable):
         self.app.reload_miner_stats()
         header_text = self.header
         if not self.sorted_predictions:
-            self.text_area.text = f"{header_text}\n\n> Go Back"
+            self.text_area.text = f"{header_text}\n\nNo predictions available. Go to 'View Games and Make Predictions' to submit a prediction.\n\n> Go Back"
             return
 
         divider = "-" * len(header_text)
@@ -888,7 +888,13 @@ class GamesList(InteractiveTable):
         Behavior:
             - Calculates dynamic column widths based on data
             - Formats games data with proper alignment and separators
+            - Handles the case of no available games
         """
+        if not self.sorted_games:
+            self.options = ["No games available", f"Filter: {self.current_filter}", "Go Back"]
+            self.header = "No games available"
+            return
+
         start_idx = self.current_page * self.games_per_page
         end_idx = min(start_idx + self.games_per_page, len(self.sorted_games))
         
