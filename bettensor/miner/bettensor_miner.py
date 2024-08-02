@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from bettensor.miner.database.database_manager import get_db_manager
 from bettensor.miner.database.games import GamesHandler
 from bettensor.miner.database.predictions import PredictionsHandler
+from bettensor.miner.utils.cache_manager import CacheManager
 
 class BettensorMiner(BaseNeuron):
     def __init__(self, parser: ArgumentParser):
@@ -76,8 +77,12 @@ class BettensorMiner(BaseNeuron):
         )
         
         bt.logging.info("Initializing handlers")
-        self.games_handler = GamesHandler(self.db_manager)
         self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_uid)
+        self.games_handler = GamesHandler(self.db_manager, self.predictions_handler)
+        
+        
+        bt.logging.info("Initializing cache manager")
+        self.cache_manager = CacheManager()
         
         bt.logging.info("Setting other attributes")
         self.validator_min_stake = self.args.validator_min_stake
@@ -116,27 +121,35 @@ class BettensorMiner(BaseNeuron):
         bt.logging.debug(f"Processing game data: {len(synapse.gamedata_dict)} games")
 
         try:
-            # Process games and create new predictions
-            updated_games, new_games = self.games_handler.process_games(synapse.gamedata_dict)
-            new_prediction_dict = self.predictions_handler.process_predictions(updated_games, new_games)
+            # Check cache for changes in game data
+            changed_games = self.cache_manager.filter_changed_games(synapse.gamedata_dict)
 
-            if new_prediction_dict is None:
-                bt.logging.warning("Failed to process games")
+            if not changed_games:
+                bt.logging.info("No changes in game data, using cached predictions")
+                recent_predictions = self.cache_manager.get_cached_predictions()
+            else:
+                bt.logging.info(f"Processing {len(changed_games)} changed games")
+                # Process only changed games
+                updated_games, new_games = self.games_handler.process_games(changed_games)
+                recent_predictions = self.predictions_handler.process_predictions(updated_games, new_games)
+                bt.logging.info(f"Number of recent predictions processed: {len(recent_predictions)}")
+
+                # Update cache with new predictions
+                self.cache_manager.update_cached_predictions(recent_predictions)
+
+            if not recent_predictions:
+                bt.logging.warning("No predictions available")
                 return self._clean_synapse(synapse)
 
-            # Update prediction outcomes
-            updated_predictions = self.predictions_handler.update_predictions_from_games(updated_games)
+            # Update miner stats only if there were changes
+            if changed_games:
+                self.state_manager.update_stats_from_predictions(recent_predictions.values(), updated_games)
 
-            # Update miner stats
-            self.state_manager.update_stats_from_predictions(updated_predictions, updated_games)
-
-            # Periodic database update
+            # Periodic database update (consider making this less frequent)
             self.state_manager.periodic_db_update()
 
-            # Add this line to fix existing prediction outcomes
-            self.predictions_handler.fix_existing_prediction_outcomes()
-
-            synapse.prediction_dict = new_prediction_dict
+            synapse.prediction_dict = recent_predictions
+            bt.logging.info(f"Number of predictions added to synapse: {len(recent_predictions)}")
             synapse.gamedata_dict = None
             synapse.metadata = Metadata.create(
                 wallet=self.wallet,
@@ -151,7 +164,11 @@ class BettensorMiner(BaseNeuron):
             return self._clean_synapse(synapse)
 
     def _clean_synapse(self, synapse: GameData) -> GameData:
-        bt.logging.debug("Cleaning synapse due to error")
+        if not synapse.prediction_dict:
+            bt.logging.debug("Cleaning synapse due to no predictions available")
+        else:
+            bt.logging.debug("Cleaning synapse due to error")
+        
         synapse.gamedata_dict = None
         synapse.prediction_dict = None
         synapse.metadata = Metadata.create(
