@@ -82,6 +82,9 @@ async def main(validator: BettensorValidator):
 
     watchdog = Watchdog(timeout=300)  # 5 minutes timeout
 
+    bt.logging.info("Recalculating daily profits...")
+    validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
+
     while True:
 
         try:
@@ -112,6 +115,9 @@ async def main(validator: BettensorValidator):
             bt.logging.trace(f"All axons: {all_axons}")
 
             # If there are more axons than scores, append the scores list and add new miners to the database
+            if validator.scores is None:
+                bt.logging.warning("Scores were None. Reinitializing...")
+                validator.init_default_scores()
             if len(validator.metagraph.uids.tolist()) > len(validator.scores):
                 bt.logging.info(
                     f"Discovered new Axons, current scores: {validator.scores}"
@@ -256,8 +262,8 @@ async def main(validator: BettensorValidator):
             validator.step += 1
             watchdog.reset()
             # Sleep for a duration equivalent to the block time (i.e., time between successive blocks).
-            bt.logging.debug("Sleeping for: 18 seconds")
-            await asyncio.sleep(18)
+            bt.logging.debug("Sleeping for: 45 seconds")
+            await asyncio.sleep(45)
 
             #bt.logging.warning(f"TESTING AUTO UPDATE!!")
 

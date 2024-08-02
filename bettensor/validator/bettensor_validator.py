@@ -226,6 +226,9 @@ class BettensorValidator(BaseNeuron):
         self.dendrite = dendrite
         self.metagraph = metagraph
 
+        if self.metagraph is not None:
+            self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
+
         # read command line arguments and perform actions based on them
         args = self._parse_args(parser=self.parser)
 
@@ -334,6 +337,10 @@ class BettensorValidator(BaseNeuron):
                 predictionDate = today_utc
                 predictedOutcome = res.predictedOutcome
                 wager = res.wager
+
+                if wager <= 0:
+                    bt.logging.warning(f"Skipping prediction with non-positive wager: {wager} for UID {uid}")
+                    continue
 
                 # Check if the predictionID already exists
                 cursor.execute(
@@ -525,6 +532,12 @@ class BettensorValidator(BaseNeuron):
 
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
+        if self.scores is None:
+            if self.metagraph is not None:
+                self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
+            else:
+                bt.logging.warning("Metagraph is None, unable to initialize scores")
+                return
         if self.hotkeys:
             # check if known state len matches with current metagraph hotkey lengt
             if len(self.hotkeys) == len(self.metagraph.hotkeys):
@@ -534,9 +547,7 @@ class BettensorValidator(BaseNeuron):
                         bt.logging.debug(
                             f"index '{i}' has mismatching hotkey. old hotkey: '{self.hotkeys[i]}', new hotkey: '{hotkey}. resetting score to 0.0"
                         )
-                        bt.logging.debug(f"score before reset: {self.scores[i]}")
                         self.scores[i] = 0.0
-                        bt.logging.debug(f"score after reset: {self.scores[i]}")
             else:
                 # TODO: Here, instead of resetting to default scores, we should just 
                 bt.logging.info(
@@ -559,8 +570,14 @@ class BettensorValidator(BaseNeuron):
             self.scores = torch.zeros(1, dtype=torch.float32)
         else:
             # Convert numpy array to PyTorch tensor
-            metagraph_S_tensor = torch.from_numpy(self.metagraph.S).float()
-            self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
+            if isinstance(self.metagraph.S, np.ndarray):
+                metagraph_S_tensor = torch.from_numpy(self.metagraph.S).float()
+            elif isinstance(self.metagraph.S, torch.Tensor):
+                metagraph_S_tensor = self.metagraph.S.float()
+            else:
+                bt.logging.error(f"Unexpected type for metagraph.S: {type(self.metagraph.S)}")
+                metagraph_S_tensor = torch.zeros(len(self.metagraph.hotkeys), dtype=torch.float32)
+                self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
         
         bt.logging.info(f"validation weights have been initialized: {self.scores}")
 
@@ -834,6 +851,7 @@ class BettensorValidator(BaseNeuron):
         return cursor.fetchall()
 
     def determine_winner(self, game_info):
+        time.sleep(0.1) # RapidAPI rate limits these individual calls
         game_id, teamA, teamB, externalId = game_info
 
         conn = self.connect_db()
@@ -862,13 +880,38 @@ class BettensorValidator(BaseNeuron):
         game_response = game_data.get("response", [])[0]
 
         if sport == "baseball":
-            status = game_response["status"]["long"]
-            if status != "Finished":
-                bt.logging.trace(f"Game {externalId} is not finished yet. Current status: {status}")
+            game_data = self.api_client.get_baseball_game(str(externalId))
+            if not game_data:
+                bt.logging.error(f"Failed to fetch baseball game data for {externalId}")
                 return
 
-            home_score = game_response["scores"]["home"]["total"]
-            away_score = game_response["scores"]["away"]["total"]
+            game_response = game_data.get("response", [])[0]
+
+            status = game_response.get("status", {}).get("long")
+            if status != "Finished":
+                bt.logging.trace(f"Baseball game {externalId} is not finished yet. Current status: {status}")
+                return
+
+            home_score = game_response.get("scores", {}).get("home", {}).get("total")
+            away_score = game_response.get("scores", {}).get("away", {}).get("total")
+            bt.logging.trace(f"Baseball game {externalId} scores - Home: {home_score}, Away: {away_score}")
+
+            if home_score is None or away_score is None:
+                bt.logging.trace(f"Unable to extract scores for baseball game {externalId}")
+                return
+
+            if home_score > away_score:
+                numeric_outcome = 0
+            elif away_score > home_score:
+                numeric_outcome = 1
+            else:
+                numeric_outcome = 2
+
+            bt.logging.trace(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
+            bt.logging.trace(f"Numeric outcome: {numeric_outcome}")
+
+            self.update_game_outcome(externalId, numeric_outcome)
+
         elif sport == "soccer":
             status = game_response["fixture"]["status"]["long"]
             if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
@@ -977,6 +1020,9 @@ class BettensorValidator(BaseNeuron):
 
     async def run_sync_in_async(self, fn):
         return await self.loop.run_in_executor(self.thread_executor, fn)
+    
+    def recalculate_all_profits(self):
+        self.weight_setter.recalculate_daily_profits()
 
     async def set_weights(self):
         return await self.weight_setter.set_weights(self.db_path)
