@@ -195,6 +195,8 @@ class WeightSetter:
     def logarithmic_penalty(self, count, min_count):
         if count >= min_count:
             return 1.0
+        elif count == 0:
+            return 0.0
         else:
             return math.log10(count + 1) / math.log10(min_count)
     
