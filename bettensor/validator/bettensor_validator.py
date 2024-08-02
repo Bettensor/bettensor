@@ -82,7 +82,7 @@ class BettensorValidator(BaseNeuron):
         self.wallet = None
         self.dendrite = None
         self.metagraph = None
-        self.scores = torch.tensor([], dtype=torch.float32)
+        self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
         self.hotkeys = None
         self.subtensor = None
         self.miner_responses = None
@@ -532,6 +532,8 @@ class BettensorValidator(BaseNeuron):
 
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
+        if self.scores is None:
+            self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
         if self.hotkeys:
             # check if known state len matches with current metagraph hotkey lengt
             if len(self.hotkeys) == len(self.metagraph.hotkeys):
@@ -541,9 +543,7 @@ class BettensorValidator(BaseNeuron):
                         bt.logging.debug(
                             f"index '{i}' has mismatching hotkey. old hotkey: '{self.hotkeys[i]}', new hotkey: '{hotkey}. resetting score to 0.0"
                         )
-                        bt.logging.debug(f"score before reset: {self.scores[i]}")
                         self.scores[i] = 0.0
-                        bt.logging.debug(f"score after reset: {self.scores[i]}")
             else:
                 # TODO: Here, instead of resetting to default scores, we should just 
                 bt.logging.info(
