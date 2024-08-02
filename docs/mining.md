@@ -106,12 +106,65 @@ Wait for some game data to be received before proceeding to submit predictions.
 
 ### Local Interface
 
-If you chose the Local Interface, use the CLI to submit predictions:
+If you chose the Local Interface, you have two options for interacting with your miner:
 
-```bash
-python bettensor/miner/cli.py
-```
+#### 1. Web Interface via SSH Tunnel
 
+To access the web interface securely:
+
+1. On your local machine, open a terminal and create an SSH tunnel:
+
+   ```
+   ssh -L 5000:localhost:5000 username@your_vps_ip
+   ```
+
+   Replace `username` with your VPS username and `your_vps_ip` with your VPS's IP address.
+
+2. Enter your VPS password when prompted.
+
+3. Keep this terminal window open to maintain the tunnel.
+
+4. Open a web browser on your local machine and navigate to:
+
+   ```
+   http://localhost:5000
+   ```
+
+5. You should now see the Bettensor Miner Interface.
+
+To close the tunnel when you're done, return to the terminal and press `Ctrl+C`.
+
+Troubleshooting:
+- Ensure the Flask server is running on your VPS.
+- If port 5000 is in use, try a different port, e.g., `ssh -L 8080:localhost:5000 username@your_vps_ip`, then access `http://localhost:8080`.
+
+#### 2. Command-Line Interface (CLI)
+
+For direct CLI access:
+
+1. SSH into your VPS.
+
+2. Navigate to the Bettensor directory:
+
+   ```bash
+   cd path/to/bettensor
+   ```
+
+3. Activate the virtual environment:
+
+   ```bash
+   source .venv/bin/activate
+   ```
+
+4. Run the CLI:
+
+   ```bash
+   python bettensor/miner/cli.py
+   ```
+
+5. Follow the prompts to submit predictions or perform other actions.
+
+Choose the method that best suits your needs and comfort level. The web interface provides a more user-friendly experience, while the CLI offers direct control.
 
 <details>
 <summary>
@@ -125,8 +178,6 @@ If you chose the Central Server option, log in to our [web dashboard](https://be
 ## Managing Multiple Miners
 
 ### Local Interface
-
-
 
 When running multiple miners locally, you can switch between them in the CLI, there will be a slight delay as the application restarts.
 
@@ -177,3 +228,50 @@ A: The frequency of predictions can vary based on network activity and your stra
 A: Yes, you can run miners on different machines. Each miner will need its own wallet and hotkey.
 
 For more questions or support, please visit our [community forum](https://community.bettensor.com) or [Discord channel](https://discord.gg/bettensor).
+
+# Miner Interface
+
+## Local Server Setup with SSH Tunnel
+
+If you've chosen to run the miner interface as a local server, you'll need to set up an SSH tunnel to access it from your local machine. This ensures that only you can access the interface, providing an additional layer of security.
+
+### Setting up the SSH Tunnel
+
+1. On your local machine, open a terminal or command prompt.
+
+2. Use the following command to create an SSH tunnel:
+
+   ```
+   ssh -L 5000:localhost:5000 username@your_vps_ip
+   ```
+
+   Replace `username` with your VPS username and `your_vps_ip` with the IP address of your VPS.
+
+3. Enter your VPS password when prompted.
+
+4. Keep this terminal window open to maintain the SSH tunnel.
+
+### Accessing the Miner Interface
+
+Once the SSH tunnel is established:
+
+1. Open a web browser on your local machine.
+
+2. Navigate to `http://localhost:5000`
+
+You should now see the Bettensor Miner Interface.
+
+### Closing the SSH Tunnel
+
+When you're done using the interface:
+
+1. Return to the terminal window where you set up the SSH tunnel.
+
+2. Press `Ctrl+C` to close the SSH connection and terminate the tunnel.
+
+### Troubleshooting
+
+- If you can't connect, ensure that the Flask server is running on your VPS and that you've selected the "local" server option when starting the neuron.
+- Check that port 5000 isn't being used by another application on your local machine. If it is, you can use a different local port in the SSH command, e.g., `ssh -L 8080:localhost:5000 username@your_vps_ip`, and then access the interface at `http://localhost:8080`.
+
+Remember, while using the local server option, the interface is only accessible through this SSH tunnel, providing an extra layer of security for your miner operations.

@@ -29,7 +29,7 @@ class PredictionsHandler:
             with self.db_manager.get_cursor() as cursor:
                 cursor.execute("""
                     SELECT * FROM predictions 
-                    WHERE teamGameID = ?
+                    WHERE teamGameID = %s
                 """, (game_id,))
                 predictions = cursor.fetchall()
                 
@@ -54,8 +54,8 @@ class PredictionsHandler:
             with self.db_manager.get_cursor() as cursor:
                 cursor.executemany("""
                     UPDATE predictions 
-                    SET outcome = ?
-                    WHERE predictionID = ?
+                    SET outcome = %s
+                    WHERE predictionID = %s
                 """, batch_updates)
 
         return updated_predictions
@@ -92,7 +92,7 @@ class PredictionsHandler:
         with self.db_manager.get_cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM predictions 
-                WHERE minerID = ? AND predictionDate > ?
+                WHERE minerID = %s AND predictionDate > %s
                 ORDER BY predictionDate DESC
             """, (self.miner_uid, cutoff_time.isoformat()))
             
@@ -105,7 +105,7 @@ class PredictionsHandler:
                 SELECT p.*, g.eventStartDate, g.outcome as game_outcome
                 FROM predictions p
                 JOIN games g ON p.teamGameID = g.externalID
-                WHERE p.minerID = ?
+                WHERE p.minerID = %s
                 ORDER BY p.predictionDate DESC
             """, (miner_uid,))
             columns = [column[0] for column in cursor.description]
@@ -120,7 +120,7 @@ class PredictionsHandler:
                     INSERT INTO predictions (
                         predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
                         wager, teamAodds, teamBodds, tieOdds, outcome, teamA, teamB
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     prediction['predictionID'],
                     prediction['teamGameID'],
@@ -153,8 +153,8 @@ class PredictionsHandler:
             for pred_id, game_id, team_a, team_b in predictions_to_update:
                 cursor.execute("""
                     UPDATE predictions
-                    SET teamA = ?, teamB = ?
-                    WHERE predictionID = ?
+                    SET teamA = %s, teamB = %s
+                    WHERE predictionID = %s
                 """, (team_a, team_b, pred_id))
 
     def get_prediction(self, prediction_id):
@@ -163,7 +163,7 @@ class PredictionsHandler:
                 SELECT p.*, g.teamA, g.teamB 
                 FROM predictions p
                 JOIN games g ON p.teamGameID = g.gameID
-                WHERE p.predictionID = ?
+                WHERE p.predictionID = %s
             """, (prediction_id,))
             row = cursor.fetchone()
             if row:

@@ -57,7 +57,7 @@ class GamesHandler:
         is_active = 1 if current_time <= event_start_date else 0
 
         with self.db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT * FROM games WHERE externalID = ?", (game_data.externalId,))
+            cursor.execute("SELECT * FROM games WHERE externalID = %s", (game_data.externalId,))
             existing_game = cursor.fetchone()
 
             if existing_game:
@@ -69,10 +69,10 @@ class GamesHandler:
                 
                 cursor.execute(
                     """UPDATE games SET 
-                    teamA = ?, teamAodds = ?, teamB = ?, teamBodds = ?, sport = ?, league = ?, 
-                    createDate = ?, lastUpdateDate = ?, eventStartDate = ?, active = ?, 
-                    outcome = ?, tieOdds = ?, canTie = ? 
-                    WHERE externalID = ?""",
+                    teamA = %s, teamAodds = %s, teamB = %s, teamBodds = %s, sport = %s, league = %s, 
+                    createDate = %s, lastUpdateDate = %s, eventStartDate = %s, active = %s, 
+                    outcome = %s, tieOdds = %s, canTie = %s 
+                    WHERE externalID = %s""",
                     (
                         game_data.teamA, game_data.teamAodds, game_data.teamB, game_data.teamBodds,
                         game_data.sport, game_data.league, game_data.createDate, game_data.lastUpdateDate,
@@ -93,7 +93,7 @@ class GamesHandler:
                     """INSERT INTO games (
                     gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, 
                     createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (
                         game_data.id, game_data.teamA, game_data.teamAodds, game_data.teamB, game_data.teamBodds,
                         game_data.sport, game_data.league, game_data.externalId, game_data.createDate,
@@ -114,7 +114,7 @@ class GamesHandler:
         cutoff_date = current_time - self.inactive_game_window
         with self.db_manager.get_cursor() as cursor:
             cursor.execute(
-                "UPDATE games SET active = 0 WHERE eventStartDate < ?",
+                "UPDATE games SET active = FALSE WHERE eventStartDate < %s",
                 (cutoff_date.isoformat(),)
             )
 
@@ -123,8 +123,8 @@ class GamesHandler:
         with self.db_manager.get_cursor() as cursor:
             cursor.execute("""
                 DELETE FROM games
-                WHERE rowid NOT IN (
-                    SELECT MIN(rowid)
+                WHERE ctid NOT IN (
+                    SELECT MIN(ctid)
                     FROM games
                     GROUP BY externalID
                 )
@@ -133,7 +133,7 @@ class GamesHandler:
     def get_game_by_id(self, game_id: str) -> TeamGame:
         bt.logging.trace(f"Retrieving game with ID: {game_id}")
         with self.db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT * FROM games WHERE gameID = ?", (game_id,))
+            cursor.execute("SELECT * FROM games WHERE gameID = %s", (game_id,))
             game = cursor.fetchone()
             if game:
                 return TeamGame(*game)
@@ -196,7 +196,7 @@ class GamesHandler:
         with self.db_manager.get_cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM games 
-                WHERE eventStartDate > ? 
+                WHERE eventStartDate > %s 
                 ORDER BY eventStartDate ASC
             """, (current_time.isoformat(),))
             games = cursor.fetchall()

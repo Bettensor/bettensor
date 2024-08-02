@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Check if the script is being sourced
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo "This script must be sourced. Please run: source ./$(basename ${BASH_SOURCE[0]}) <flags>"
@@ -40,9 +42,16 @@ echo -e "WARNING: If you are running in a containerized service (vast.ai, runpod
         "
 # Function to display usage information
 usage() {
-    echo "Usage: $0 [--lite-node] [--subtensor.network <test|main>]"
+    echo "Usage: $0 [--lite-node] [--subtensor.network <test|main>] [--redis-host <host>] [--redis-port <port>] [--postgres-host <host>] [--postgres-port <port>] [--postgres-user <user>] [--postgres-password <password>] [--postgres-database <database>]"
     echo "  --lite-node              Set up a lite node (optional)"
     echo "  --subtensor.network      Specify the network: test | main (default: test)"
+    echo "  --redis-host             Redis server host (default: localhost)"
+    echo "  --redis-port             Redis server port (default: 6379)"
+    echo "  --postgres-host          PostgreSQL host (default: localhost)"
+    echo "  --postgres-port          PostgreSQL port (default: 5432)"
+    echo "  --postgres-user          PostgreSQL user (default: bettensor)"
+    echo "  --postgres-password     PostgreSQL password (default: bettensor_password)"
+    echo "  --postgres-database     PostgreSQL database (default: bettensor)"
     exit 1
 }
 
@@ -62,6 +71,34 @@ while [[ $# -gt 0 ]]; do
                 usage
             fi
             ;;
+        --redis-host)
+            REDIS_HOST=$2
+            shift 2
+            ;;
+        --redis-port)
+            REDIS_PORT=$2
+            shift 2
+            ;;
+        --postgres-host)
+            POSTGRES_HOST=$2
+            shift 2
+            ;;
+        --postgres-port)
+            POSTGRES_PORT=$2
+            shift 2
+            ;;
+        --postgres-user)
+            POSTGRES_USER=$2
+            shift 2
+            ;;
+        --postgres-password)
+            POSTGRES_PASSWORD=$2
+            shift 2
+            ;;
+        --postgres-database)
+            POSTGRES_DATABASE=$2
+            shift 2
+            ;;
         *)
             echo "Error: Unknown option $1"
             usage
@@ -69,18 +106,49 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Set default values if not provided
+REDIS_HOST=${REDIS_HOST:-localhost}
+REDIS_PORT=${REDIS_PORT:-6379}
+POSTGRES_HOST=${POSTGRES_HOST:-localhost}
+POSTGRES_PORT=${POSTGRES_PORT:-5432}
+POSTGRES_USER=${POSTGRES_USER:-bettensor}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-bettensor_password}
+POSTGRES_DATABASE=${POSTGRES_DATABASE:-bettensor}
+
 echo "Setting up environment for network: $NETWORK"
 if [ "$LITE_NODE" = true ]; then
     echo "Setting up as a lite node"
 fi
 
 # Update and install dependencies
-sudo apt-get update 
-sudo apt install -y build-essential net-tools
-sudo apt-get install -y clang curl git make 
-sudo apt install -y --assume-yes git clang curl libssl-dev protobuf-compiler
-sudo apt install -y --assume-yes git clang curl libssl-dev llvm libudev-dev make protobuf-compiler
-sudo apt-get install -y python-is-python3
+apt-get update 
+apt-get install -y build-essential net-tools clang curl git make libssl-dev protobuf-compiler llvm libudev-dev python-is-python3
+
+# Install Redis
+apt-get install -y redis-server
+systemctl enable redis-server
+systemctl start redis-server
+
+# Install PostgreSQL
+apt-get install -y postgresql postgresql-contrib
+systemctl enable postgresql
+systemctl start postgresql
+
+# Set up PostgreSQL
+su - postgres -c "psql -c \"CREATE DATABASE $POSTGRES_DATABASE;\""
+su - postgres -c "psql -c \"CREATE USER root WITH SUPERUSER PASSWORD '$POSTGRES_PASSWORD';\""
+su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE $POSTGRES_DATABASE TO root;\""
+
+# Modify PostgreSQL configuration to allow root access
+sed -i "s/local   all             postgres                                peer/local   all             postgres                                trust/" /etc/postgresql/*/main/pg_hba.conf
+sed -i "s/local   all             all                                     peer/local   all             all                                     trust/" /etc/postgresql/*/main/pg_hba.conf
+
+# Restart PostgreSQL to apply changes
+systemctl restart postgresql
+
+# Modify Redis configuration to allow connections from anywhere (be cautious with this in production)
+sed -i 's/bind 127.0.0.1/bind 0.0.0.0/' /etc/redis/redis.conf
+systemctl restart redis-server
 
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -119,19 +187,18 @@ fi
 echo "Setup complete!"
 
 # Install Python 3.10
-sudo apt-get install -y software-properties-common
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo apt-get update
-sudo apt-get install -y python3.10 python3.10-venv python3.10-dev
+apt-get install -y software-properties-common
+add-apt-repository -y ppa:deadsnakes/ppa
+apt-get update
+apt-get install -y python3.10 python3.10-venv python3.10-dev
 
 # Install npm, jq, and pm2
-sudo apt-get install -y npm jq
-sudo npm install -g pm2
+apt-get install -y npm jq
+npm install -g pm2
 
 # Clone Bettensor repository
 cd $HOME
 git clone https://github.com/bettensor/bettensor.git
-
 
 # Create and activate virtual environment
 python3.10 -m venv .venv
@@ -141,6 +208,9 @@ cd bettensor
 # Install Bettensor dependencies
 pip install -e .
 pip install -r requirements.txt
+
+# Install additional dependencies for Redis and PostgreSQL
+pip install redis psycopg2-binary
 
 # Verify installation
 python -c "import bittensor; print(bittensor.__version__)"

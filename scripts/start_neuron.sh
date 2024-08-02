@@ -19,6 +19,12 @@ WALLET_HOTKEY=""
 AXON_PORT=""
 VALIDATOR_MIN_STAKE=""
 LOGGING_LEVEL=""
+REDIS_HOST="localhost"
+REDIS_PORT="6379"
+DB_HOST="localhost"
+DB_NAME="bettensor"
+DB_USER="root"
+DB_PASSWORD="root"
 
 # Function to prompt for user input
 prompt_for_input() {
@@ -143,6 +149,34 @@ while [[ $# -gt 0 ]]; do
             INTERFACE_TYPE="$2"
             shift 2
             ;;
+        --redis.host)
+            REDIS_HOST="$2"
+            shift 2
+            ;;
+        --redis.port)
+            REDIS_PORT="$2"
+            shift 2
+            ;;
+        --db.host)
+            DB_HOST="$2"
+            shift 2
+            ;;
+        --db.name)
+            DB_NAME="$2"
+            shift 2
+            ;;
+        --db.user)
+            DB_USER="$2"
+            shift 2
+            ;;
+        --db.password)
+            DB_PASSWORD="$2"
+            shift 2
+            ;;
+        --server-type)
+            SERVER_TYPE="$2"
+            shift 2
+            ;;
         *)
             DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS $1"
             shift
@@ -228,36 +262,41 @@ case $INTERFACE_TYPE in
         ;;
 esac
 
-# Start the miner interface server
-#pm2 start bettensor/utils/miner_interface_server.py --name miner_interface_server --interpreter python3 -- --env $INTERFACE_ENV
+# Prompt for server type if not specified
+prompt_for_input "Enter server type (local/central)" "central" "SERVER_TYPE"
 
-# Generate a unique name for this instance
-INSTANCE_NUMBER=$(get_next_instance_number $NEURON_TYPE)
-INSTANCE_NAME="${NEURON_TYPE}${INSTANCE_NUMBER}"
-
-# Handle auto-updater
-if [ "$DISABLE_AUTO_UPDATE" = "false" ]; then
-    if ! is_auto_updater_running; then
-        pm2 start scripts/auto_update.sh --name "auto-updater"
-        echo "Auto-updater started."
-    else
-        echo "Auto-updater is already running."
-    fi
-else
-    if is_auto_updater_running; then
-        pm2 stop auto-updater
-        pm2 delete auto-updater
-        echo "Auto-updater has been stopped and removed."
-    else
-        echo "Auto-updater is not running."
-    fi
-fi
+# Validate server type and set up environment variables
+case $SERVER_TYPE in
+    local)
+        FLASK_ENV="LOCAL_SERVER=True CENTRAL_SERVER=False"
+        FLASK_HOST="127.0.0.1"
+        ;;
+    central)
+        FLASK_ENV="LOCAL_SERVER=False CENTRAL_SERVER=True"
+        FLASK_HOST="0.0.0.0"
+        ;;
+    *)
+        echo "Invalid server type: $SERVER_TYPE. Using central server."
+        FLASK_ENV="LOCAL_SERVER=False CENTRAL_SERVER=True"
+        FLASK_HOST="0.0.0.0"
+        ;;
+esac
 
 # Start the neuron with PM2
 echo "Starting $NEURON_TYPE with arguments: $DEFAULT_NEURON_ARGS"
-pm2 start --name "$INSTANCE_NAME" python -- neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
+pm2 start --name "$INSTANCE_NAME" python -- /home/bettensor/neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
 
 echo "$NEURON_TYPE started successfully with instance name: $INSTANCE_NAME"
+
+# Start the Flask server as a PM2 process
+echo "Starting Flask server..."
+pm2 start --name "flask-server" \
+    --interpreter python3 \
+    --env $FLASK_ENV \
+    -- bettensor/miner/interfaces/miner_interface_server.py \
+    --host $FLASK_HOST --port 5000
+
+echo "Flask server started successfully."
 
 # Save the PM2 process list
 pm2 save --force

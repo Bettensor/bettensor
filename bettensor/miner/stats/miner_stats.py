@@ -7,6 +7,7 @@ import pytz
 import torch
 import time
 import traceback
+import psycopg2
 import sqlite3
 
 from bettensor.protocol import TeamGame
@@ -24,9 +25,9 @@ class MinerStatsHandler:
             cursor.execute("""
             SELECT 
                 COUNT(*) as total_predictions,
-                SUM(CASE WHEN outcome LIKE 'Wager Won%' THEN 1 ELSE 0 END) as total_wins,
-                SUM(CASE WHEN outcome LIKE 'Wager Lost%' THEN 1 ELSE 0 END) as total_losses,
-                SUM(CASE WHEN outcome LIKE 'Wager Won%' THEN 
+                SUM(CASE WHEN outcome LIKE 'Wager Won%%' THEN 1 ELSE 0 END) as total_wins,
+                SUM(CASE WHEN outcome LIKE 'Wager Lost%%' THEN 1 ELSE 0 END) as total_losses,
+                SUM(CASE WHEN outcome LIKE 'Wager Won%%' THEN 
                     wager * (
                         CASE 
                             WHEN predictedOutcome = teamA THEN teamAodds
@@ -38,7 +39,7 @@ class MinerStatsHandler:
                 SUM(wager) as total_wager,
                 MAX(predictionDate) as last_prediction_date
             FROM predictions
-            WHERE minerID = ?
+            WHERE minerID = %s
         """, (self.state_manager.miner_uid,))
         
         result = cursor.fetchone()
@@ -98,14 +99,14 @@ class MinerStateManager:
                     miner_rank INTEGER,
                     miner_cash REAL,
                     miner_current_incentive REAL,
-                    miner_last_prediction_date TEXT,
+                    miner_last_prediction_date TIMESTAMP,
                     miner_lifetime_earnings REAL,
                     miner_lifetime_wager REAL,
                     miner_lifetime_predictions INTEGER,
                     miner_lifetime_wins INTEGER,
                     miner_lifetime_losses INTEGER,
                     miner_win_loss_ratio REAL,
-                    last_daily_reset TEXT
+                    last_daily_reset TIMESTAMP
                 )
             """)
 
@@ -113,21 +114,13 @@ class MinerStateManager:
         bt.logging.trace("Loading miner state from database")
         try:
             with self.db_manager.get_cursor() as cursor:
-                cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = ?", (self.miner_uid,))
+                cursor.execute("SELECT * FROM miner_stats WHERE miner_uid = %s", (self.miner_uid,))
                 row = cursor.fetchone()
                 if row:
-                    column_names = [column[0] for column in cursor.description]
-                    return dict(zip(column_names, row))
+                    return dict(row)
             bt.logging.trace("No existing state found, will initialize with default values")
             return None
-        except sqlite3.OperationalError as e:
-            if "no such table: miner_stats" in str(e):
-                bt.logging.warning("miner_stats table does not exist. It will be created when saving the initial state.")
-            else:
-                bt.logging.error(f"Error loading miner state: {e}")
-                bt.logging.error(traceback.format_exc())
-            return None
-        except Exception as e:
+        except psycopg2.Error as e:
             bt.logging.error(f"Error loading miner state: {e}")
             bt.logging.error(traceback.format_exc())
             return None
@@ -169,9 +162,9 @@ class MinerStateManager:
             try:
                 self.update_miner_stats(state)
                 break
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e) and attempt < max_retries - 1:
-                    bt.logging.warning(f"Database is locked. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+            except psycopg2.OperationalError as e:
+                if "deadlock detected" in str(e) and attempt < max_retries - 1:
+                    bt.logging.warning(f"Deadlock detected. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
                     time.sleep(retry_delay)
                 else:
                     bt.logging.error(f"Error saving miner state: {e}")
@@ -184,12 +177,25 @@ class MinerStateManager:
     def update_miner_stats(self, stats):
         with self.db_manager.get_cursor() as cursor:
             cursor.execute("""
-                INSERT OR REPLACE INTO miner_stats
+                INSERT INTO miner_stats
                 (miner_hotkey, miner_uid, miner_rank, miner_cash, miner_current_incentive,
                 miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager,
                 miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses,
                 miner_win_loss_ratio, last_daily_reset)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (miner_hotkey) DO UPDATE SET
+                miner_uid = EXCLUDED.miner_uid,
+                miner_rank = EXCLUDED.miner_rank,
+                miner_cash = EXCLUDED.miner_cash,
+                miner_current_incentive = EXCLUDED.miner_current_incentive,
+                miner_last_prediction_date = EXCLUDED.miner_last_prediction_date,
+                miner_lifetime_earnings = EXCLUDED.miner_lifetime_earnings,
+                miner_lifetime_wager = EXCLUDED.miner_lifetime_wager,
+                miner_lifetime_predictions = EXCLUDED.miner_lifetime_predictions,
+                miner_lifetime_wins = EXCLUDED.miner_lifetime_wins,
+                miner_lifetime_losses = EXCLUDED.miner_lifetime_losses,
+                miner_win_loss_ratio = EXCLUDED.miner_win_loss_ratio,
+                last_daily_reset = EXCLUDED.last_daily_reset
             """, (
                 self.miner_hotkey,
                 self.miner_uid,
@@ -238,7 +244,7 @@ class MinerStateManager:
             cursor.execute("""
                 SELECT COALESCE(SUM(wager), 0) as total_wager
                 FROM predictions
-                WHERE minerID = ? AND predictionDate >= ?
+                WHERE minerID = %s AND predictionDate >= %s
             """, (self.miner_uid, reset_time.isoformat()))
             
             result = cursor.fetchone()
@@ -254,7 +260,7 @@ class MinerStateManager:
         with self.db_manager.get_cursor() as cursor:
             cursor.execute("""
                 SELECT MAX(predictionDate) FROM predictions
-                WHERE minerID = ?
+                WHERE minerID = %s
             """, (self.miner_uid,))
             result = cursor.fetchone()
             if result[0]:

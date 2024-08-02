@@ -16,6 +16,7 @@ from bettensor.miner.database.database_manager import get_db_manager
 from bettensor.miner.database.games import GamesHandler
 from bettensor.miner.database.predictions import PredictionsHandler
 from bettensor.miner.utils.cache_manager import CacheManager
+from bettensor.miner.interfaces.redis_interface import RedisManager
 
 class BettensorMiner(BaseNeuron):
     def __init__(self, parser: ArgumentParser):
@@ -34,6 +35,12 @@ class BettensorMiner(BaseNeuron):
         if not any(action.dest == 'validator_min_stake' for action in parser._actions):
             parser.add_argument("--validator_min_stake", type=float, default=1000.0, help="Minimum stake required for validators")
         
+        if not any(action.dest == 'redis_host' for action in parser._actions):
+            parser.add_argument("--redis_host", type=str, default="localhost", help="Redis server host")
+        
+        if not any(action.dest == 'redis_port' for action in parser._actions):
+            parser.add_argument("--redis_port", type=int, default=6379, help="Redis server port")
+        
         bt.logging.info("Parsing arguments and setting up configuration")
         try:
             self.neuron_config = self.config(bt_classes=[bt.subtensor, bt.logging, bt.wallet, bt.axon])
@@ -47,6 +54,18 @@ class BettensorMiner(BaseNeuron):
 
         self.args = self.neuron_config
 
+        # Initialize Redis manager
+        self.redis_manager = RedisManager(host=self.args.redis_host, port=self.args.redis_port)
+        connection_result = self.redis_manager.connect()
+        
+        if not connection_result:
+            bt.logging.info("You can still use the miner through the command-line interface.")
+            # Optionally, you might want to set a flag to disable GUI-related features
+            self.gui_available = False
+        else:
+            bt.logging.info("Redis connection successful. All interfaces (GUI and CLI) are available.")
+            self.gui_available = True
+
         bt.logging.info("Setting up wallet, subtensor, and metagraph")
         try:
             self.wallet, self.subtensor, self.metagraph, self.miner_uid = self.setup()
@@ -54,6 +73,7 @@ class BettensorMiner(BaseNeuron):
             bt.logging.error(f"Error in self.setup(): {e}")
             raise
 
+        # Setup database manager
         bt.logging.info("Initializing database manager")
         os.environ['DB_PATH'] = self.args.db_path
         bt.logging.info(f"Set DB_PATH environment variable to: {self.args.db_path}")
@@ -69,21 +89,23 @@ class BettensorMiner(BaseNeuron):
             bt.logging.error(f"Failed to initialize database manager: {e}")
             raise
 
+        # Setup state manager
         bt.logging.info("Initializing state manager")
         self.state_manager = MinerStateManager(
             db_manager=self.db_manager,
             miner_hotkey=self.wallet.hotkey.ss58_address,
             miner_uid=self.miner_uid
         )
-        
+        # Setup handlers
         bt.logging.info("Initializing handlers")
         self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_uid)
         self.games_handler = GamesHandler(self.db_manager, self.predictions_handler)
         
-        
+        # Setup cache manager
         bt.logging.info("Initializing cache manager")
         self.cache_manager = CacheManager()
         
+        # Setup other attributes
         bt.logging.info("Setting other attributes")
         self.validator_min_stake = self.args.validator_min_stake
         self.hotkey = self.wallet.hotkey.ss58_address
@@ -158,7 +180,7 @@ class BettensorMiner(BaseNeuron):
                 synapse_type="prediction",
             )
 
-            return synapse
+            
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")
             return self._clean_synapse(synapse)

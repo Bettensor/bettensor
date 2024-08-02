@@ -3,24 +3,32 @@ import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.serving import run_simple
-from bettensor.utils.database_manager import get_db_manager
 import jwt
 from functools import wraps
-import sqlite3
+from bettensor.miner.database.database_manager import get_db_manager
+import redis
+import uuid
+import bittensor as bt
+import argparse
 
 app = Flask(__name__)
 
 # Configuration
 class Config:
-    LOCAL_INTERFACE = os.environ.get('LOCAL_INTERFACE', 'True').lower() == 'true'
-    CENTRAL_SERVER = os.environ.get('CENTRAL_SERVER', 'False').lower() == 'true'
-    JWT_SECRET = 'your-secret-key'  # Change this in production and store securely
+    LOCAL_SERVER = os.environ.get('LOCAL_SERVER', 'False').lower() == 'true'
+    CENTRAL_SERVER = os.environ.get('CENTRAL_SERVER', 'True').lower() == 'true'
+    JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key')  # Change this in production and store securely
+    REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
+    REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 
 config = Config()
 
-# Apply CORS only if using local interface
-if config.LOCAL_INTERFACE:
+# Apply CORS only if using local server
+if config.LOCAL_SERVER:
     CORS(app)
+
+# Initialize Redis client
+redis_client = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT)
 
 # JWT token verification
 def token_required(f):
@@ -53,55 +61,25 @@ def submit_prediction():
     if not miner_uid:
         return jsonify({'message': 'Miner UID is required'}), 400
 
-    db_manager = get_db_manager(miner_uid)
-    
-    with db_manager.get_cursor() as cursor:
-        cursor.execute(
-            """INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, teamA, teamB, teamAodds, teamBodds, tieOdds, predictedOutcome, wager, outcome, canOverwrite) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                data['predictionID'],
-                data['teamGameID'],
-                data['minerID'],
-                data['predictionDate'],
-                data['teamA'],
-                data['teamB'],
-                data['teamAodds'],
-                data['teamBodds'],
-                data['tieOdds'],
-                data['predictedOutcome'],
-                data['wager'],
-                data['outcome'],
-                data['canOverwrite'],
-            ),
-        )
-        cursor.connection.commit()
-    
-    return jsonify({'message': 'Prediction submitted successfully'}), 200
+    # Generate a unique message ID
+    message_id = str(uuid.uuid4())
+    data['message_id'] = message_id
 
-""" @app.route('/get_games', methods=['GET'])
-def get_games():
-    if not config.LOCAL_INTERFACE:
-        return jsonify({'message': 'Endpoint not available'}), 403
-    
-    miner_uid = request.args.get('miner_uid')
-    if not miner_uid:
-        return jsonify({'message': 'Miner UID is required'}), 400
+    # Publish the prediction data to the miner's channel
+    redis_client.publish(f'miner:{miner_uid}', json.dumps(data))
 
-    db_manager = get_db_manager(miner_uid)
-    games = {}
-    
-    with db_manager.get_cursor() as cursor:
-        cursor.execute("SELECT * FROM games WHERE active = 0")
-        columns = [column[0] for column in cursor.description]
-        for row in cursor.fetchall():
-            games[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
-    
-    return jsonify(games), 200 """
+    # Wait for the response (with a timeout)
+    response = redis_client.blpop(f'response:{message_id}', timeout=30)
+    if response:
+        _, result = response
+        result = json.loads(result)
+        return jsonify(result), 200
+    else:
+        return jsonify({'message': 'Prediction submission timed out'}), 408
 
 @app.route('/get_predictions', methods=['GET'])
 def get_predictions():
-    if not config.LOCAL_INTERFACE:
+    if not config.LOCAL_SERVER:
         return jsonify({'message': 'Endpoint not available'}), 403
     
     miner_uid = request.args.get('miner_uid')
@@ -121,45 +99,23 @@ def get_predictions():
 
 @app.route('/get_miners', methods=['GET'])
 def get_miners():
-    '''
-    called from website - returns a list of miner uids for the coldkey
-    '''
     miner_uids = get_miner_uids()
     return jsonify(miner_uids), 200
-
-@app.route('/submit_prediction', methods=['POST'])
-@token_required
-def submit_prediction():
-    '''
-    called from website - submits a prediction to the miner, which is then submitted to validators
-    '''
-    data = request.json
-    miner_uid = data.get('miner_uid')
-    if not miner_uid:
-        return jsonify({'message': 'Miner UID is required'}), 400
 
 @app.route('/heartbeat', methods=['GET'])
 @token_required
 def heartbeat():
-    '''
-    called every 15 seconds - returns the most recent miner stats
-    
-    '''
-    return jsonify({'message': 'Miner is alive'}), 200
-
-
-
-
-def start_server():
-    if config.LOCAL_INTERFACE:
-        # Run the server locally, only accessible from localhost
-        run_simple('localhost', 5000, app, use_reloader=True, use_debugger=True)
-    elif config.CENTRAL_SERVER:
-        # Run the server with specific host and port for central server access
-        # Make sure to set up proper firewall rules and SSL in production
-        app.run(host='0.0.0.0', port=5000, ssl_context='adhoc')
-    else:
-        print("No valid server configuration found. Please set either LOCAL_INTERFACE or CENTRAL_SERVER to True.")
+    return jsonify({'message': 'Miner interface server is alive'}), 200
 
 if __name__ == '__main__':
-    start_server()
+    parser = argparse.ArgumentParser(description='Bettensor Miner Interface Server')
+    parser.add_argument('--host', type=str, default='127.0.0.1', help='Host to run the server on')
+    parser.add_argument('--port', type=int, default=5000, help='Port to run the server on')
+    args = parser.parse_args()
+
+    if config.LOCAL_SERVER:
+        app.run(host=args.host, port=args.port)
+    elif config.CENTRAL_SERVER:
+        app.run(host=args.host, port=args.port, ssl_context='adhoc')
+    else:
+        print("No valid server configuration found. Please set either LOCAL_SERVER or CENTRAL_SERVER to True.")
