@@ -13,42 +13,95 @@ from concurrent.futures import ThreadPoolExecutor
 from packaging import version
 
 import psycopg2
-from psycopg2 import pool
-from psycopg2.extras import DictCursor
+from psycopg2.pool import SimpleConnectionPool
 import os
 import bittensor as bt
 from contextlib import contextmanager
+from psycopg2.extras import DictCursor
+import traceback
 
 class DatabaseManager:
-    _instance = None
-
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            cls._instance = super(DatabaseManager, cls).__new__(cls)
-        return cls._instance
-
-    def __init__(self, max_connections=10, state_manager=None, miner_uid=None):
-        if not hasattr(self, 'initialized'):
-            self.max_connections = max_connections
-            self.state_manager = state_manager
-            self.miner_uid = miner_uid
-            self.connection_pool = None
-            self.initialize_connection_pool()
-            self.initialize_database()
-            self.initialized = True
+    def __init__(self, db_name, db_user, db_password, db_host=None, db_port=None, max_connections=10):
+        self.db_name = db_name
+        self.db_user = db_user
+        self.db_password = db_password
+        self.db_host = db_host
+        self.db_port = db_port
+        self.max_connections = max_connections
+        self.connection_pool = None
+        self.initialize_connection_pool()
 
     def initialize_connection_pool(self):
         try:
-            self.connection_pool = psycopg2.pool.SimpleConnectionPool(
-                1, self.max_connections,
-                host=os.getenv('DB_HOST', 'localhost'),
-                database=os.getenv('DB_NAME', 'bettensor'),
-                user=os.getenv('DB_USER', 'bettensor'),
-                password=os.getenv('DB_PASSWORD', 'your_password_here')
+            connection_params = {
+                "dbname": self.db_name,
+                "user": self.db_user,
+                "password": self.db_password,
+            }
+            if self.db_host:
+                connection_params["host"] = self.db_host
+            if self.db_port:
+                connection_params["port"] = self.db_port
+
+            self.connection_pool = SimpleConnectionPool(
+                1, self.max_connections, **connection_params
             )
-            bt.logging.info("PostgreSQL connection pool created successfully")
-        except (Exception, psycopg2.Error) as error:
-            bt.logging.error(f"Error while connecting to PostgreSQL: {error}")
+            bt.logging.info(f"PostgreSQL connection pool initialized with {self.max_connections} connections")
+        except psycopg2.Error as e:
+            bt.logging.error(f"Error initializing PostgreSQL connection pool: {e}")
+            raise
+
+    def execute_query(self, query, params=None):
+        with self.get_cursor() as cursor:
+            try:
+                if params is not None:
+                    if isinstance(params, dict):
+                        cursor.execute(query, params)
+                    else:
+                        cursor.execute(query, (params,) if not isinstance(params, (list, tuple)) else params)
+                else:
+                    cursor.execute(query)
+                
+                if query.strip().upper().startswith("SELECT"):
+                    result = cursor.fetchall()
+                    return result
+                else:
+                    cursor.connection.commit()
+                return None
+            except Exception as e:
+                cursor.connection.rollback()
+                bt.logging.error(f"Error in execute_query: {str(e)}")
+                bt.logging.error(f"Query: {query}")
+                bt.logging.error(f"Params: {params}")
+                raise
+
+    def close(self):
+        if self.connection_pool:
+            self.connection_pool.closeall()
+            bt.logging.info("All database connections closed")
+
+    def update_parameters(self, db_path=None, max_connections=None, db_host=None, db_name=None, db_user=None, db_password=None):
+        if db_path is not None:
+            self.db_path = db_path
+        if max_connections is not None:
+            self.max_connections = max_connections
+        if db_host is not None:
+            self.db_host = db_host
+        if db_name is not None:
+            self.db_name = db_name
+        if db_user is not None:
+            self.db_user = db_user
+        if db_password is not None:
+            self.db_password = db_password
+
+    def initialize_sqlite_connection(self):
+        try:
+            sqlite_path = os.path.join(os.path.dirname(self.db_path), 'miner.db')
+            self.connection_pool = sqlite3.connect(sqlite_path)
+            bt.logging.info(f"SQLite database initialized at {sqlite_path}")
+        except sqlite3.Error as e:
+            bt.logging.error(f"Error initializing SQLite database: {e}")
+            raise
 
     def initialize_database(self):
         bt.logging.info("Initializing database")
@@ -136,22 +189,37 @@ class DatabaseManager:
         
         if current_version != __database_version__:
             bt.logging.info(f"Updating database version to {__database_version__}")
-            cursor.execute("""
-                INSERT INTO database_version (version, timestamp)
-                VALUES (%s, CURRENT_TIMESTAMP)
-            """, (__database_version__,))
+            if isinstance(self.connection_pool, psycopg2.pool.SimpleConnectionPool):
+                cursor.execute("""
+                    INSERT INTO database_version (version, timestamp)
+                    VALUES (%s, CURRENT_TIMESTAMP)
+                """, (__database_version__,))
+            else:
+                cursor.execute("""
+                    INSERT INTO database_version (version, timestamp)
+                    VALUES (?, CURRENT_TIMESTAMP)
+                """, (__database_version__,))
         else:
             bt.logging.info("Database is already at the latest version")
 
     @contextmanager
     def get_cursor(self):
-        connection = self.connection_pool.getconn()
-        try:
-            with connection:
-                with connection.cursor(cursor_factory=DictCursor) as cursor:
-                    yield cursor
-        finally:
-            self.connection_pool.putconn(connection)
+        if isinstance(self.connection_pool, psycopg2.pool.SimpleConnectionPool):
+            connection = self.connection_pool.getconn()
+            try:
+                with connection:
+                    with connection.cursor(cursor_factory=DictCursor) as cursor:
+                        yield cursor
+            finally:
+                self.connection_pool.putconn(connection)
+        elif isinstance(self.connection_pool, sqlite3.Connection):
+            cursor = self.connection_pool.cursor()
+            try:
+                yield cursor
+            finally:
+                cursor.close()
+        else:
+            raise RuntimeError("No valid database connection available")
 
     def check_and_migrate(self):
         from bettensor.miner.utils.migrate_to_postgres import migrate_to_postgres
@@ -205,20 +273,12 @@ class DatabaseManager:
             else:
                 bt.logging.info("PostgreSQL database is already at the latest version")
 
-def get_db_manager(max_connections=10, state_manager=None, miner_uid=None):
-    return DatabaseManager(max_connections, state_manager, miner_uid)
-
-def get_db_manager(max_connections=10, state_manager=None, miner_uid=None):
-    config = bt.config()
-    db_path = getattr(config, 'db_path', None)
-    
-    if db_path is None:
-        bt.logging.warning("db_path not found in config. Using default path.")
-        db_path = os.path.join(os.getcwd(), 'data', 'miner.db')
-    
-    bt.logging.info(f"Using database path: {db_path}")
-    
-    # Ensure the directory exists
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    
-    return DatabaseManager.get_instance(db_path, max_connections)
+def get_db_manager(max_connections=10, state_manager=None, miner_uid=None, redis_interface=None):
+    db_path = os.getenv('DB_PATH', os.path.expanduser("~/bettensor/data/miner.db"))
+    db_host = os.getenv('DB_HOST', 'localhost')
+    db_name = os.getenv('DB_NAME', 'bettensor')
+    db_user = os.getenv('DB_USER', 'root')
+    db_password = os.getenv('DB_PASSWORD', 'bettensor_password')
+    return DatabaseManager.get_instance(db_path=db_path, max_connections=max_connections,
+                                        db_host=db_host, db_name=db_name,
+                                        db_user=db_user, db_password=db_password)

@@ -147,22 +147,18 @@ if __name__ == "__main__":
         default="/var/log/bittensor",
         help="Provide the log directory",
     )
-
     parser.add_argument(
         "--miner_set_weights",
         type=str,
         default="False",
         help="Determines if miner should set weights or not",
     )
-
     parser.add_argument(
         "--validator_min_stake",
         type=float,
         default=10000.0,
         help="Determine the minimum stake the validator should have to accept requests",
     )
-
-    parser.add_argument("--uid", type=str, required=True, help="Miner UID")
     parser.add_argument("--REDIS_HOST", type=str, default="localhost", help="Redis host")
     parser.add_argument("--REDIS_PORT", type=int, default=6379, help="Redis port")
 

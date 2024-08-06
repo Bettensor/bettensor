@@ -1,5 +1,8 @@
+import json
 import redis
 import bittensor as bt
+import uuid
+import time
 
 class RedisInterface:
     def __init__(self, host="localhost", port=6379):
@@ -68,3 +71,31 @@ class RedisInterface:
         except Exception as e:
             bt.logging.error(f"Error setting value in Redis: {e}")
             return False
+
+    def execute_db_operation(self, operation, **params):
+        if not self.is_connected:
+            bt.logging.warning("Redis is not connected. Cannot execute database operation.")
+            return None
+        try:
+            message_id = str(uuid.uuid4())
+            message = {
+                'id': message_id,
+                'operation': operation,
+                'params': params
+            }
+            self.publish('db_operations', json.dumps(message))
+            result = self.wait_for_result(message_id)
+            return json.loads(result) if result else None
+        except Exception as e:
+            bt.logging.error(f"Error executing database operation: {e}")
+            return None
+
+    def wait_for_result(self, message_id, timeout=5):
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            result = self.redis_client.get(f"result:{message_id}")
+            if result:
+                self.redis_client.delete(f"result:{message_id}")
+                return result
+            time.sleep(0.1)
+        raise TimeoutError("Timeout waiting for database operation result")

@@ -13,11 +13,12 @@ import datetime
 import os
 import threading
 from contextlib import contextmanager
-from bettensor.miner.database.database_manager import get_db_manager
+from bettensor.miner.database.database_manager import DatabaseManager
 from bettensor.miner.database.games import GamesHandler
 from bettensor.miner.database.predictions import PredictionsHandler
 from bettensor.miner.utils.cache_manager import CacheManager
 from bettensor.miner.interfaces.redis_interface import RedisInterface
+import uuid
 
 class BettensorMiner(BaseNeuron):
     def __init__(self, parser: ArgumentParser):
@@ -25,13 +26,14 @@ class BettensorMiner(BaseNeuron):
         super().__init__(parser=parser, profile="miner")
         
         bt.logging.info("Adding custom arguments")
-        self.default_db_path = os.path.expanduser("~/bettensor/data/miner.db")
         
-        if not any(action.dest == 'db_path' for action in parser._actions):
-            parser.add_argument("--db_path", type=str, default=self.default_db_path, help="Path to the SQLite database file")
-        
-        if not any(action.dest == 'max_connections' for action in parser._actions):
-            parser.add_argument("--max_connections", type=int, default=10, help="Maximum number of database connections")
+        # Add PostgreSQL connection parameters with defaults
+        parser.add_argument("--db_name", type=str, default="bettensor", help="PostgreSQL database name")
+        parser.add_argument("--db_user", type=str, default="root", help="PostgreSQL user")
+        parser.add_argument("--db_password", type=str, default="bettensor_password", help="PostgreSQL password")
+        parser.add_argument("--db_host", type=str, help="PostgreSQL host (optional)")
+        parser.add_argument("--db_port", type=int, help="PostgreSQL port (optional)")
+        parser.add_argument("--max_connections", type=int, default=10, help="Maximum number of database connections")
         
         if not any(action.dest == 'validator_min_stake' for action in parser._actions):
             parser.add_argument("--validator_min_stake", type=float, default=1000.0, help="Minimum stake required for validators")
@@ -55,6 +57,15 @@ class BettensorMiner(BaseNeuron):
 
         self.args = self.neuron_config
 
+        bt.logging.info("Setting up wallet, subtensor, and metagraph")
+        try:
+            self.wallet, self.subtensor, self.metagraph = self.setup()
+            self.miner_uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+            bt.logging.info(f"Miner initialized with UID: {self.miner_uid}")
+        except Exception as e:
+            bt.logging.error(f"Error in self.setup(): {e}")
+            raise
+
         # Initialize Redis interface
         self.redis_interface = RedisInterface(host=self.args.redis_host, port=self.args.redis_port)
         if not self.redis_interface.connect():
@@ -67,35 +78,27 @@ class BettensorMiner(BaseNeuron):
             self.redis_thread = threading.Thread(target=self.listen_for_redis_messages)
             self.redis_thread.start()
 
-        bt.logging.info("Setting up wallet, subtensor, and metagraph")
-        try:
-            self.wallet, self.subtensor, self.metagraph, self.miner_uid = self.setup()
-        except Exception as e:
-            bt.logging.error(f"Error in self.setup(): {e}")
-            raise
-
         # Setup database manager
         bt.logging.info("Initializing database manager")
-        os.environ['DB_PATH'] = self.args.db_path
-        bt.logging.info(f"Set DB_PATH environment variable to: {self.args.db_path}")
-        try:
-            bt.logging.info(f"Calling get_db_manager with max_connections: {self.args.max_connections}")
-            self.db_manager = get_db_manager(
-                max_connections=self.args.max_connections,
-                state_manager=None,
-                miner_uid=self.miner_uid
-            )
-            bt.logging.info("Database manager initialized successfully")
-        except Exception as e:
-            bt.logging.error(f"Failed to initialize database manager: {e}")
-            raise
+        db_params = {
+            "db_name": self.args.db_name,
+            "db_user": self.args.db_user,
+            "db_password": self.args.db_password,
+            "max_connections": self.args.max_connections
+        }
+        if self.args.db_host:
+            db_params["db_host"] = self.args.db_host
+        if self.args.db_port:
+            db_params["db_port"] = self.args.db_port
+
+        self.db_manager = DatabaseManager(**db_params)
 
         # Setup state manager
         bt.logging.info("Initializing state manager")
         self.state_manager = MinerStateManager(
             db_manager=self.db_manager,
             miner_hotkey=self.wallet.hotkey.ss58_address,
-            miner_uid=self.miner_uid
+            miner_uid=str(self.miner_uid)
         )
         # Setup handlers
         bt.logging.info("Initializing handlers")
@@ -115,8 +118,6 @@ class BettensorMiner(BaseNeuron):
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
         
-        bt.logging.info(f"Miner initialized with UID: {self.miner_uid}")
-
         self.hotkey_blacklisted = False
         
         bt.logging.info("BettensorMiner initialization complete")
@@ -220,7 +221,7 @@ class BettensorMiner(BaseNeuron):
         bt.logging.info("Exiting due to signal")
         sys.exit(0)
 
-    def setup(self) -> Tuple[bt.wallet, bt.subtensor, bt.metagraph, str]:
+    def setup(self) -> Tuple[bt.wallet, bt.subtensor, bt.metagraph]:
         bt.logging.info("Setting up bittensor objects")
         bt.logging(config=self.neuron_config, logging_dir=self.neuron_config.full_path)
         bt.logging.info(
@@ -246,11 +247,8 @@ class BettensorMiner(BaseNeuron):
             )
             sys.exit()
 
-        miner_uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)
-        bt.logging.info(f"Miner is running with UID: {miner_uid}")
-
         bt.logging.info("Bittensor objects setup complete")
-        return wallet, subtensor, metagraph, miner_uid
+        return wallet, subtensor, metagraph
 
     def check_whitelist(self, hotkey):
         bt.logging.debug(f"Checking whitelist for hotkey: {hotkey}")
@@ -355,11 +353,13 @@ class BettensorMiner(BaseNeuron):
                 bt.logging.info(f"Received message: {data}")
                 
                 # Process the message (e.g., make a prediction)
-                result = self.process_prediction_request(data)
+                result = self.process_prediction_request(data['content'])
 
-                # Send the result back
-                self.redis_interface.set(f'response:{data["message_id"]}', json.dumps(result))
-                # Note: Redis expiry is handled by the RedisInterface class
+                # Send the result back to the CLI's channel
+                self.redis_interface.publish(data['cli_channel'], json.dumps({
+                    'message_id': data['message_id'],
+                    'result': result
+                }))
 
     def process_prediction_request(self, data):
         # Implement your prediction logic here

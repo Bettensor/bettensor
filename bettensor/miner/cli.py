@@ -1,5 +1,4 @@
 import argparse
-import datetime
 import json
 import logging
 import signal
@@ -21,7 +20,7 @@ from prompt_toolkit.layout import Layout
 from prompt_toolkit.widgets import Frame, TextArea, Label
 from prompt_toolkit.styles import Style
 from prompt_toolkit.layout.containers import Window, HSplit
-from bettensor.miner.database.database_manager import get_db_manager
+from bettensor.miner.database.database_manager import DatabaseManager
 from bettensor.miner.database.predictions import PredictionsHandler
 from bettensor.miner.database.games import GamesHandler
 from bettensor.miner.stats.miner_stats import MinerStateManager
@@ -31,6 +30,7 @@ import sys
 import subprocess
 import atexit
 from prompt_toolkit.output import Output
+from datetime import datetime, timezone
 
 # Create logs directory if it doesn't exist
 log_dir = "./logs"
@@ -38,7 +38,7 @@ if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
 # Set up logging for CLI
-cli_log_file = os.path.join(log_dir, f"cli_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+cli_log_file = os.path.join(log_dir, f"cli_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -72,7 +72,18 @@ class Application:
             - Selects a miner to work with
             - Loads miner data and initializes the UI
         """
-        self.db_manager = get_db_manager()
+        # Create a unique channel for this CLI instance
+        self.cli_channel = f'cli:{uuid.uuid4()}'
+
+        # Initialize database manager
+        db_host = os.getenv('DB_HOST', 'localhost')
+        db_name = os.getenv('DB_NAME', 'bettensor')
+        db_user = os.getenv('DB_USER', 'root')
+        db_password = os.getenv('DB_PASSWORD', 'bettensor_password')
+        self.db_manager = DatabaseManager(db_name, db_user, db_password, db_host)
+        
+        # Set db_path for compatibility with existing code
+        self.db_manager.db_path = os.getenv('DB_PATH', os.path.expanduser("~/bettensor/data/miner.db"))
         
         if not os.path.exists(self.db_manager.db_path):
             raise ValueError("Error: Database not found. Please start the miner first.")
@@ -83,20 +94,16 @@ class Application:
         args = parser.parse_args()
 
         # Query for available miners using miner_stats table
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute("""
-                SELECT miner_hotkey, miner_uid, miner_cash, miner_rank
-                FROM miner_stats
-                ORDER BY miner_rank DESC
-            """)
-            self.available_miners = cursor.fetchall()
+        self.available_miners = self.get_available_miners()
 
         bt.logging.info(f"Available miners: {self.available_miners}")
 
         if not self.available_miners:
-            raise ValueError("Error: No miners found in the database. Please start the miner first.")
+            bt.logging.error("No miners found in the database. Please start the miner first.")
+            print("Error: No miners found in the database. Please start the miner first.")
+            sys.exit(1)
 
-        self.miner_stats = {row[1]: {'miner_hotkey': row[0], 'miner_cash': row[2], 'miner_rank': row[3]} for row in self.available_miners}
+        self.miner_stats = {str(row[0]): {'miner_hotkey': row[1], 'miner_cash': row[2], 'miner_rank': row[3]} for row in self.available_miners}
 
         # Load the saved miner UID or use the one specified in the command-line argument
         self.current_miner_uid = args.uid if args.uid else self.get_saved_miner_uid()
@@ -105,16 +112,16 @@ class Application:
         # Try to find a valid miner
         valid_miner_found = False
         for miner in self.available_miners:
-            if miner[1] == self.current_miner_uid:
-                self.miner_hotkey = miner[0]
-                self.miner_uid = miner[1]
+            if str(miner[0]) == str(self.current_miner_uid):
+                self.miner_hotkey = miner[1]
+                self.miner_uid = str(miner[0])
                 valid_miner_found = True
                 break
 
         if not valid_miner_found:
             bt.logging.warning(f"Miner with UID {self.current_miner_uid} not found. Using the first available miner.")
-            self.miner_hotkey = self.available_miners[0][0]
-            self.miner_uid = self.available_miners[0][1]
+            self.miner_hotkey = self.available_miners[0][1]
+            self.miner_uid = str(self.available_miners[0][0])
 
         bt.logging.info(f"Selected miner Hotkey: {self.miner_hotkey}, UID: {self.miner_uid}")
 
@@ -254,9 +261,14 @@ class Application:
         Behavior:
             - Queries the database for all miner UIDs and hotkeys
         """
-        with self.db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT miner_uid, miner_hotkey FROM miner_stats")
-            return cursor.fetchall()
+        query = "SELECT miner_uid, miner_hotkey, miner_cash, miner_rank FROM miner_stats"
+        try:
+            result = self.db_manager.execute_query(query)
+            bt.logging.info(f"Retrieved miners: {result}")
+            return result
+        except Exception as e:
+            bt.logging.error(f"Failed to retrieve miners: {e}")
+            return []
 
     def select_next_miner(self):
         """
@@ -267,9 +279,9 @@ class Application:
             - Saves the new miner UID
             - Restarts the entire application
         """
-        current_index = next((i for i, miner in enumerate(self.available_miners) if miner[1] == self.miner_uid), -1)
+        current_index = next((i for i, miner in enumerate(self.available_miners) if str(miner[0]) == str(self.miner_uid)), -1)
         next_index = (current_index + 1) % len(self.available_miners)
-        next_miner_uid = self.available_miners[next_index][1]
+        next_miner_uid = str(self.available_miners[next_index][0])
         
         # Save the next miner UID to a file
         self.save_miner_uid(next_miner_uid)
@@ -310,21 +322,22 @@ class Application:
             - Processes recent predictions
             - Updates the miner's stats
         """
-        bt.logging.trace("Reloading data")
-        self.games = self.games_handler.get_active_games()
-        updated_games = {game.externalId: game for game in self.games.values() if game.outcome != "Unfinished"}
-        new_games = {game.externalId: game for game in self.games.values() if game.outcome == "Unfinished"}
-        
-        # Process recent predictions (this updates the database if needed)
-        #self.predictions_handler.process_predictions(updated_games, new_games)
-        
-        # Get all predictions after processing
-        self.predictions = self.predictions_handler.get_predictions(self.miner_uid)
-        
-        bt.logging.trace(f"Retrieved {len(self.predictions)} total predictions for display")
-        
-        self.reload_miner_stats()
-        bt.logging.trace("Data reload complete")
+        #bt.logging.info("Starting data reload")
+        try:
+            self.games = self.games_handler.get_active_games()
+            #bt.logging.info(f"Retrieved {len(self.games)} active games")
+            
+            self.predictions = self.predictions_handler.get_predictions(self.miner_uid)
+            #bt.logging.info(f"Retrieved {len(self.predictions)} total predictions for display")
+            
+            self.reload_miner_stats()
+            #bt.logging.info("Data reload complete")
+        except Exception as e:
+            bt.logging.error(f"Error reloading data: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+            # Initialize empty data structures if reload fails
+            self.games = {}
+            self.predictions = {}
 
     def change_view(self, new_view):
         """
@@ -355,8 +368,8 @@ class Application:
             - If an exception occurs, prints an error message
         """
         try:
-            with self.db_manager.get_cursor() as cursor:
-                cursor.execute("SELECT * FROM predictions")
+            query = "SELECT * FROM predictions LIMIT 1"
+            self.db_manager.execute_query(query)
         except Exception as e:
             raise ValueError(f"Database not initialized properly, restart your miner first: {e}")
 
@@ -425,6 +438,18 @@ class Application:
         self.state_manager._reconcile_state()  # This will handle daily resets and recalculations
         self.miner_stats = self.state_manager.get_stats()
         self.miner_cash = self.miner_stats["miner_cash"]
+
+    def add_prediction(self, prediction):
+        prediction_id = str(uuid.uuid4())
+        prediction['predictionID'] = prediction_id
+        self.predictions[prediction_id] = prediction
+        self.predictions_handler.add_prediction(prediction)
+        self.update_miner_cash(-prediction['wager'])
+
+    def update_miner_cash(self, amount):
+        self.miner_cash += amount
+        self.state_manager.update_on_prediction({'wager': amount, 'predictionDate': datetime.now(timezone.utc).isoformat()})
+        self.reload_miner_stats()
 
 
 class InteractiveTable:
@@ -567,7 +592,7 @@ class MainMenu(InteractiveTable):
         def format_last_prediction_date(date_str):
             if date_str:
                 try:
-                    date = datetime.datetime.fromisoformat(date_str)
+                    date = datetime.fromisoformat(date_str)
                     return date.strftime("%Y-%m-%d %H:%M:%S UTC")
                 except ValueError:
                     return date_str
@@ -643,17 +668,6 @@ class MainMenu(InteractiveTable):
 
 class PredictionsList(InteractiveTable):
     def __init__(self, app):
-        """
-        Initialize the PredictionsList.
-
-        Args:
-            app: The main Application instance.
-
-        Behavior:
-            - Sets up the predictions list view
-            - Loads and sorts predictions
-            - Initializes pagination
-        """
         super().__init__(app)
         app.reload_miner_stats()
         app.reload_data()
@@ -664,97 +678,72 @@ class PredictionsList(InteractiveTable):
         self.update_total_pages()
         self.update_options()
         self.selected_index = len(self.options) - 1  # Set cursor to "Go Back"
+        self.header = "Predictions List"  
         self.update_text_area()
 
     def update_sorted_predictions(self):
-        """
-        Update the sorted predictions list.
-
-        Behavior:
-            - Sorts the predictions by prediction date (most recent first)
-        """
         self.sorted_predictions = sorted(
             self.app.predictions.values(),
-            key=lambda x: datetime.datetime.fromisoformat(x["predictionDate"]),
+            key=lambda x: x.get("predictionDate") or "",
             reverse=True
         ) if self.app.predictions else []
-        #bt.logging.info(f"Number of sorted predictions: {len(self.sorted_predictions)}")
 
     def update_total_pages(self):
-        """
-        Update the total number of pages for predictions pagination.
-
-        Behavior:
-            - Calculates the total number of pages based on the number of predictions and predictions per page
-            - Ensures the current page is within the valid range
-        """
         self.total_pages = max(1, (len(self.sorted_predictions) + self.predictions_per_page - 1) // self.predictions_per_page)
         self.current_page = min(self.current_page, self.total_pages - 1)
 
     def update_options(self):
-        """
-        Update the options list for the predictions view.
-
-        Behavior:
-            - Calculates dynamic column widths based on data
-            - Formats predictions data with proper alignment and separators
-        """
+        self.options = []
         if not self.sorted_predictions:
             self.options = ["No predictions available", "Go Back"]
-            self.header = "No predictions available"
             return
+
+        columns = ['Date', 'Game', 'Prediction', 'Wager', 'Home Team', 'Away Team', 'Wager Odds', 'Outcome']
+
+        def safe_format(value, format_spec):
+            if value is None:
+                return 'N/A'
+            try:
+                return format_spec.format(value)
+            except:
+                return str(value)
+
+        max_widths = {
+            'Date': max(len(self.format_date(pred['predictionDate'])) for pred in self.sorted_predictions),
+            'Game': max(len(f"{pred['teamA']} vs {pred['teamB']}") for pred in self.sorted_predictions),
+            'Prediction': max(len(str(pred['predictedOutcome'])) for pred in self.sorted_predictions),
+            'Wager': max(len(safe_format(pred['wager'], "${:.2f}")) for pred in self.sorted_predictions),
+            'Home Team': max(len(str(pred['teamA'])) for pred in self.sorted_predictions),
+            'Away Team': max(len(str(pred['teamB'])) for pred in self.sorted_predictions),
+            'Wager Odds': max(len(safe_format(pred['wagerOdds'], "{:.2f}")) for pred in self.sorted_predictions),
+            'Outcome': max(len(str(pred['outcome'])) for pred in self.sorted_predictions)
+        }
+        max_widths = {col: max(max_widths[col], len(col)) for col in columns}
+
+        header = " | ".join(f"{col:<{max_widths[col]}}" for col in columns)
+        self.options.append(header)
+        self.options.append("-" * len(header))
 
         start_idx = self.current_page * self.predictions_per_page
         end_idx = min(start_idx + self.predictions_per_page, len(self.sorted_predictions))
-        
-        # Calculate maximum widths for each column
-        max_date_len = max(len("Prediction Date"), max(len(self.format_date(pred["predictionDate"])) for pred in self.sorted_predictions))
-        max_prediction_len = max(len("Predicted Outcome"), max(len(str(pred["predictedOutcome"])) for pred in self.sorted_predictions))
-        max_teamA_len = max(len("Team A"), max(len(str(pred["teamA"])) for pred in self.sorted_predictions))
-        max_teamB_len = max(len("Team B"), max(len(str(pred["teamB"])) for pred in self.sorted_predictions))
-        max_wager_amount_len = max(len("Wager Amount"), max(len(self.format_odds(pred["wager"])) for pred in self.sorted_predictions))
-        max_teamAodds_len = max(len("Team A Odds"), max(len(self.format_odds(pred["teamAodds"])) for pred in self.sorted_predictions))
-        max_teamBodds_len = max(len("Team B Odds"), max(len(self.format_odds(pred["teamBodds"])) for pred in self.sorted_predictions))
-        max_tieOdds_len = max(len("Tie Odds"), max(len(self.format_odds(pred["tieOdds"])) for pred in self.sorted_predictions))
-        max_outcome_len = max(len("Outcome"), max(len(self.format_outcome(pred["outcome"], pred["predictedOutcome"], pred["teamA"])) for pred in self.sorted_predictions))
 
-        # Define the header with calculated widths
-        self.header = (
-            f"  {'Prediction Date':<{max_date_len}} | "
-            f"{'Predicted Outcome':<{max_prediction_len}} | "
-            f"{'Team A':<{max_teamA_len}} | "
-            f"{'Team B':<{max_teamB_len}} | "
-            f"{'Wager Amount':<{max_wager_amount_len}} | "
-            f"{'Team A Odds':<{max_teamAodds_len}} | "
-            f"{'Team B Odds':<{max_teamBodds_len}} | "
-            f"{'Tie Odds':<{max_tieOdds_len}} | "
-            f"{'Outcome':<{max_outcome_len}}"
-        )
-
-        # Generate options for the current page
-        self.options = []
         for pred in self.sorted_predictions[start_idx:end_idx]:
-            self.options.append(
-                f"{self.format_date(pred['predictionDate']):<{max_date_len}} | "
-                f"{pred['predictedOutcome']:<{max_prediction_len}} | "
-                f"{pred['teamA']:<{max_teamA_len}} | "
-                f"{pred['teamB']:<{max_teamB_len}} | "
-                f"{self.format_odds(pred['wager']):<{max_wager_amount_len}} | "
-                f"{self.format_odds(pred['teamAodds']):<{max_teamAodds_len}} | "
-                f"{self.format_odds(pred['teamBodds']):<{max_teamBodds_len}} | "
-                f"{self.format_odds(pred['tieOdds']):<{max_tieOdds_len}} | "
-                f"{self.format_outcome(pred['outcome'], pred['predictedOutcome'], pred['teamA']):<{max_outcome_len}}"
-            )
+            game = f"{pred['teamA']} vs {pred['teamB']}"
+            row = " | ".join([
+                f"{self.format_date(pred['predictionDate']):<{max_widths['Date']}}",
+                f"{game:<{max_widths['Game']}}",
+                f"{str(pred['predictedOutcome']):<{max_widths['Prediction']}}",
+                f"{safe_format(pred['wager'], '${:.2f}'):<{max_widths['Wager']}}",
+                f"{str(pred['teamA']):<{max_widths['Home Team']}}",
+                f"{str(pred['teamB']):<{max_widths['Away Team']}}",
+                f"{safe_format(pred['wagerOdds'], '{:.2f}'):<{max_widths['Wager Odds']}}",
+                f"{str(pred['outcome']):<{max_widths['Outcome']}}"
+            ])
+            self.options.append(row)
+        
         self.options.append("Go Back")
 
     def update_text_area(self):
-        """
-        Update the text area for the predictions view.
-
-        Behavior:
-            - Formats the header, options, and pagination information
-            - Updates the text area content
-        """
         self.app.reload_miner_stats()
         header_text = self.header
         if not self.sorted_predictions:
@@ -770,45 +759,9 @@ class PredictionsList(InteractiveTable):
         self.text_area.text = f"{header_text}\n{divider}\n{options_text}{page_info}\n\n{self.message}"
 
     def handle_enter(self):
-        """
-        Handle the enter key press in the predictions view.
-
-        Behavior:
-            - Changes the view to the main menu (since cursor is always on "Go Back")
-        """
         self.app.change_view(MainMenu(self.app))
 
-    def clear_message(self):
-        """
-        Clear the message in the predictions view.
-
-        Behavior:
-            - Sets the message to an empty string
-            - Updates the text area
-        """
-        self.message = ""
-        self.update_text_area()
-
-    def move_up(self):
-        """
-        Overridden to prevent cursor movement.
-        """
-        pass
-
-    def move_down(self):
-        """
-        Overridden to prevent cursor movement.
-        """
-        pass
-
     def move_left(self):
-        """
-        Move to the previous page in the predictions view.
-
-        Behavior:
-            - Decrements the current page if not on the first page
-            - Updates the options and text area
-        """
         if self.current_page > 0:
             self.current_page -= 1
             self.update_options()
@@ -816,45 +769,20 @@ class PredictionsList(InteractiveTable):
             self.update_text_area()
 
     def move_right(self):
-        """
-        Move to the next page in the predictions view.
-
-        Behavior:
-            - Increments the current page if not on the last page
-            - Updates the options and text area
-        """
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
             self.update_options()
             self.selected_index = min(self.selected_index, len(self.options) - 1)
             self.update_text_area()
 
-    def format_odds(self, value):
-        """
-        Format odds or wager values, handling both string and float types.
+    def format_date(self, date_str):
+        try:
+            date = datetime.fromisoformat(date_str)
+            return date.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            return str(date_str)
 
-        Args:
-            value: The value to format (can be string or float).
 
-        Returns:
-            str: The formatted value as a string.
-        """
-        if isinstance(value, str):
-            return value
-        elif isinstance(value, (int, float)):
-            return f"{value:.2f}"
-        else:
-            return str(value)
-
-    def format_outcome(self, outcome, predicted_outcome, teamA):
-        bt.logging.debug(f"Formatting outcome: outcome={outcome}, predicted_outcome={predicted_outcome}, teamA={teamA}")
-        return outcome
-
-    def format_date(self, date_string):
-        date_obj = datetime.datetime.fromisoformat(date_string)
-        return date_obj.strftime("%Y-%m-%d %H:%M:%S")
-
-import datetime  # Modify this import at the top of the file
 
 class GamesList(InteractiveTable):
     def __init__(self, app):
@@ -951,25 +879,24 @@ class GamesList(InteractiveTable):
             return str(value)
 
     def update_sorted_games(self):
-        """
-        Update the sorted games list.
+        current_time = datetime.now(timezone.utc)
+        self.sorted_games = sorted(
+            [game for game in self.app.games.values() if self.parse_date(game.eventStartDate) > current_time],
+            key=lambda x: self.parse_date(x.eventStartDate)
+        )
 
-        Behavior:
-            - Sorts the games by event start date (earliest first)
-            - Applies the current filter if not set to "All Sports"
-            - Filters out games that have already occurred
-        """
-        current_time = datetime.datetime.now(datetime.timezone.utc)
-        if self.current_filter == "All Sports":
-            self.sorted_games = sorted(
-                [game for game in self.app.games.values() if self.parse_date(game.eventStartDate) > current_time],
-                key=lambda x: self.parse_date(x.eventStartDate)
-            )
-        else:
-            self.sorted_games = sorted(
-                [game for game in self.app.games.values() if game.sport == self.current_filter and self.parse_date(game.eventStartDate) > current_time],
-                key=lambda x: self.parse_date(x.eventStartDate)
-            )
+    @staticmethod
+    def parse_date(date_string):
+        try:
+            dt = datetime.fromisoformat(date_string.replace('Z', '+00:00'))
+            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+        except ValueError:
+            bt.logging.error(f"Invalid date format: {date_string}")
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    def format_event_start_date(self, event_start_date):
+        dt = self.parse_date(event_start_date)
+        return dt.strftime("%Y-%m-%d %H:%M")
 
     def update_total_pages(self):
         """
@@ -1000,7 +927,7 @@ class GamesList(InteractiveTable):
                 f"> {option}" if i == self.selected_index else f"  {option}"
                 for i, option in enumerate(self.options[:-2])
             )
-        current_time_text = f"\n\nCurrent Time (UTC): {datetime.datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M')}"
+        current_time_text = f"\n\nCurrent Time (UTC): {datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M')}"
         page_info = f"\nPage {self.current_page + 1}/{self.total_pages} (Use left/right arrow keys to navigate)"
         go_back_text = (
             f"\n\n  {self.options[-1]}"
@@ -1110,41 +1037,6 @@ class GamesList(InteractiveTable):
             self.update_options()
             self.update_text_area()
 
-    def format_event_start_date(self, event_start_date):
-        """
-        Format an event start date string.
-
-        Args:
-            event_start_date (str): The event start date string to format.
-
-        Returns:
-            str: The formatted event start date string.
-
-        Behavior:
-            - Converts the event start date string to a datetime object
-            - Converts the datetime object to UTC
-            - Formats the datetime object as "YYYY-MM-DD HH:MM"
-        """
-        dt = self.parse_date(event_start_date)
-        return dt.strftime("%Y-%m-%d %H:%M")
-
-    @staticmethod
-    def parse_date(date_string):
-        """
-        Parse a date string into a datetime object.
-
-        Args:
-            date_string (str): The date string to parse.
-
-        Returns:
-            datetime.datetime: The parsed datetime object.
-
-        Behavior:
-            - Converts the date string to a datetime object
-            - Ensures the datetime is in UTC
-        """
-        return datetime.datetime.fromisoformat(date_string.replace('Z', '+00:00'))
-
 
 
 
@@ -1226,26 +1118,30 @@ class WagerConfirm(InteractiveTable):
                 prediction_id = str(uuid.uuid4())
                 prediction = {
                     "predictionID": prediction_id,
-                    "teamGameID": self.game_data.externalId,
-                    "predictionDate": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "teamGameID": self.game_data.externalId,  # Use externalId here
+                    "minerID": str(self.app.miner_uid),
+                    "predictionDate": datetime.now(timezone.utc).isoformat(),
                     "predictedOutcome": self.selected_team,
                     "wager": wager_amount,
-                    "teamAodds": self.game_data.teamAodds,
-                    "teamBodds": self.game_data.teamBodds,
-                    "tieOdds": self.game_data.tieOdds,
+                    "teamAodds": float(self.game_data.teamAodds),
+                    "teamBodds": float(self.game_data.teamBodds),
+                    "tieOdds": float(self.game_data.tieOdds) if self.game_data.tieOdds is not None else None,
                     "outcome": "Unfinished",
                     "teamA": self.game_data.teamA,
                     "teamB": self.game_data.teamB
                 }
-                self.app.unsubmitted_predictions[prediction_id] = prediction
-                #bt.logging.info(f"Added prediction to unsubmitted_predictions: {prediction}")
+                self.app.add_prediction(prediction)
                 
-                self.app.submit_predictions()
-                self.confirmation_message = "Wager submitted successfully!"
-                self.text_area.text = self.confirmation_message
-                self.update_text_area()
-                time.sleep(.5)
-                self.app.change_view(GamesList(self.app))
+                try:
+                    self.confirmation_message = "Wager submitted successfully!"
+                    self.text_area.text = self.confirmation_message
+                    self.update_text_area()
+                    time.sleep(.5)
+                    self.app.change_view(GamesList(self.app))
+                except Exception as e:
+                    bt.logging.error(f"Error submitting wager: {str(e)}")
+                    self.confirmation_message = f"Error submitting wager: {str(e)}"
+                    self.update_text_area()
             except ValueError as e:
                 self.confirmation_message = str(e)
                 self.update_text_area()

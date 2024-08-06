@@ -23,8 +23,6 @@ WALLET_HOTKEY=""
 AXON_PORT=""
 VALIDATOR_MIN_STAKE=""
 LOGGING_LEVEL=""
-INTERFACE_TYPE=""
-SERVER_TYPE=""
 
 # Function to prompt for user input
 prompt_for_input() {
@@ -56,7 +54,7 @@ start_flask_server() {
     echo "Starting Flask server..."
     pm2 start --name "flask-server" python -- \
         -m bettensor.miner.interfaces.miner_interface_server \
-        --host "$FLASK_HOST" --port 5000
+        --host "127.0.0.1" --port 5000
     
     sleep 2  # Give the server a moment to start
 
@@ -114,7 +112,7 @@ prompt_for_input "Enter wallet name" "default" "WALLET_NAME"
 prompt_for_input "Enter wallet hotkey" "default" "WALLET_HOTKEY"
 DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --wallet.name $WALLET_NAME --wallet.hotkey $WALLET_HOTKEY"
 
-# Prompt for validator_min_stake if miner
+# Miner-specific arguments
 if [ "$NEURON_TYPE" = "miner" ]; then
     prompt_for_input "Enter validator_min_stake" "1000" "VALIDATOR_MIN_STAKE"
     DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --validator_min_stake $VALIDATOR_MIN_STAKE"
@@ -129,41 +127,35 @@ DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --logging.$LOGGING_LEVEL"
 # Prompt for disabling auto-update
 prompt_yes_no "Do you want to disable auto-update? Warning: this will apply to all running neurons" "DISABLE_AUTO_UPDATE"
 
-# Prompt for interface type if not specified
-prompt_for_input "Enter interface type (local/central)" "local" "INTERFACE_TYPE"
-
-# Validate interface type and set server type
-case $INTERFACE_TYPE in
-    local)
-        SERVER_TYPE="local"
-        FLASK_HOST="127.0.0.1"
-        ;;
-    central)
-        SERVER_TYPE="central"
-        FLASK_HOST="0.0.0.0"
-        ;;
-    *)
-        echo "Invalid interface type: $INTERFACE_TYPE. Using local interface."
-        SERVER_TYPE="local"
-        FLASK_HOST="127.0.0.1"
-        ;;
-esac
+# Check for existing miners and prompt to start another
+MINER_COUNT=$(pm2 list | grep -c "miner")
+if [ $MINER_COUNT -gt 0 ]; then
+    prompt_yes_no "There are already $MINER_COUNT miner(s) running. Do you want to start another?" "START_ANOTHER_MINER"
+    if [ "$START_ANOTHER_MINER" = "false" ]; then
+        echo "Exiting without starting a new miner."
+        exit 0
+    fi
+fi
 
 # Start the neuron with PM2
+MINER_NAME="miner$MINER_COUNT"
 echo "Starting $NEURON_TYPE with arguments: $DEFAULT_NEURON_ARGS"
-pm2 start --name "miner_0" python -- ./neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
+pm2 start --name "$MINER_NAME" python -- ./neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
 
 # Check if the neuron started successfully
-if pm2 list | grep -q "miner_0"; then
-    echo "$NEURON_TYPE started successfully with instance name: miner_0"
+if pm2 list | grep -q "$MINER_NAME"; then
+    echo "$NEURON_TYPE started successfully with instance name: $MINER_NAME"
 else
     echo "Failed to start $NEURON_TYPE. Check logs for details."
-    pm2 logs "miner_0" --lines 20
+    pm2 logs "$MINER_NAME" --lines 20
     exit 1
 fi
 
-# Start Flask server
-start_flask_server
+# Start additional services only for miners
+if [ "$NEURON_TYPE" = "miner" ]; then
+    # Start Flask server
+    start_flask_server
+fi
 
 # Start auto-updater if not disabled
 if [ "$DISABLE_AUTO_UPDATE" = "false" ]; then
@@ -180,7 +172,7 @@ echo "Current PM2 processes:"
 pm2 list
 
 # Display logs for all processes
-for process in "miner_0" "flask-server" "auto-updater"; do
+for process in "$MINER_NAME" "flask-server" "auto-updater"; do
     if pm2 list | grep -q "$process"; then
         echo "Logs for $process:"
         pm2 logs "$process" --lines 20 --nostream
