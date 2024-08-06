@@ -1,6 +1,10 @@
 #!/bin/bash
 
+# Change to the repository root directory
+cd "$(dirname "$0")/.." || exit 1
+
 echo "Starting auto_update.sh"
+echo "Current working directory: $(pwd)"
 
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 echo "Auto-update enabled on branch: $current_branch"

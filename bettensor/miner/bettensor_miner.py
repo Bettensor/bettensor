@@ -1,3 +1,4 @@
+import json
 import signal
 import sys
 from argparse import ArgumentParser
@@ -16,7 +17,7 @@ from bettensor.miner.database.database_manager import get_db_manager
 from bettensor.miner.database.games import GamesHandler
 from bettensor.miner.database.predictions import PredictionsHandler
 from bettensor.miner.utils.cache_manager import CacheManager
-from bettensor.miner.interfaces.redis_interface import RedisManager
+from bettensor.miner.interfaces.redis_interface import RedisInterface
 
 class BettensorMiner(BaseNeuron):
     def __init__(self, parser: ArgumentParser):
@@ -54,17 +55,17 @@ class BettensorMiner(BaseNeuron):
 
         self.args = self.neuron_config
 
-        # Initialize Redis manager
-        self.redis_manager = RedisManager(host=self.args.redis_host, port=self.args.redis_port)
-        connection_result = self.redis_manager.connect()
-        
-        if not connection_result:
-            bt.logging.info("You can still use the miner through the command-line interface.")
-            # Optionally, you might want to set a flag to disable GUI-related features
+        # Initialize Redis interface
+        self.redis_interface = RedisInterface(host=self.args.redis_host, port=self.args.redis_port)
+        if not self.redis_interface.connect():
+            bt.logging.warning("Failed to connect to Redis. GUI interfaces will not be available.")
             self.gui_available = False
         else:
             bt.logging.info("Redis connection successful. All interfaces (GUI and CLI) are available.")
             self.gui_available = True
+            # Start Redis listener in a separate thread
+            self.redis_thread = threading.Thread(target=self.listen_for_redis_messages)
+            self.redis_thread.start()
 
         bt.logging.info("Setting up wallet, subtensor, and metagraph")
         try:
@@ -210,6 +211,7 @@ class BettensorMiner(BaseNeuron):
     def stop(self):
         bt.logging.info("Stopping miner")
         self.state_manager.save_state()
+        # No need to explicitly close Redis connection as it's handled by RedisInterface
         bt.logging.info("Miner stopped")
 
     def signal_handler(self, signum, frame):
@@ -337,3 +339,41 @@ class BettensorMiner(BaseNeuron):
         else:
             # If it's not time to update, return the last known incentive from the state manager
             return self.state_manager.get_current_incentive()
+
+    def listen_for_redis_messages(self):
+        channel = f'miner:{self.miner_uid}:{self.wallet.hotkey.ss58_address}'
+        pubsub = self.redis_interface.subscribe(channel)
+        if pubsub is None:
+            bt.logging.error("Failed to subscribe to Redis channel")
+            return
+
+        bt.logging.info(f"Listening for Redis messages on channel: {channel}")
+
+        for message in pubsub.listen():
+            if message['type'] == 'message':
+                data = json.loads(message['data'])
+                bt.logging.info(f"Received message: {data}")
+                
+                # Process the message (e.g., make a prediction)
+                result = self.process_prediction_request(data)
+
+                # Send the result back
+                self.redis_interface.set(f'response:{data["message_id"]}', json.dumps(result))
+                # Note: Redis expiry is handled by the RedisInterface class
+
+    def process_prediction_request(self, data):
+        # Implement your prediction logic here
+        # This is a placeholder implementation
+        bt.logging.info(f"Processing prediction request: {data}")
+        
+        # Create a GameData object from the received data
+        game_data = GameData(gamedata_dict={data['game_id']: data['game_data']})
+        
+        # Call the forward method to get predictions
+        result = self.forward(game_data)
+        
+        return {
+            'predictions': result.prediction_dict,
+            'miner_uid': self.miner_uid,
+            'miner_hotkey': self.wallet.hotkey.ss58_address
+        }

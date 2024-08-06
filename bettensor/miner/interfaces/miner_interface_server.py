@@ -6,10 +6,10 @@ from werkzeug.serving import run_simple
 import jwt
 from functools import wraps
 from bettensor.miner.database.database_manager import get_db_manager
-import redis
 import uuid
 import bittensor as bt
 import argparse
+from bettensor.miner.interfaces.redis_interface import RedisInterface
 
 app = Flask(__name__)
 
@@ -28,7 +28,10 @@ if config.LOCAL_SERVER:
     CORS(app)
 
 # Initialize Redis client
-redis_client = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT)
+redis_interface = RedisInterface(host=config.REDIS_HOST, port=config.REDIS_PORT)
+if not redis_interface.connect():
+    bt.logging.error("Failed to connect to Redis. Exiting.")
+    sys.exit(1)
 
 # JWT token verification
 def token_required(f):
@@ -58,21 +61,23 @@ def get_miner_uids():
 def submit_prediction():
     data = request.json
     miner_uid = data.get('miner_uid')
-    if not miner_uid:
-        return jsonify({'message': 'Miner UID is required'}), 400
+    miner_hotkey = data.get('miner_hotkey')
+    if not miner_uid or not miner_hotkey:
+        return jsonify({'message': 'Miner UID and hotkey are required'}), 400
 
     # Generate a unique message ID
     message_id = str(uuid.uuid4())
     data['message_id'] = message_id
 
     # Publish the prediction data to the miner's channel
-    redis_client.publish(f'miner:{miner_uid}', json.dumps(data))
+    channel = f'miner:{miner_uid}:{miner_hotkey}'
+    if not redis_interface.publish(channel, json.dumps(data)):
+        return jsonify({'message': 'Failed to publish prediction request'}), 500
 
     # Wait for the response (with a timeout)
-    response = redis_client.blpop(f'response:{message_id}', timeout=30)
+    response = redis_interface.get(f'response:{message_id}')
     if response:
-        _, result = response
-        result = json.loads(result)
+        result = json.loads(response)
         return jsonify(result), 200
     else:
         return jsonify({'message': 'Prediction submission timed out'}), 408
@@ -105,7 +110,7 @@ def get_miners():
 @app.route('/heartbeat', methods=['GET'])
 @token_required
 def heartbeat():
-    return jsonify({'message': 'Miner interface server is alive'}), 200
+    return jsonify({'status': 'alive'}), 200
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Bettensor Miner Interface Server')
@@ -113,9 +118,5 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, default=5000, help='Port to run the server on')
     args = parser.parse_args()
 
-    if config.LOCAL_SERVER:
-        app.run(host=args.host, port=args.port)
-    elif config.CENTRAL_SERVER:
-        app.run(host=args.host, port=args.port, ssl_context='adhoc')
-    else:
-        print("No valid server configuration found. Please set either LOCAL_SERVER or CENTRAL_SERVER to True.")
+    print(f"Starting Flask server on {args.host}:{args.port}")
+    app.run(host=args.host, port=args.port)
