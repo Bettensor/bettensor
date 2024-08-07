@@ -181,3 +181,8 @@ class GamesHandler:
             active_games[row['gameid']] = team_game
         bt.logging.trace(f"Retrieved {len(active_games)} active games")
         return active_games
+
+    def game_exists(self, game_id):
+        query = "SELECT COUNT(*) FROM games WHERE externalID = %s"
+        result = self.db_manager.execute_query(query, (game_id,))
+        return result[0][0] > 0

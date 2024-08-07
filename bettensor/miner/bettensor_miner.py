@@ -19,6 +19,7 @@ from bettensor.miner.database.predictions import PredictionsHandler
 from bettensor.miner.utils.cache_manager import CacheManager
 from bettensor.miner.interfaces.redis_interface import RedisInterface
 import uuid
+from datetime import datetime, timezone
 
 class BettensorMiner(BaseNeuron):
     def __init__(self, parser: ArgumentParser):
@@ -76,6 +77,7 @@ class BettensorMiner(BaseNeuron):
             self.gui_available = True
             # Start Redis listener in a separate thread
             self.redis_thread = threading.Thread(target=self.listen_for_redis_messages)
+            self.redis_thread.daemon = True
             self.redis_thread.start()
 
         # Setup database manager
@@ -207,6 +209,17 @@ class BettensorMiner(BaseNeuron):
     def start(self):
         bt.logging.info("Starting miner")
         self.state_manager.reset_daily_cash()
+        
+        # Start Redis listener in a separate thread
+        self.redis_thread = threading.Thread(target=self.listen_for_redis_messages)
+        self.redis_thread.daemon = True
+        self.redis_thread.start()
+        
+        # Start health check in a separate thread
+        self.health_thread = threading.Thread(target=self.health_check)
+        self.health_thread.daemon = True
+        self.health_thread.start()
+        
         bt.logging.info("Miner started")
 
     def stop(self):
@@ -340,40 +353,91 @@ class BettensorMiner(BaseNeuron):
 
     def listen_for_redis_messages(self):
         channel = f'miner:{self.miner_uid}:{self.wallet.hotkey.ss58_address}'
-        pubsub = self.redis_interface.subscribe(channel)
-        if pubsub is None:
-            bt.logging.error("Failed to subscribe to Redis channel")
-            return
+        bt.logging.info(f"Starting to listen for Redis messages on channel: {channel}")
+        
+        while True:
+            try:
+                pubsub = self.redis_interface.subscribe(channel)
+                if pubsub is None:
+                    bt.logging.error("Failed to subscribe to Redis channel")
+                    time.sleep(5)  # Wait before trying to reconnect
+                    continue
 
-        bt.logging.info(f"Listening for Redis messages on channel: {channel}")
+                bt.logging.info(f"Successfully subscribed to Redis channel: {channel}")
 
-        for message in pubsub.listen():
-            if message['type'] == 'message':
-                data = json.loads(message['data'])
-                bt.logging.info(f"Received message: {data}")
-                
-                # Process the message (e.g., make a prediction)
-                result = self.process_prediction_request(data['content'])
+                for message in pubsub.listen():
+                    if message['type'] == 'message':
+                        data = json.loads(message['data'])
+                        bt.logging.info(f"Received message: {data}")
+                        
+                        # Process the message (e.g., make a prediction)
+                        result = self.process_prediction_request(data)
 
-                # Send the result back to the CLI's channel
-                self.redis_interface.publish(data['cli_channel'], json.dumps({
-                    'message_id': data['message_id'],
-                    'result': result
-                }))
+                        # Send the result back
+                        response_key = f'response:{data["message_id"]}'
+                        bt.logging.info(f"Publishing response to key: {response_key}")
+                        self.redis_interface.set(response_key, json.dumps(result), ex=60)  # Set expiration to 60 seconds
+
+            except Exception as e:
+                bt.logging.error(f"Error in Redis listener: {str(e)}")
+                time.sleep(5)  # Wait before trying to reconnect
 
     def process_prediction_request(self, data):
-        # Implement your prediction logic here
-        # This is a placeholder implementation
         bt.logging.info(f"Processing prediction request: {data}")
-        
-        # Create a GameData object from the received data
-        game_data = GameData(gamedata_dict={data['game_id']: data['game_data']})
-        
-        # Call the forward method to get predictions
-        result = self.forward(game_data)
-        
+
+        predictions = data.get('predictions', [])
+        results = []
+
+        for prediction in predictions:
+            bt.logging.info(f"Processing prediction: {prediction}")
+            
+            try:
+                # Check if the teamGameID exists in the games table
+                game_exists = self.games_handler.game_exists(prediction['teamGameID'])
+                if not game_exists:
+                    bt.logging.warning(f"Game with ID {prediction['teamGameID']} does not exist")
+                    results.append({
+                        'predictionID': prediction.get('predictionID', str(uuid.uuid4())),
+                        'status': 'error',
+                        'message': f"Game with ID {prediction['teamGameID']} does not exist"
+                    })
+                    continue
+
+                # Generate a new predictionID if not provided
+                if 'predictionID' not in prediction:
+                    prediction['predictionID'] = str(uuid.uuid4())
+
+                # Set minerID and predictionDate
+                prediction['minerID'] = str(self.miner_uid)
+                prediction['predictionDate'] = datetime.now(timezone.utc).isoformat()
+
+                # Set initial outcome to 'Unfinished'
+                prediction['outcome'] = 'Unfinished'
+
+                # Add the prediction to the database
+                result = self.predictions_handler.add_prediction(prediction)
+                bt.logging.info(f"Prediction added: {result}")
+                results.append({
+                    'predictionID': prediction['predictionID'],
+                    'status': result['status'],
+                    'message': result['message']
+                })
+            except Exception as e:
+                bt.logging.error(f"Error processing prediction: {str(e)}")
+                results.append({
+                    'predictionID': prediction.get('predictionID', str(uuid.uuid4())),
+                    'status': 'error',
+                    'message': f"Error processing prediction: {str(e)}"
+                })
+
+        bt.logging.info(f"Processed all predictions. Results: {results}")
         return {
-            'predictions': result.prediction_dict,
+            'predictions': results,
             'miner_uid': self.miner_uid,
             'miner_hotkey': self.wallet.hotkey.ss58_address
         }
+
+    def health_check(self):
+        while True:
+            bt.logging.info("Miner health check: Still listening for Redis messages")
+            time.sleep(300)  # Check every 5 minutes

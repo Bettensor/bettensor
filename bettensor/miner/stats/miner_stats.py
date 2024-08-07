@@ -267,8 +267,9 @@ class MinerStateManager:
         with self.lock:
             bt.logging.trace(f"Cash before prediction: {self.state['miner_cash']}")
             self.state['miner_lifetime_predictions'] += 1
-            self.state['miner_cash'] -= prediction_data['wager']
-            self.state['miner_lifetime_wager'] += prediction_data['wager']
+            if 'wager' in prediction_data:
+                self.state['miner_cash'] -= prediction_data['wager']
+                self.state['miner_lifetime_wager'] += prediction_data['wager']
             self.state['miner_last_prediction_date'] = datetime.now(timezone.utc).isoformat()
             bt.logging.trace(f"Cash after prediction: {self.state['miner_cash']}")
             self.save_state()
@@ -344,3 +345,10 @@ class MinerStateManager:
                     'wager': prediction.wager,
                     'prediction': prediction
                 })
+
+    def get_miner_cash(self, miner_id):
+        query = "SELECT miner_cash FROM miner_stats WHERE miner_uid = %s"
+        result = self.db_manager.execute_query(query, (miner_id,))
+        if result and result[0]:
+            return result[0][0]
+        return 0  # Return 0 if no result found

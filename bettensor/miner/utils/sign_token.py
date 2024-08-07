@@ -2,48 +2,66 @@ import argparse
 import requests
 import bittensor as bt
 from getpass import getpass
+import json
+import os
+
+def get_jwt():
+    print("Please enter the JWT token you received from the website:")
+    jwt = input().strip()
+    return jwt
 
 def get_wallet():
     while True:
-        wallet_name = input("Enter your wallet name: ")
-        wallet_hotkey = input("Enter your wallet hotkey name: ")
+        print("\nNow, let's set up your wallet.")
+        wallet_name = input("Enter your wallet name: ").strip()
+        
         try:
-            wallet = bt.wallet(name=wallet_name, hotkey=wallet_hotkey)
+            wallet = bt.wallet(name=wallet_name)
+            
+            if not wallet.coldkey_file.exists_on_device():
+                print(f"Error: Coldkey file for wallet '{wallet_name}' does not exist.")
+                print("Please make sure you've created a wallet with this name and it has a coldkey.")
+                continue
+
+            print("NOTICE: Signing this token will require your coldkey password.")
+            print("This function uses the bittensor library and the password is not stored or recovered by this script.")
+            
             return wallet
         except Exception as e:
             print(f"Error loading wallet: {e}")
             print("Please try again.")
 
 def sign_jwt(wallet, jwt):
-    message = bt.Keypair.create_message(jwt)
+    message = jwt
     signature = wallet.coldkey.sign(message)
     return signature.hex()
 
+def store_token(jwt, signature):
+    token_data = {
+        "jwt": jwt,
+        "signature": signature,
+        "revoked": False
+    }
+    with open("token_store.json", "w") as f:
+        json.dump(token_data, f)
+
 def main():
-    parser = argparse.ArgumentParser(description="Central Server Authentication")
-    parser.add_argument("--port", type=int, default=5000, help="Port of the Flask server")
-    args = parser.parse_args()
-
-    print("Welcome to the Bettensor Central Server Authentication")
-    print("Please enter the JWT token you received from the website:")
-    jwt = input().strip()
-
+    print("Welcome to the Bettensor Token Signing Utility")
+    
+    jwt = get_jwt()
     wallet = get_wallet()
 
-    signature = sign_jwt(wallet, jwt)
-
-    # Get the server's IP address
     try:
-        ip = requests.get('https://api.ipify.org').text
-    except:
-        ip = "Unable to determine IP"
+        signature = sign_jwt(wallet, jwt)
+    except Exception as e:
+        print(f"Error signing JWT: {e}")
+        print("Please ensure your wallet is set up correctly and try again.")
+        return
 
-    print("\nAuthentication Information:")
-    print(f"Token: {jwt}")
-    print(f"Signature: {signature}")
-    print(f"IP: {ip}")
-    print(f"Port: {args.port}")
-    print("\nPlease use this information to connect to the central server.")
+    store_token(jwt, signature)
+
+    print("\nToken has been signed and stored successfully.")
+    print("You can now use this signed token for authentication with the miner server.")
 
 if __name__ == "__main__":
     main()

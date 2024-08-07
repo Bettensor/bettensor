@@ -136,7 +136,7 @@ class TeamGamePrediction(BaseModel):
 
     predictionID: str = Field(..., description="UUID of the prediction")
     teamGameID: str = Field(..., description="UUID of the team game")
-    minerID: str = Field(..., description="UUID of the miner (coldkey/hotkey) that made the prediction")
+    minerID: str = Field(..., description="UUID of the miner (hotkey) that made the prediction")
     predictionDate: str = Field(..., description="Prediction date of the prediction")
     predictedOutcome: str = Field(..., description="Predicted outcome")
     teamA: Optional[str] = Field(None, description="Team A")

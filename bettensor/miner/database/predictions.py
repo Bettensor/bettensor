@@ -151,6 +151,14 @@ class PredictionsHandler:
             return {}
 
     def add_prediction(self, prediction):
+        # Check if miner has enough cash
+        miner_cash = self.state_manager.get_miner_cash(prediction['minerID'])
+        if miner_cash < prediction['wager']:
+            return {
+                'status': 'error',
+                'message': f"Insufficient funds. Miner cash: {miner_cash}, Wager: {prediction['wager']}"
+            }
+
         query = """
         INSERT INTO predictions (
             predictionID, teamGameID, minerID, predictionDate,
@@ -160,7 +168,7 @@ class PredictionsHandler:
         """
         params = (
             prediction['predictionID'],
-            prediction['teamGameID'],  # This is now the externalId
+            prediction['teamGameID'],
             prediction['minerID'],
             prediction['predictionDate'],
             prediction['predictedOutcome'],
@@ -176,9 +184,21 @@ class PredictionsHandler:
         try:
             self.db_manager.execute_query(query, params)
             #bt.logging.info(f"Added prediction: {prediction['predictionID']}")
+            
+            # Update miner stats
+            self.state_manager.update_on_prediction(prediction)
+            
+            return {
+                'status': 'success',
+                'message': f"Prediction {prediction['predictionID']} added successfully"
+            }
         except Exception as e:
             bt.logging.error(f"Error adding prediction: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            return {
+                'status': 'error',
+                'message': f"Error adding prediction: {str(e)}"
+            }
 
     def update_prediction_team_names(self):
         query1 = """

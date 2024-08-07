@@ -3,6 +3,9 @@ import redis
 import bittensor as bt
 import uuid
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 class RedisInterface:
     def __init__(self, host="localhost", port=6379):
@@ -24,8 +27,18 @@ class RedisInterface:
             bt.logging.info("Redis connection successful")
             return True
         except redis.ConnectionError:
-            bt.logging.warning("Failed to connect to Redis server. GUI interfaces will not be available. Only CLI will work.")
+            bt.logging.warning("Failed to connect to Redis server.")
             self.is_connected = False
+            return False
+
+    def ping(self):
+        if not self.is_connected:
+            bt.logging.warning("Redis is not connected. Cannot ping.")
+            return False
+        try:
+            return self.redis_client.ping()
+        except Exception as e:
+            bt.logging.error(f"Error pinging Redis: {e}")
             return False
 
     def publish(self, channel, message):
@@ -61,13 +74,17 @@ class RedisInterface:
             bt.logging.error(f"Error getting value from Redis: {e}")
             return None
 
-    def set(self, key, value):
+    def set(self, key, value, ex=None):
         if not self.is_connected:
             bt.logging.warning("Redis is not connected. Cannot set value.")
             return False
         try:
-            self.redis_client.set(key, value)
-            return True
+            if ex is not None:
+                result = self.redis_client.setex(key, ex, value)
+            else:
+                result = self.redis_client.set(key, value)
+            bt.logging.debug(f"Set result: {result}")
+            return result
         except Exception as e:
             bt.logging.error(f"Error setting value in Redis: {e}")
             return False
@@ -99,3 +116,13 @@ class RedisInterface:
                 return result
             time.sleep(0.1)
         raise TimeoutError("Timeout waiting for database operation result")
+
+    def blpop(self, keys, timeout=0):
+        if not self.is_connected:
+            bt.logging.warning("Redis is not connected. Cannot perform BLPOP.")
+            return None
+        try:
+            return self.redis_client.blpop(keys, timeout)
+        except Exception as e:
+            bt.logging.error(f"Error performing BLPOP on Redis: {e}")
+            return None
