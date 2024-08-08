@@ -54,7 +54,7 @@ limiter = Limiter(
 class Config:
     LOCAL_SERVER = os.environ.get('LOCAL_SERVER', 'False').lower() == 'true'
     CENTRAL_SERVER = os.environ.get('CENTRAL_SERVER', 'True').lower() == 'true'
-    JWT_SECRET = os.environ.get('JWT_SECRET', 'bettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensor')  # Change this in production and store securely
+    JWT_SECRET = os.environ.get('JWT_SECRET', 'bettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensor')  # Change this in production and store securely
     REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
     REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 

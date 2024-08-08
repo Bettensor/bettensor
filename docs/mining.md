@@ -275,3 +275,56 @@ When you're done using the interface:
 - Check that port 5000 isn't being used by another application on your local machine. If it is, you can use a different local port in the SSH command, e.g., `ssh -L 8080:localhost:5000 username@your_vps_ip`, and then access the interface at `http://localhost:8080`.
 
 Remember, while using the local server option, the interface is only accessible through this SSH tunnel, providing an extra layer of security for your miner operations.
+
+
+## Troubleshooting
+
+Here are some common issues miners might encounter and how to resolve them:
+
+1. **Port not open on machine**
+   - Ensure the required ports are open on your machine.
+   - If using UFW (Uncomplicated Firewall), open the necessary port:
+     ```
+     sudo ufw allow <port_number>
+     ```
+   - Check if your VPS provider has an external firewall. You may need to configure it in your provider's dashboard.
+
+2. **Checking logs**
+   - To view logs for all processes:
+     ```
+     pm2 log
+     ```
+   - To view logs for a specific process:
+     ```
+     pm2 log <process_id>
+     ```
+
+3. **Restarting processes**
+   - To restart all processes:
+     ```
+     pm2 restart all
+     ```
+   - To restart a specific process:
+     ```
+     pm2 restart <process_id>
+     ```
+
+4. **Connection issues**
+   - Ensure your internet connection is stable.
+   - Check if the subtensor endpoint is accessible.
+
+5. **API key issues**
+   - Verify that your API key is correctly set in the `.env` file.
+   - Ensure you have sufficient credits on your RapidAPI account.
+
+6. **Unexpected behavior**
+   - Try stopping all processes:
+     ```
+     pm2 stop all
+     ```
+   - Then start them again:
+     ```
+     pm2 start all
+     ```
+
+If you continue to experience issues, please reach out to the community support channels for further assistance.

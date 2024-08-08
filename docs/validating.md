@@ -12,3 +12,9 @@ RAPID_API_KEY=<YOUR_API_KEY>
 
 >[!NOTE]
 > We recommend running with --logging.trace while we are in Beta. This is much more verbose, but it will help us to debug if you run into issues.
+
+
+
+
+
+

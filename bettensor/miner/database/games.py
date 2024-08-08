@@ -1,9 +1,11 @@
 import datetime
-from typing import Dict, Tuple
-from bettensor.protocol import TeamGame
+import traceback
+from typing import Dict, Tuple, List, Union, Optional
+from bettensor.protocol import TeamGame, TeamGamePrediction
 import bittensor as bt
-from datetime import timedelta
+from datetime import datetime, timezone, timedelta
 from bettensor.miner.database.predictions import PredictionsHandler
+import json
 
 class GamesHandler:
     def __init__(self, db_manager, predictions_handler):
@@ -13,141 +15,105 @@ class GamesHandler:
         self.inactive_game_window = timedelta(days=30)
         bt.logging.trace("GamesHandler initialization complete")
 
-    def process_games(self, game_data_dict: Dict[str, TeamGame]) -> Dict[str, TeamGame]:
-        bt.logging.info(f"Processing {len(game_data_dict)} games")
+    def process_games(self, changed_games):
+        bt.logging.trace(f"Processing {len(changed_games)} changed games")
+        updated_games = {}
+        new_games = {}
+        current_time = datetime.now(timezone.utc)
+
         try:
-            current_time = datetime.datetime.now(datetime.timezone.utc)
-            updated_games = {}
-            new_games = {}
-            
-            for game_id, game_data in game_data_dict.items():
-                is_new = self._add_or_update_game(game_data, current_time)
-                if is_new:
-                    new_games[game_id] = game_data
-                else:
-                    updated_games[game_id] = game_data
-
-            self._mark_old_games_inactive(current_time)
-            self._remove_duplicate_games()
-
-            bt.logging.info(f"Game processing complete. Updated: {len(updated_games)}, New: {len(new_games)}")
-            return updated_games, new_games
+            self._batch_add_or_update_games(changed_games, current_time, updated_games, new_games)
+            bt.logging.trace(f"Processed games: {len(updated_games)} updated, {len(new_games)} new")
         except Exception as e:
-            bt.logging.error(f"Error processing games: {e}")
-            return {}, {}
+            bt.logging.error(f"Error processing games: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
-    def _add_or_update_game(self, game_data: TeamGame, current_time: datetime.datetime) -> bool:
-        bt.logging.debug(f"Adding or updating game: {game_data.externalId}")
-        event_start_date = datetime.datetime.fromisoformat(game_data.eventStartDate.replace('Z', '+00:00'))
-        is_active = bool(current_time <= event_start_date)
+        return updated_games, new_games
 
-        query = "SELECT * FROM games WHERE externalID = %s::text"
-        existing_game = self.db_manager.execute_query(query, params=(game_data.externalId,))
+    def _batch_add_or_update_games(self, game_data_dict, current_time, updated_games, new_games):
+        bt.logging.trace(f"Batch adding or updating {len(game_data_dict)} games")
+        game_data_dict_by_external_id = {game.externalId: game for game in game_data_dict.values()}
 
-        if existing_game:
-            existing_outcome = existing_game[0][12]  # Assuming 'outcome' is at index 12
-            bt.logging.debug(f"Existing game found: {game_data.externalId}, Current outcome: {existing_outcome}, New outcome: {game_data.outcome}")
-            
-            if existing_outcome != game_data.outcome:
-                bt.logging.info(f"Game {game_data.externalId} outcome changed from {existing_outcome} to {game_data.outcome}")
-            
-            query = """UPDATE games SET 
-                teamA = %s, teamAodds = %s, teamB = %s, teamBodds = %s, sport = %s, league = %s, 
-                createDate = %s, lastUpdateDate = %s, eventStartDate = %s, active = %s::boolean, 
-                outcome = %s, tieOdds = %s, canTie = %s::boolean 
-                WHERE externalID = %s::text"""
-            params = (
-                game_data.teamA, game_data.teamAodds, game_data.teamB, game_data.teamBodds,
-                game_data.sport, game_data.league, game_data.createDate, game_data.lastUpdateDate,
-                game_data.eventStartDate, is_active, game_data.outcome, game_data.tieOdds,
-                game_data.canTie, game_data.externalId
-            )
-            self.db_manager.execute_query(query, params=params)
-            bt.logging.debug(f"Game updated: {game_data.externalId}, New outcome: {game_data.outcome}")
-            
-            # Trigger prediction update
-            bt.logging.debug(f"Triggering prediction update for game: {game_data.externalId}")
-            self.predictions_handler.process_game_results({game_data.id: game_data})
-            
-            return False
-        else:
-            bt.logging.debug(f"Adding new game: {game_data.externalId}")
-            query = """INSERT INTO games (
-                gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, 
-                createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::text, %s, %s, %s, %s::boolean, %s, %s, %s::boolean)"""
+        upsert_query = """
+        INSERT INTO games (
+            gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, 
+            createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (externalID) DO UPDATE SET
+            teamA = EXCLUDED.teamA,
+            teamAodds = EXCLUDED.teamAodds,
+            teamB = EXCLUDED.teamB,
+            teamBodds = EXCLUDED.teamBodds,
+            sport = EXCLUDED.sport,
+            league = EXCLUDED.league,
+            lastUpdateDate = EXCLUDED.lastUpdateDate,
+            eventStartDate = EXCLUDED.eventStartDate,
+            active = EXCLUDED.active,
+            outcome = EXCLUDED.outcome,
+            tieOdds = EXCLUDED.tieOdds,
+            canTie = EXCLUDED.canTie
+        RETURNING externalID, (xmax = 0) AS is_new, outcome
+        """
+        
+        params_list = []
+        for game_data in game_data_dict_by_external_id.values():
+            event_start_date = self._ensure_timezone_aware(game_data.eventStartDate)
+            is_active = bool(current_time <= event_start_date)
             params = (
                 game_data.id, game_data.teamA, game_data.teamAodds, game_data.teamB, game_data.teamBodds,
-                game_data.sport, game_data.league, game_data.externalId, game_data.createDate,
-                game_data.lastUpdateDate, game_data.eventStartDate, is_active,
+                game_data.sport, game_data.league, game_data.externalId, self._ensure_timezone_aware(game_data.createDate),
+                self._ensure_timezone_aware(game_data.lastUpdateDate), event_start_date, is_active,
                 game_data.outcome, game_data.tieOdds, game_data.canTie
             )
-            self.db_manager.execute_query(query, params=params)
-            bt.logging.debug(f"New game added: {game_data.externalId}, Outcome: {game_data.outcome}")
+            params_list.append(params)
+        
+        try:
+            self.db_manager.execute_batch(upsert_query, params_list)
             
-            # Trigger prediction update
-            bt.logging.debug(f"Triggering prediction update for new game: {game_data.externalId}")
-            self.predictions_handler.process_game_results({game_data.id: game_data})
+            # Fetch the results of the upsert operation
+            select_query = "SELECT externalID, (xmax = 0) AS is_new, outcome FROM games WHERE externalID = ANY(%s)"
+            results = self.db_manager.execute_query(select_query, ([game.externalId for game in game_data_dict_by_external_id.values()],))
             
-            return True
+            for result in results:
+                external_id, is_new, outcome = result['externalid'], result['is_new'], result['outcome']
+                game_data = game_data_dict_by_external_id[external_id]
+                if is_new:
+                    new_games[external_id] = game_data
+                    bt.logging.debug(f"New game added: {external_id}")
+                else:
+                    updated_games[external_id] = game_data
+                    bt.logging.debug(f"Game updated: {external_id}")
+                
+                if outcome != game_data.outcome:
+                    bt.logging.info(f"Game {external_id} outcome changed from {outcome} to {game_data.outcome}")
+                    self.predictions_handler.process_game_results({external_id: game_data})
+            
+            bt.logging.info(f"Processed {len(results)} games: {len(new_games)} new, {len(updated_games)} updated")
+        except Exception as e:
+            bt.logging.error(f"Error in batch add/update games: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            raise
 
-    def _mark_old_games_inactive(self, current_time: datetime.datetime):
-        bt.logging.trace("Marking old games as inactive")
-        cutoff_date = current_time - self.inactive_game_window
-        query = "UPDATE games SET active = FALSE WHERE eventStartDate < %s"
-        self.db_manager.execute_query(query, params=(cutoff_date.isoformat(),))
+    def _ensure_timezone_aware(self, dt):
+        bt.logging.trace(f"Ensuring timezone awareness for datetime: {dt}")
+        if isinstance(dt, str):
+            dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
 
-    def _remove_duplicate_games(self):
-        bt.logging.trace("Removing duplicate games")
-        query = """
-            DELETE FROM games
-            WHERE ctid NOT IN (
-                SELECT MIN(ctid)
-                FROM games
-                GROUP BY externalID
-            )
-        """
-        self.db_manager.execute_query(query)
-
-    def get_game_by_id(self, game_id: str) -> TeamGame:
-        bt.logging.trace(f"Retrieving game with ID: {game_id}")
-        query = "SELECT * FROM games WHERE gameID = %s"
-        result = self.db_manager.execute_query(query, params=(game_id,))
-        if result and result[0]:
-            return TeamGame(*result[0])
+    def get_game(self, external_id: str) -> Optional[TeamGame]:
+        bt.logging.trace(f"Retrieving game with external ID: {external_id}")
+        query = "SELECT * FROM games WHERE externalID = %s"
+        result = self.db_manager.execute_query(query, (external_id,))
+        if result:
+            bt.logging.trace(f"Game found: {result[0]}")
+            return TeamGame(**result[0])
+        bt.logging.trace(f"No game found for external ID: {external_id}")
         return None
-
-    def get_all_games(self) -> Dict[str, TeamGame]:
-        bt.logging.trace("Retrieving all games")
-        query = "SELECT * FROM games"
-        games_raw = self.db_manager.execute_query(query)
-
-        game_dict = {}
-        for game in games_raw:
-            single_game = TeamGame(
-                id=game[0],
-                teamA=game[1],
-                teamAodds=game[2],
-                teamB=game[3],
-                teamBodds=game[4],
-                sport=game[5],
-                league=game[6],
-                externalId=game[7],
-                createDate=game[8],
-                lastUpdateDate=game[9],
-                eventStartDate=game[10],
-                active=bool(game[11]),
-                outcome=game[12],
-                tieOdds=game[13],
-                canTie=bool(game[14]),
-            )
-            game_dict[game[0]] = single_game
-        bt.logging.trace(f"Retrieved {len(game_dict)} games")
-        return game_dict
 
     def get_active_games(self):
         bt.logging.trace("Retrieving active games")
-        current_time = datetime.datetime.now(datetime.timezone.utc)
         query = """
         SELECT * FROM games
         WHERE active = true AND eventstartdate > NOW()
@@ -156,11 +122,6 @@ class GamesHandler:
         results = self.db_manager.execute_query(query)
         active_games = {}
         for row in results:
-            # Convert datetime objects to ISO format strings
-            create_date = row['createdate'].isoformat() if isinstance(row['createdate'], datetime.datetime) else row['createdate']
-            last_update_date = row['lastupdatedate'].isoformat() if isinstance(row['lastupdatedate'], datetime.datetime) else row['lastupdatedate']
-            event_start_date = row['eventstartdate'].isoformat() if isinstance(row['eventstartdate'], datetime.datetime) else row['eventstartdate']
-
             team_game = TeamGame(
                 id=row['gameid'],
                 teamA=row['teama'],
@@ -170,9 +131,9 @@ class GamesHandler:
                 sport=row['sport'],
                 league=row['league'],
                 externalId=row['externalid'],
-                createDate=create_date,
-                lastUpdateDate=last_update_date,
-                eventStartDate=event_start_date,
+                createDate=row['createdate'].isoformat(),
+                lastUpdateDate=row['lastupdatedate'].isoformat(),
+                eventStartDate=row['eventstartdate'].isoformat(),
                 active=bool(row['active']),
                 outcome=row['outcome'],
                 tieOdds=float(row['tieodds']),
@@ -183,6 +144,17 @@ class GamesHandler:
         return active_games
 
     def game_exists(self, game_id):
+        bt.logging.trace(f"Checking if game exists: {game_id}")
         query = "SELECT COUNT(*) FROM games WHERE externalID = %s"
         result = self.db_manager.execute_query(query, (game_id,))
-        return result[0][0] > 0
+        exists = result[0][0] > 0
+        bt.logging.trace(f"Game {game_id} exists: {exists}")
+        return exists
+
+    def _mark_old_games_inactive(self):
+        bt.logging.trace("Marking old games as inactive")
+        current_time = datetime.now(timezone.utc)
+        cutoff_date = current_time - self.inactive_game_window
+        query = "UPDATE games SET active = FALSE WHERE eventStartDate < %s"
+        self.db_manager.execute_query(query, params=(cutoff_date.isoformat(),))
+        bt.logging.trace("Old games marked as inactive")

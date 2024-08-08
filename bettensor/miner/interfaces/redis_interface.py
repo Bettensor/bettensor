@@ -15,7 +15,6 @@ class RedisInterface:
         self.is_connected = False
 
     def connect(self):
-        bt.logging.info("Initializing Redis connection")
         try:
             self.redis_client = redis.Redis(
                 host=self.host,
@@ -24,7 +23,6 @@ class RedisInterface:
             )
             self.redis_client.ping()
             self.is_connected = True
-            bt.logging.info("Redis connection successful")
             return True
         except redis.ConnectionError:
             bt.logging.warning("Failed to connect to Redis server.")
@@ -33,7 +31,6 @@ class RedisInterface:
 
     def ping(self):
         if not self.is_connected:
-            bt.logging.warning("Redis is not connected. Cannot ping.")
             return False
         try:
             return self.redis_client.ping()
@@ -43,7 +40,6 @@ class RedisInterface:
 
     def publish(self, channel, message):
         if not self.is_connected:
-            bt.logging.warning("Redis is not connected. Cannot publish message.")
             return False
         try:
             self.redis_client.publish(channel, message)
@@ -54,7 +50,6 @@ class RedisInterface:
 
     def subscribe(self, channel):
         if not self.is_connected:
-            bt.logging.warning("Redis is not connected. Cannot subscribe to channel.")
             return None
         try:
             pubsub = self.redis_client.pubsub()
@@ -66,7 +61,6 @@ class RedisInterface:
 
     def get(self, key):
         if not self.is_connected:
-            bt.logging.warning("Redis is not connected. Cannot get value.")
             return None
         try:
             return self.redis_client.get(key)
@@ -76,7 +70,6 @@ class RedisInterface:
 
     def set(self, key, value, ex=None):
         if not self.is_connected:
-            bt.logging.warning("Redis is not connected. Cannot set value.")
             return False
         try:
             if ex is not None:
@@ -91,7 +84,6 @@ class RedisInterface:
 
     def execute_db_operation(self, operation, **params):
         if not self.is_connected:
-            bt.logging.warning("Redis is not connected. Cannot execute database operation.")
             return None
         try:
             message_id = str(uuid.uuid4())
@@ -119,7 +111,6 @@ class RedisInterface:
 
     def blpop(self, keys, timeout=0):
         if not self.is_connected:
-            bt.logging.warning("Redis is not connected. Cannot perform BLPOP.")
             return None
         try:
             return self.redis_client.blpop(keys, timeout)

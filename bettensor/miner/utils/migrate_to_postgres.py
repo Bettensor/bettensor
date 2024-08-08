@@ -102,6 +102,7 @@ def create_postgres_tables(pg_cursor: psycopg2.cursor):
                 predictionID TEXT PRIMARY KEY,
                 teamGameID TEXT,
                 minerID TEXT,
+                minerHotkey TEXT,
                 predictionDate TIMESTAMP,
                 predictedOutcome TEXT,
                 teamA TEXT,
@@ -164,6 +165,30 @@ def create_postgres_tables(pg_cursor: psycopg2.cursor):
         except psycopg2.Error as e:
             bt.logging.error(f"Error creating table {table_name}: {e}")
 
+    # Add unique constraint for externalID in games table
+    try:
+        pg_cursor.execute("ALTER TABLE games ADD CONSTRAINT unique_external_id UNIQUE (externalID)")
+        bt.logging.info("Added unique constraint for externalID in games table")
+    except psycopg2.Error as e:
+        bt.logging.error(f"Error adding unique constraint for externalID in games table: {e}")
+
+def update_predictions_with_hotkey(pg_conn: psycopg2.connection):
+    bt.logging.info("Updating predictions with miner hotkey")
+    query = """
+    UPDATE predictions p
+    SET minerHotkey = ms.miner_hotkey
+    FROM miner_stats ms
+    WHERE p.minerID = ms.miner_uid::TEXT AND p.minerHotkey IS NULL
+    """
+    try:
+        with pg_conn.cursor() as pg_cursor:
+            pg_cursor.execute(query)
+            pg_conn.commit()
+        bt.logging.info("Successfully updated predictions with miner hotkey")
+    except psycopg2.Error as e:
+        pg_conn.rollback()
+        bt.logging.error(f"Error updating predictions with hotkey: {e}")
+
 def migrate_to_postgres():
     # SQLite connection
     sqlite_path = os.path.expanduser("~/bettensor/data/miner.db")
@@ -183,6 +208,9 @@ def migrate_to_postgres():
             for table in tables_to_migrate:
                 migrate_table(sqlite_conn, pg_conn, table)
                 validate_migration(sqlite_conn, pg_conn, table)
+
+        # Update predictions with minerHotkey
+        update_predictions_with_hotkey(pg_conn)
 
         # Update the database version
         with pg_conn.cursor() as pg_cursor:

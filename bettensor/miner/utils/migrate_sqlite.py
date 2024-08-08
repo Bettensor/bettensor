@@ -114,6 +114,7 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                 """)
                 execute_with_retry(cursor, "DROP TABLE games")
                 execute_with_retry(cursor, "ALTER TABLE games_new RENAME TO games")
+                execute_with_retry(cursor, "CREATE UNIQUE INDEX IF NOT EXISTS idx_games_external_id ON games(externalID)")
             
             # Migrate miner_stats table
             if table_exists(cursor, 'miner_stats'):

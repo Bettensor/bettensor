@@ -104,17 +104,25 @@ def main(miner: BettensorMiner):
                     miner.metagraph.sync(subtensor=miner.subtensor)
 
                 miner.metagraph = miner.subtensor.metagraph(miner.neuron_config.netuid)
+                miner_uid_int = int(miner.miner_uid)
+                stake = miner.metagraph.S[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.S) else 0
+                rank = miner.metagraph.R[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.R) else 0
+                trust = miner.metagraph.T[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.T) else 0
+                consensus = miner.metagraph.C[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.C) else 0
+                incentive = miner.metagraph.I[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.I) else 0
+                emission = miner.metagraph.E[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.E) else 0
+
                 log = (
                     f"Version:{version} | "
                     f"Blacklist:{miner.hotkey_blacklisted} | "
                     f"Step:{miner.step} | "
                     f"Block:{miner.metagraph.block.item()} | "
-                    f"Stake:{miner.metagraph.S[miner.miner_uid]} | "
-                    f"Rank:{miner.metagraph.R[miner.miner_uid]} | "
-                    f"Trust:{miner.metagraph.T[miner.miner_uid]} | "
-                    f"Consensus:{miner.metagraph.C[miner.miner_uid] } | "
-                    f"Incentive:{miner.metagraph.I[miner.miner_uid]} | "
-                    f"Emission:{miner.metagraph.E[miner.miner_uid]}"
+                    f"Stake:{stake} | "
+                    f"Rank:{rank} | "
+                    f"Trust:{trust} | "
+                    f"Consensus:{consensus} | "
+                    f"Incentive:{incentive} | "
+                    f"Emission:{emission}"
                 )
 
                 bt.logging.info(log)

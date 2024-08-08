@@ -1,69 +1,90 @@
-import datetime
 import traceback
-from typing import Any, List, Dict
-from bettensor.miner.database.database_manager import DatabaseManager
+from typing import Any, List, Dict, Optional
 from bettensor.protocol import TeamGamePrediction, TeamGame
-from bettensor.miner.stats.miner_stats import MinerStateManager
 import bittensor as bt
-import uuid
 from datetime import datetime, timezone, timedelta
 
 class PredictionsHandler:
-    def __init__(self, db_manager, state_manager: MinerStateManager, miner_uid: str):
+    def __init__(self, db_manager, state_manager, miner_hotkey: str):
+        bt.logging.trace("Initializing PredictionsHandler")
         self.db_manager = db_manager
         self.state_manager = state_manager
-        self.miner_uid = miner_uid
+        self.miner_hotkey = miner_hotkey
+        self.miner_uid = state_manager.miner_uid
         self.new_prediction_window = timedelta(hours=24)
+        self.update_predictions_with_hotkey()
+        self.update_predictions_with_minerid()
+        bt.logging.trace("PredictionsHandler initialization complete")
+
+    def update_predictions_with_hotkey(self):
+        bt.logging.trace("Updating predictions with miner hotkey")
+        query = """
+        UPDATE predictions
+        SET minerHotkey = %s
+        WHERE minerID = %s AND minerHotkey IS NULL
+        """
+        try:
+            self.db_manager.execute_query(query, params=(self.miner_hotkey, self.miner_uid))
+            bt.logging.info("Successfully updated predictions with miner hotkey")
+        except Exception as e:
+            bt.logging.error(f"Error updating predictions with hotkey: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+
+    def update_predictions_with_minerid(self):
+        bt.logging.trace("Updating predictions with miner ID")
+        query = """
+        UPDATE predictions
+        SET minerID = %s
+        WHERE minerID IS NULL
+        """
+        try:
+            self.db_manager.execute_query(query, params=(self.miner_uid,))
+            bt.logging.info("Successfully updated predictions with miner ID")
+        except Exception as e:
+            bt.logging.error(f"Error updating predictions with miner ID: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
     def process_predictions(self, updated_games: Dict[str, TeamGame], new_games: Dict[str, TeamGame]) -> Dict[str, TeamGamePrediction]:
+        bt.logging.trace(f"Processing predictions for {len(updated_games)} updated games and {len(new_games)} new games")
         updated_predictions = self.process_game_results(updated_games)
         recent_predictions = self.get_recent_predictions()
         result = {pred.predictionID: pred for pred in recent_predictions}
-        #bt.logging.info(f"Processed predictions: {len(result)} predictions")
-        #bt.logging.info(f"Sample processed prediction: {next(iter(result.values())) if result else 'No predictions'}")
+        bt.logging.trace(f"Processed {len(result)} predictions")
         return result
 
     def process_game_results(self, updated_games: Dict[str, TeamGame]):
+        bt.logging.trace(f"Processing game results for {len(updated_games)} games")
         updated_predictions = []
         batch_updates = []
 
-        for game_id, game_data in updated_games.items():
+        for external_id, game_data in updated_games.items():
             actual_outcome = self.determine_actual_outcome(game_data)
-            
-            query = """
-                SELECT * FROM predictions 
-                WHERE teamGameID = %s
-            """
-            predictions = self.db_manager.execute_query(query, params=(game_id,))
+            predictions = self.get_predictions_for_game(external_id)
             
             for pred in predictions:
-                pred_dict = dict(zip([column[0] for column in self.db_manager.execute_query("SELECT * FROM predictions LIMIT 0")], pred))
-                new_outcome = self.determine_new_outcome(pred_dict['prediction'], actual_outcome)
+                new_outcome = self.determine_new_outcome(pred.predictedOutcome, actual_outcome)
                 
-                if pred_dict['outcome'] != new_outcome:
-                    batch_updates.append((new_outcome, pred_dict['predictionID']))
-                    pred_dict['outcome'] = new_outcome
-                    updated_predictions.append(TeamGamePrediction(**pred_dict))
+                if pred.outcome != new_outcome:
+                    batch_updates.append((new_outcome, pred.predictionID))
+                    pred.outcome = new_outcome
+                    updated_predictions.append(pred)
                     
                     self.state_manager.update_on_game_result({
                         'outcome': new_outcome,
-                        'earnings': self.calculate_earnings(pred_dict['wager'], pred_dict['prediction'], game_data.outcome),
-                        'wager': pred_dict['wager'],
-                        'prediction': TeamGamePrediction(**pred_dict)
+                        'earnings': self.calculate_earnings(pred.wager, pred.predictedOutcome, game_data.outcome),
+                        'wager': pred.wager,
+                        'prediction': pred.dict()
                     })
 
-        # Batch update
         if batch_updates:
-            query = """
-                UPDATE predictions 
-                SET outcome = %s
-                WHERE predictionID = %s
-            """
-            self.db_manager.execute_query(query, params=batch_updates)
+            query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
+            self.db_manager.execute_batch(query, batch_updates)
 
+        bt.logging.trace(f"Processed {len(updated_predictions)} predictions")
         return updated_predictions
 
-    def determine_actual_outcome(self, game_data):
+    def determine_actual_outcome(self, game_data: TeamGame) -> str:
+        bt.logging.trace(f"Determining actual outcome for game {game_data.id}")
         if game_data.outcome == 0:
             return f"Team A Win ({game_data.teamA})"
         elif game_data.outcome == 1:
@@ -71,105 +92,51 @@ class PredictionsHandler:
         else:
             return "Draw"
 
-    def calculate_earnings(self, wager, prediction, result):
-        if prediction == result:
+    def calculate_earnings(self, wager: float, prediction: str, result: int) -> float:
+        bt.logging.trace(f"Calculating earnings for wager {wager}, prediction {prediction}, result {result}")
+        if (prediction.startswith("Team A") and result == 0) or (prediction.startswith("Team B") and result == 1):
             odds = float(prediction.split('(')[1].split(')')[0])
             return wager * (odds - 1)
         else:
             return -wager
 
-    def determine_new_outcome(self, prediction, actual_outcome):
-        team = actual_outcome.split('(')[1].split(')')[0]
+    def determine_new_outcome(self, prediction: str, actual_outcome: str) -> str:
+        bt.logging.trace(f"Determining new outcome for prediction {prediction} and actual outcome {actual_outcome}")
+        team = actual_outcome.split('(')[1].split(')')[0] if '(' in actual_outcome else ''
         if prediction == actual_outcome:
             return f"Wager Won ({team})"
         else:
             return f"Wager Lost ({team})"
 
-    def get_recent_predictions(self, time_window: timedelta = None) -> List[TeamGamePrediction]:
-        if time_window is None:
-            time_window = self.new_prediction_window
-        
-        current_time = datetime.now(timezone.utc)
-        cutoff_time = current_time - time_window
-        
+    def get_recent_predictions(self, limit=100):
+        bt.logging.trace(f"Getting recent predictions (limit: {limit})")
         query = """
-            SELECT * FROM predictions 
-            WHERE minerID = %s AND predictionDate > %s
-            ORDER BY predictionDate DESC
-        """
-        predictions = self.db_manager.execute_query(query, params=(str(self.miner_uid), cutoff_time.isoformat()))
-        
-        columns = [column[0] for column in self.db_manager.execute_query("SELECT * FROM predictions LIMIT 0")]
-        return [TeamGamePrediction(**dict(zip(columns, row))) for row in predictions]
-
-    def get_predictions(self, miner_uid, limit=None):
-        query = """
-        SELECT *
+        SELECT predictionid AS "predictionID", teamgameid AS "teamGameID", minerid AS "minerID", minerhotkey AS "minerHotkey", 
+               predictiondate AS "predictionDate", predictedoutcome AS "predictedOutcome", teama AS "teamA", teamb AS "teamB", 
+               wager, teamaodds AS "teamAodds", teambodds AS "teamBodds", tieodds AS "tieOdds", outcome
         FROM predictions
-        WHERE minerid = %s
-        ORDER BY predictiondate DESC
+        WHERE minerHotkey = %s
+        ORDER BY predictionDate DESC
+        LIMIT %s
         """
-        if limit:
-            query += f" LIMIT {limit}"
-        
-        try:
-            results = self.db_manager.execute_query(query, (miner_uid,))
-            predictions = {}
-            for row in results:
-                #bt.logging.debug(f"Raw row data: {row}")  # Log raw row data for debugging
-                prediction_id = row[0]
-                prediction = {
-                    'predictionID': row[0],
-                    'teamGameID': row[1],
-                    'minerID': row[2],
-                    'predictionDate': row[3].isoformat() if isinstance(row[3], datetime) else str(row[3]),
-                    'predictedOutcome': row[4],
-                    'teamA': row[5],
-                    'teamB': row[6],
-                    'wager': float(row[7]) if row[7] is not None else None,
-                    'teamAodds': float(row[8]) if row[8] is not None else None,
-                    'teamBodds': float(row[9]) if row[9] is not None else None,
-                    'tieOdds': float(row[10]) if row[10] is not None else None,
-                    'outcome': row[11],
-                }
-                # Calculate wager odds
-                if prediction['predictedOutcome'] == prediction['teamA']:
-                    prediction['wagerOdds'] = prediction['teamAodds']
-                elif prediction['predictedOutcome'] == prediction['teamB']:
-                    prediction['wagerOdds'] = prediction['teamBodds']
-                else:
-                    prediction['wagerOdds'] = prediction['tieOdds']
-                
-                predictions[prediction_id] = prediction
+        results = self.db_manager.execute_query(query, (self.miner_hotkey, limit))
+        for row in results:
+            row['predictionDate'] = row['predictionDate'].isoformat() if isinstance(row['predictionDate'], datetime) else row['predictionDate']
+        return [TeamGamePrediction(**row) for row in results]
 
-            #bt.logging.info(f"Retrieved {len(predictions)} predictions for miner {miner_uid}")
-            #bt.logging.info(f"Sample prediction: {next(iter(predictions.values())) if predictions else 'No predictions'}")
-            return predictions
-        except Exception as e:
-            bt.logging.error(f"Error retrieving predictions: {str(e)}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
-            return {}
-
-    def add_prediction(self, prediction):
-        # Check if miner has enough cash
-        miner_cash = self.state_manager.get_miner_cash(prediction['minerID'])
-        if miner_cash < prediction['wager']:
-            return {
-                'status': 'error',
-                'message': f"Insufficient funds. Miner cash: {miner_cash}, Wager: {prediction['wager']}"
-            }
-
+    def add_prediction(self, prediction: Dict[str, Any]):
+        bt.logging.trace(f"Adding prediction: {prediction}")
         query = """
         INSERT INTO predictions (
-            predictionID, teamGameID, minerID, predictionDate,
-            predictedOutcome, teamA, teamB, wager, teamAodds,
-            teamBodds, tieOdds, outcome
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            predictionID, teamGameID, minerID, minerHotkey, predictionDate, predictedOutcome,
+            teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         params = (
             prediction['predictionID'],
             prediction['teamGameID'],
-            prediction['minerID'],
+            self.miner_uid,  # Ensure minerID is set
+            self.miner_hotkey,  # Ensure minerHotkey is set
             prediction['predictionDate'],
             prediction['predictedOutcome'],
             prediction['teamA'],
@@ -183,72 +150,93 @@ class PredictionsHandler:
         
         try:
             self.db_manager.execute_query(query, params)
-            #bt.logging.info(f"Added prediction: {prediction['predictionID']}")
-            
-            # Update miner stats
             self.state_manager.update_on_prediction(prediction)
-            
-            return {
-                'status': 'success',
-                'message': f"Prediction {prediction['predictionID']} added successfully"
-            }
+            bt.logging.info(f"Prediction {prediction['predictionID']} added successfully")
+            return {'status': 'success', 'message': f"Prediction {prediction['predictionID']} added successfully"}
         except Exception as e:
             bt.logging.error(f"Error adding prediction: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
-            return {
-                'status': 'error',
-                'message': f"Error adding prediction: {str(e)}"
-            }
+            return {'status': 'error', 'message': f"Error adding prediction: {str(e)}"}
 
-    def update_prediction_team_names(self):
-        query1 = """
-            SELECT p.predictionID, p.teamGameID, g.teamA, g.teamB
-            FROM predictions p
-            JOIN games g ON p.teamGameID = g.gameID
-            WHERE p.teamA IS NULL OR p.teamB IS NULL
-        """
-        predictions_to_update = self.db_manager.execute_query(query1)
-
-        for pred_id, game_id, team_a, team_b in predictions_to_update:
-            query2 = """
-                UPDATE predictions
-                SET teamA = %s, teamB = %s
-                WHERE predictionID = %s
-            """
-            self.db_manager.execute_query(query2, params=(team_a, team_b, pred_id))
-
-    def get_prediction(self, prediction_id):
+    def get_predictions_for_game(self, external_id: str) -> List[TeamGamePrediction]:
+        bt.logging.trace(f"Getting predictions for game: {external_id}")
         query = """
-            SELECT p.*, g.teamA, g.teamB 
-            FROM predictions p
-            JOIN games g ON p.teamGameID = g.gameID
-            WHERE p.predictionID = %s
+        SELECT predictionid AS "predictionID", teamgameid AS "teamGameID", minerid AS "minerID", minerhotkey AS "minerHotkey", 
+               predictiondate AS "predictionDate", predictedoutcome AS "predictedOutcome", teama AS "teamA", teamb AS "teamB", 
+               wager, teamaodds AS "teamAodds", teambodds AS "teamBodds", tieodds AS "tieOdds", outcome
+        FROM predictions
+        WHERE teamGameID = %s
         """
-        result = self.db_manager.execute_query(query, params=(prediction_id,))
-        if result and result[0]:
-            columns = [column[0] for column in self.db_manager.execute_query("SELECT p.*, g.teamA, g.teamB FROM predictions p JOIN games g ON p.teamGameID = g.gameID LIMIT 0")]
-            prediction_dict = dict(zip(columns, result[0]))
-            prediction = TeamGamePrediction(**prediction_dict)
-            return prediction, prediction_dict['teamA'], prediction_dict['teamB']
-        return None, None, None
+        results = self.db_manager.execute_query(query, (external_id,))
+        predictions = []
+        for row in results:
+            try:
+                row['predictionDate'] = row['predictionDate'].isoformat() if isinstance(row['predictionDate'], datetime) else row['predictionDate']
+                prediction = TeamGamePrediction(**row)
+                predictions.append(prediction)
+            except Exception as e:
+                bt.logging.error(f"Error creating TeamGamePrediction: {e}")
+                bt.logging.error(f"Row data: {row}")
+        return predictions
 
-    def update_miner_uid(self, new_miner_uid):
-        self.miner_uid = new_miner_uid
+    def update_prediction_outcome(self, prediction: TeamGamePrediction, game_outcome: str) -> Optional[TeamGamePrediction]:
+        bt.logging.trace(f"Updating prediction outcome: {prediction.predictionID}, game outcome: {game_outcome}")
+        new_outcome = self.determine_new_outcome(prediction.predictedOutcome, game_outcome)
+        if prediction.outcome != new_outcome:
+            query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
+            self.db_manager.execute_query(query, (new_outcome, prediction.predictionID))
+            prediction.outcome = new_outcome
+            return prediction
+        return None
 
-    def print_all_predictions(self):
+    def calculate_wager_odds(self, prediction):
+        if prediction['predictedOutcome'] == prediction['Home']:
+            return prediction['teamAodds']
+        elif prediction['predictedOutcome'] == prediction['Away']:
+            return prediction['teamBodds']
+        elif prediction['predictedOutcome'] == 'Tie' and prediction['tieOdds'] is not None:
+            return prediction['tieOdds']
+        return 0.0
+
+    def get_predictions_with_teams(self, miner_hotkey):
         query = """
-        SELECT * FROM predictions
-        ORDER BY predictionDate DESC
-        LIMIT 50
+        SELECT p.predictionid AS "predictionID", p.teamgameid AS "teamGameID", p.minerid AS "minerID", p.minerhotkey AS "minerHotkey", 
+               p.predictiondate AS "predictionDate", p.predictedoutcome AS "predictedOutcome", g.teama AS "Home", g.teamb AS "Away", 
+               p.wager, p.teamaodds AS "teamAodds", p.teambodds AS "teamBodds", p.tieodds AS "tieOdds", p.outcome
+        FROM predictions p
+        JOIN games g ON p.teamgameid = g.externalid
+        WHERE p.minerHotkey = %s
         """
-        
         try:
-            results = self.db_manager.execute_query(query)
-            if results:
-                bt.logging.info("Recent predictions in the database:")
-                for row in results:
-                    bt.logging.info(f"Prediction ID: {row['predictionid']}, Game ID: {row['teamgameid']}, Miner ID: {row['minerid']}, Date: {row['predictiondate']}, Outcome: {row['outcome']}")
-            else:
-                bt.logging.info("No predictions found in the database.")
+            results = self.db_manager.execute_query(query, (miner_hotkey,))
+            for row in results:
+                if row['predictionDate'] is not None:
+                    row['predictionDate'] = row['predictionDate'].isoformat() if isinstance(row['predictionDate'], datetime) else row['predictionDate']
+                row['wagerOdds'] = self.calculate_wager_odds(row)
+            return {row['predictionID']: row for row in results}
         except Exception as e:
-            bt.logging.error(f"Error retrieving predictions: {str(e)}")
+            bt.logging.error(f"Error getting predictions with teams: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            return {}
+
+    def get_predictions(self, miner_hotkey):
+        query = """
+        SELECT predictionid AS "predictionID", teamgameid AS "teamGameID", minerid AS "minerID", minerhotkey AS "minerHotkey", 
+               predictiondate AS "predictionDate", predictedoutcome AS "predictedOutcome", teama AS "teamA", teamb AS "teamB", 
+               wager, teamaodds AS "teamAodds", teambodds AS "teamBodds", tieodds AS "tieOdds", outcome
+        FROM predictions
+        WHERE minerHotkey = %s
+        """
+        try:
+            results = self.db_manager.execute_query(query, (miner_hotkey,))
+            for row in results:
+                if row['predictionDate'] is not None:
+                    row['predictionDate'] = row['predictionDate'].isoformat() if isinstance(row['predictionDate'], datetime) else row['predictionDate']
+                # Only call calculate_wager_odds if Home and Away fields are present
+                if 'Home' in row and 'Away' in row:
+                    row['wagerOdds'] = self.calculate_wager_odds(row)
+            return {row['predictionID']: row for row in results}
+        except Exception as e:
+            bt.logging.error(f"Error getting predictions: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            return {}

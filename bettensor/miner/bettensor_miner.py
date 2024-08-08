@@ -32,8 +32,8 @@ class BettensorMiner(BaseNeuron):
         parser.add_argument("--db_name", type=str, default="bettensor", help="PostgreSQL database name")
         parser.add_argument("--db_user", type=str, default="root", help="PostgreSQL user")
         parser.add_argument("--db_password", type=str, default="bettensor_password", help="PostgreSQL password")
-        parser.add_argument("--db_host", type=str, help="PostgreSQL host (optional)")
-        parser.add_argument("--db_port", type=int, help="PostgreSQL port (optional)")
+        parser.add_argument("--db_host", type=str, default="localhost", help="PostgreSQL host")
+        parser.add_argument("--db_port", type=int, default=5432, help="PostgreSQL port")
         parser.add_argument("--max_connections", type=int, default=10, help="Maximum number of database connections")
         
         if not any(action.dest == 'validator_min_stake' for action in parser._actions):
@@ -61,7 +61,7 @@ class BettensorMiner(BaseNeuron):
         bt.logging.info("Setting up wallet, subtensor, and metagraph")
         try:
             self.wallet, self.subtensor, self.metagraph = self.setup()
-            self.miner_uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+            self.miner_uid = str(self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address))
             bt.logging.info(f"Miner initialized with UID: {self.miner_uid}")
         except Exception as e:
             bt.logging.error(f"Error in self.setup(): {e}")
@@ -86,42 +86,54 @@ class BettensorMiner(BaseNeuron):
             "db_name": self.args.db_name,
             "db_user": self.args.db_user,
             "db_password": self.args.db_password,
+            "db_host": self.args.db_host,
+            "db_port": self.args.db_port,
             "max_connections": self.args.max_connections
         }
-        if self.args.db_host:
-            db_params["db_host"] = self.args.db_host
-        if self.args.db_port:
-            db_params["db_port"] = self.args.db_port
-
         self.db_manager = DatabaseManager(**db_params)
 
         # Setup state manager
         bt.logging.info("Initializing state manager")
+        self.miner_hotkey = self.wallet.hotkey.ss58_address
+        self.miner_uid = self.miner_uid
+
         self.state_manager = MinerStateManager(
             db_manager=self.db_manager,
-            miner_hotkey=self.wallet.hotkey.ss58_address,
-            miner_uid=str(self.miner_uid)
+            miner_hotkey=self.miner_hotkey,
+            miner_uid=self.miner_uid,
+            stats_handler=None  # Temporarily set to None
         )
+
+        # Create an instance of MinerStatsHandler
+        self.stats_handler = MinerStatsHandler(self.db_manager, self.state_manager)
+
+        # Now set the correct stats_handler in state_manager
+        self.state_manager.stats_handler = self.stats_handler
+
+        self.state_manager.ensure_correct_column_names()
+        self.state_manager.update_predictions_with_hotkey()
+        self.state_manager.update_predictions_with_minerid()
+
         # Setup handlers
         bt.logging.info("Initializing handlers")
-        self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_uid)
+        self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_hotkey)
         self.games_handler = GamesHandler(self.db_manager, self.predictions_handler)
-        
+
         # Setup cache manager
         bt.logging.info("Initializing cache manager")
         self.cache_manager = CacheManager()
-        
+
         # Setup other attributes
         bt.logging.info("Setting other attributes")
         self.validator_min_stake = self.args.validator_min_stake
         self.hotkey = self.wallet.hotkey.ss58_address
-        
+
         bt.logging.info("Setting up signal handlers")
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
-        
+
         self.hotkey_blacklisted = False
-        
+
         bt.logging.info("BettensorMiner initialization complete")
 
         self.last_incentive_update = None
@@ -131,63 +143,65 @@ class BettensorMiner(BaseNeuron):
         bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
 
         # Print version information and perform version checks
-        print(
-            f"Synapse version: {synapse.metadata.subnet_version}, our version: {self.subnet_version}"
-        )
-        if synapse.metadata.subnet_version > self.subnet_version:
-            bt.logging.warning(
-                f"Received a synapse from a validator with higher subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
-            )
-        if synapse.metadata.subnet_version < self.subnet_version:
-            bt.logging.warning(
-                f"Received a synapse from a validator with lower subnet version ({synapse.metadata.subnet_version}) than yours ({self.subnet_version}). You can safely ignore this warning."
-            )
-
+        print(f"Synapse version: {synapse.metadata.subnet_version}, our version: {self.subnet_version}")
+        self._check_version(synapse.metadata.subnet_version)
 
         bt.logging.debug(f"Processing game data: {len(synapse.gamedata_dict)} games")
 
         try:
-            # Check cache for changes in game data
+            # Check if there are any changes in game data
             changed_games = self.cache_manager.filter_changed_games(synapse.gamedata_dict)
 
-            if not changed_games:
-                bt.logging.info("No changes in game data, using cached predictions")
-                recent_predictions = self.cache_manager.get_cached_predictions()
-            else:
+            if changed_games:
                 bt.logging.info(f"Processing {len(changed_games)} changed games")
-                # Process only changed games
                 updated_games, new_games = self.games_handler.process_games(changed_games)
                 recent_predictions = self.predictions_handler.process_predictions(updated_games, new_games)
-                bt.logging.info(f"Number of recent predictions processed: {len(recent_predictions)}")
-
+                
                 # Update cache with new predictions
                 self.cache_manager.update_cached_predictions(recent_predictions)
+
+                # Update miner stats
+                self.state_manager.update_stats_from_predictions()
+            else:
+                bt.logging.info("No changes in game data, using cached predictions")
+                recent_predictions = self.cache_manager.get_cached_predictions()
 
             if not recent_predictions:
                 bt.logging.warning("No predictions available")
                 return self._clean_synapse(synapse)
 
-            # Update miner stats only if there were changes
-            if changed_games:
-                self.state_manager.update_stats_from_predictions(recent_predictions.values(), updated_games)
-
-            # Periodic database update (consider making this less frequent)
+            # Periodic database update
             self.state_manager.periodic_db_update()
 
             synapse.prediction_dict = recent_predictions
-            bt.logging.info(f"Number of predictions added to synapse: {len(recent_predictions)}")
             synapse.gamedata_dict = None
-            synapse.metadata = Metadata.create(
-                wallet=self.wallet,
-                subnet_version=self.subnet_version,
-                neuron_uid=self.miner_uid,
-                synapse_type="prediction",
-            )
+            synapse.metadata = self._create_metadata("prediction")
 
+            bt.logging.info(f"Number of predictions added to synapse: {len(recent_predictions)}")
             
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")
             return self._clean_synapse(synapse)
+
+        return synapse
+
+    def _check_version(self, synapse_version):
+        if synapse_version > self.subnet_version:
+            bt.logging.warning(
+                f"Received a synapse from a validator with higher subnet version ({synapse_version}) than yours ({self.subnet_version}). Please update the miner, or you may encounter issues."
+            )
+        elif synapse_version < self.subnet_version:
+            bt.logging.warning(
+                f"Received a synapse from a validator with lower subnet version ({synapse_version}) than yours ({self.subnet_version}). You can safely ignore this warning."
+            )
+
+    def _create_metadata(self, synapse_type):
+        return Metadata.create(
+            wallet=self.wallet,
+            subnet_version=self.subnet_version,
+            neuron_uid=self.miner_uid,
+            synapse_type=synapse_type,
+        )
 
     def _clean_synapse(self, synapse: GameData) -> GameData:
         if not synapse.prediction_dict:
@@ -335,7 +349,8 @@ class BettensorMiner(BaseNeuron):
                 self.metagraph.sync()
                 
                 # Get the incentive for this miner
-                incentive = float(self.metagraph.I[self.miner_uid])
+                miner_uid_int = int(self.miner_uid)
+                incentive = self.metagraph.I[miner_uid_int].item() if miner_uid_int < len(self.metagraph.I) else 0.0
                 
                 # Update the state manager with the new incentive
                 self.state_manager.update_current_incentive(incentive)
@@ -408,7 +423,7 @@ class BettensorMiner(BaseNeuron):
                     prediction['predictionID'] = str(uuid.uuid4())
 
                 # Set minerID and predictionDate
-                prediction['minerID'] = str(self.miner_uid)
+                prediction['minerID'] = self.miner_uid
                 prediction['predictionDate'] = datetime.now(timezone.utc).isoformat()
 
                 # Set initial outcome to 'Unfinished'
