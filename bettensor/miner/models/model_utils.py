@@ -12,6 +12,7 @@ class SoccerPredictor:
         self.model = self.get_HFmodel(model_name)
         self.le = self.load_label_encoder(label_encoder_path)
         self.scaler = StandardScaler()
+        self.team_averages_path = 'team_averages_last_5_games_aug.csv'
 
     def load_label_encoder(self, path):
         with open(path, 'rb') as file:
@@ -25,7 +26,7 @@ class SoccerPredictor:
             print(f"Error pulling huggingface model: {e}")
             return None
 
-    def preprocess_data(self, home_teams, away_teams, odds, team_averages_path):
+    def preprocess_data(self, home_teams, away_teams, odds):
         df = pd.DataFrame({
             'HomeTeam': home_teams,
             'AwayTeam': away_teams,
@@ -39,7 +40,7 @@ class SoccerPredictor:
         df['away_encoded'] = df['AwayTeam'].apply(lambda x: self.le.transform([x])[0] if x in encoded_teams else None)
         df = df.dropna(subset=['home_encoded', 'away_encoded'])
         
-        team_averages_df = pd.read_csv(team_averages_path)
+        team_averages_df = pd.read_csv(self.team_averages_path)
         home_stats = ['Team', 'HS', 'HST', 'HC', 'HO', 'HY', 'HR', 'WinStreakHome', 'LossStreakHome', 'HomeTeamForm']
         away_stats = ['Team', 'AS', 'AST', 'AC', 'AO', 'AY', 'AR', 'WinStreakAway', 'LossStreakAway', 'AwayTeamForm']
 
@@ -53,8 +54,8 @@ class SoccerPredictor:
         ]
         return df[features]
 
-    def predict_games(self, home_teams, away_teams, odds, team_averages_path):
-        df = self.preprocess_data(home_teams, away_teams, odds, team_averages_path)
+    def predict_games(self, home_teams, away_teams, odds):
+        df = self.preprocess_data(home_teams, away_teams, odds)
         x = self.scaler.fit_transform(df)
         x_tensor = torch.tensor(x, dtype=torch.float32).to(self.device)
 
