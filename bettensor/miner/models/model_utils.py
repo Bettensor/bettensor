@@ -54,8 +54,32 @@ class SoccerPredictor:
         ]
         return df[features]
 
-    def predict_games(self, home_teams, away_teams, odds):
-        df = self.preprocess_data(home_teams, away_teams, odds)
+    def recommend_wager_distribution(self, confidence_scores, max_daily_wager=1000.0, min_wager=20.0, top_n = 10):
+        confidence_scores = np.clip(confidence_scores, 0.0, 1.0)
+        top_indices = np.argsort(confidence_scores)[-top_n:]
+        top_confidences = confidence_scores[top_indices]
+        sigmoids = 1 / (1 + np.exp(-10 * (top_confidences - 0.5)))
+        normalized_sigmoids = sigmoids / np.sum(sigmoids)
+        
+        wagers = normalized_sigmoids * max_daily_wager
+        wagers = np.maximum(wagers, min_wager)
+        wagers = np.round(wagers, 2)
+        
+        if np.sum(wagers) > max_daily_wager:
+            excess = np.sum(wagers) - max_daily_wager
+            while excess > 0.01:
+                wagers[wagers > min_wager] -= 0.01
+                wagers = np.round(wagers, 2)
+                excess = np.sum(wagers) - max_daily_wager
+        
+        final_wagers = [0.0] * len(confidence_scores)
+        for idx, wager in zip(top_indices, wagers):
+            final_wagers[idx] = wager
+        
+        return final_wagers
+
+    def predict_games(self, home_teams, away_teams, odds, team_averages_path):
+        df = self.preprocess_data(home_teams, away_teams, odds, team_averages_path)
         x = self.scaler.fit_transform(df)
         x_tensor = torch.tensor(x, dtype=torch.float32).to(self.device)
 
@@ -68,13 +92,17 @@ class SoccerPredictor:
         outcome_map = {0: "Home Win", 1: "Draw", 2: "Away Win"}
         pred_outcomes = [outcome_map[label.item()] for label in pred_labels]
 
+        confidence_scores = confidence_scores.cpu().numpy()
+        wagers = self.recommend_wager_distribution(confidence_scores)
+
         results = []
         for i in range(len(home_teams)):
             result = {
                 'Home Team': home_teams[i],
                 'Away Team': away_teams[i],
                 'PredictedOutcome': pred_outcomes[i],
-                'ConfidenceScore': np.round(confidence_scores[i].item(), 2)
+                'ConfidenceScore': np.round(confidence_scores[i].item(), 2),
+                'recommendedWager' : wagers[i]
             }
             results.append(result)
         
