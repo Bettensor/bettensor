@@ -78,8 +78,8 @@ class SoccerPredictor:
         
         return final_wagers
 
-    def predict_games(self, home_teams, away_teams, odds, team_averages_path):
-        df = self.preprocess_data(home_teams, away_teams, odds, team_averages_path)
+    def predict_games(self, home_teams, away_teams, odds):
+        df = self.preprocess_data(home_teams, away_teams, odds)
         x = self.scaler.fit_transform(df)
         x_tensor = torch.tensor(x, dtype=torch.float32).to(self.device)
 

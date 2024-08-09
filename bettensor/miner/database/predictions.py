@@ -14,33 +14,57 @@ class PredictionsHandler:
         self.state_manager = state_manager
         self.miner_uid = miner_uid
         self.new_prediction_window = timedelta(hours=24)
-        self.soccer_predictor = SoccerPredictor(model_name='podos_soccer_model')
+        self.models = { 'soccer': SoccerPredictor(model_name='podos_soccer_model')}
 
     def process_predictions(self, updated_games: Dict[str, TeamGame], new_games: Dict[str, TeamGame]) -> Dict[str, TeamGamePrediction]:
         updated_predictions = self.process_game_results(updated_games)
         recent_predictions = self.get_recent_predictions()
-
-        soccer_games = {game_id: game for game_id, game in new_games.items() if game.sport == 'soccer'}
-
-        if soccer_games:
-            home_teams = [game.homeTeam for game in soccer_games.values()]
-            away_teams = [game.awayTeam for game in soccer_games.values()]
-            odds = [[game.teamAodds, game.tieOdds, game.teamBodds] for game in soccer_games.values()]
-
-            encoded_teams = set(self.soccer_predictor.le.classes_)
-            matched_home_teams = [self.get_best_match(team, encoded_teams) for team in home_teams]
-            matched_away_teams = [self.get_best_match(team, encoded_teams) for team in away_teams]
-
-            if None not in matched_home_teams + matched_away_teams:
-                soccer_predictions = self.soccer_predictor.predict(matched_home_teams, matched_away_teams, odds)
-            else:
-                bt.logging.warning("Some teams not found in label encoder, skipping model predictions")
-
         result = {pred.predictionID: pred for pred in recent_predictions}
         return result
+    
+    def process_model_predictions(self, games: Dict[str, TeamGame], sport: str) -> Dict[str, TeamGamePrediction]:
+        if sport not in self.models:
+            bt.logging.warning(f"Model for sport {sport} not found, skipping model predictions")
+            return {}
+        
+        model = self.models[sport]
+        predictions = {}
+
+        home_teams = [game.teamA for game in games.values()]
+        away_teams = [game.teamB for game in games.values()]
+        odds = [[game.teamAodds, game.tieOdds, game.teamBodds] for game in games.values()]
+
+        encoded_teams = set(model.le.classes_)
+        matched_home_teams = [self.get_best_match(team, encoded_teams) for team in home_teams]
+        matched_away_teams = [self.get_best_match(team, encoded_teams) for team in away_teams]
+
+        if None not in matched_home_teams + matched_away_teams:
+            model_predictions = model.predict_games(matched_home_teams, matched_away_teams, odds)
+
+            for (game_id, game), prediction in zip(games.items(), model_predictions):
+                pred_dict = {
+                    'predictionID': str(uuid.uuid4()),
+                    'teamGameID': game_id,
+                    'minerID': self.miner_uid,
+                    'predictionDate': datetime.now(timezone.utc).isoformat(),
+                    'predictedOutcome': game.teamA if prediction['PredictedOutcome'] == 'Home Win' else game.teamB if prediction['PredictedOutcome'] == 'Away Win' else 'Tie',
+                    'wager': prediction['recommendedWager'],
+                    'teamAodds': game.teamAodds,
+                    'teamBodds': game.teamBodds,
+                    'tieOdds': game.tieOdds,
+                    'outcome': 'unfinished',
+                    'teamA': game.teamA,
+                    'teamB': game.teamB
+                }
+                predictions[game_id] = TeamGamePrediction(**pred_dict)
+                self.add_prediction(pred_dict)
+        else:
+            bt.logging.warning(f"Some teams not found in label encoder for {sport}, skipping model predictions.")
+
+        return predictions
 
     def get_best_match(self, team_name, encoded_teams):
-        match, score = process.extract0ne(team_name, encoded_teams)
+        match, score = process.extractOne(team_name, encoded_teams)
         if score >= 80:
             return match
         else:
