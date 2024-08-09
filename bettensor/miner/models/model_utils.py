@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import numpy as np
 import pickle
 import torch
@@ -5,6 +6,10 @@ import torch.nn as nn
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from huggingface_hub import PyTorchModelHubMixin
+
+@dataclass
+class MinerConfig:
+    model_prediction: bool = False
 
 class SoccerPredictor:
     def __init__(self, model_name, label_encoder_path='label_encoder.pkl'):
@@ -20,7 +25,7 @@ class SoccerPredictor:
 
     def get_HFmodel(self, model_name):
         try:
-            model = PodosTransformer.from_pretrained(f"Bettensor/{model_name}").to(self.device);
+            model = PodosTransformer.from_pretrained(f"Bettensor/{model_name}").to(self.device)
             return model
         except Exception as e:
             print(f"Error pulling huggingface model: {e}")

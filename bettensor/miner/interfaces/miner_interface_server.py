@@ -3,16 +3,16 @@ import json
 import sys
 import threading
 import time
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 import redis
 import requests
 from werkzeug.serving import run_simple
 import jwt as pyjwt
-from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError, DecodeError
 from bettensor.protocol import TeamGamePrediction
 from functools import wraps
-from bettensor.miner.database.database_manager import get_db_manager
+from bettensor.miner.database.database_manager import DatabaseManager
 import uuid
 import bittensor as bt
 import argparse
@@ -22,16 +22,23 @@ from psycopg2.extras import RealDictCursor
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import logging
+import traceback
+from bettensor.miner.database.games import GamesHandler
+import socket
 
 # Set up logging
 bt.logging.set_trace(True)
 bt.logging.set_debug(True)
 
 app = Flask(__name__)
+app.config['PROPAGATE_EXCEPTIONS'] = True
 
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
 REDIS_DB = 0
+
+# Initialize Redis client
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 
 connected_miners = []
 server_start_time = time.time()
@@ -54,7 +61,7 @@ limiter = Limiter(
 class Config:
     LOCAL_SERVER = os.environ.get('LOCAL_SERVER', 'False').lower() == 'true'
     CENTRAL_SERVER = os.environ.get('CENTRAL_SERVER', 'True').lower() == 'true'
-    JWT_SECRET = os.environ.get('JWT_SECRET', 'bettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensor')  # Change this in production and store securely
+    JWT_SECRET = os.environ.get('JWT_SECRET', 'bettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensorbettensor')  # Change this in production and store securely
     REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
     REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 
@@ -63,8 +70,8 @@ config = Config()
 print(f"JWT_SECRET: {config.JWT_SECRET}")
 
 # Apply CORS only if using local server
-if config.LOCAL_SERVER:
-    CORS(app)
+
+CORS(app)
 
 # Initialize Redis client
 redis_interface = RedisInterface(host=config.REDIS_HOST, port=config.REDIS_PORT)
@@ -76,6 +83,7 @@ if not redis_interface.connect():
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        bt.logging.info("Entering token_required decorator")
         token = None
         if 'Authorization' in request.headers:
             auth_header = request.headers['Authorization']
@@ -84,19 +92,46 @@ def token_required(f):
             except IndexError:
                 token = auth_header  # No 'Bearer ' prefix
 
+        bt.logging.info(f"Received token: {token[:10]}...") if token else bt.logging.info("No token received")
+
         if not token:
+            bt.logging.warning("Token is missing")
             return jsonify({'message': 'Token is missing!'}), 401
 
+        # Check if the token matches the one in token_store.json
+        if os.path.exists("token_store.json"):
+            try:
+                with open("token_store.json", "r") as file:
+                    stored_data = json.load(file)
+                    stored_jwt = stored_data.get("jwt")
+                    if stored_jwt and stored_jwt != token:
+                        bt.logging.warning("Received token does not match the stored token")
+                        return jsonify({'message': 'Invalid token!'}), 401
+                    else:
+                        bt.logging.info("Token matches stored token")
+            except json.JSONDecodeError as e:
+                bt.logging.error(f"Error decoding token_store.json: {str(e)}")
+                return jsonify({'message': 'Error reading stored token!'}), 500
+        else:
+            bt.logging.warning("token_store.json not found")
+
         try:
-            # Decode the token without verifying the audience
+            # Decode the token without verifying the signature
+            decoded = pyjwt.decode(token, options={"verify_signature": False})
+            bt.logging.info(f"Decoded token: {decoded}")
+            
+            # Now verify the signature separately
             pyjwt.decode(token, config.JWT_SECRET, algorithms=["HS256"], options={"verify_aud": False})
+            bt.logging.info("Token signature successfully verified")
         except ExpiredSignatureError:
             bt.logging.error("Token has expired")
             return jsonify({'message': 'Token has expired!'}), 401
-        except InvalidTokenError as e:
+        except (InvalidTokenError, pyjwt.DecodeError) as e:
             bt.logging.error(f"Invalid token: {str(e)}")
+            bt.logging.error(f"JWT_SECRET used: {config.JWT_SECRET}")
             return jsonify({'message': 'Token is invalid!'}), 401
 
+        bt.logging.info("Token validation successful")
         return f(*args, **kwargs)
 
     return decorated
@@ -105,74 +140,76 @@ def get_miner_uids():
     pass
 
 @app.route('/submit_predictions', methods=['POST'])
-@limiter.limit("50 per minute")
 @token_required
 def submit_predictions():
     data = request.json
-    miner_hotkey = data.get('minerID')
+    app.logger.info(f"Entering submit_predictions endpoint")
+    app.logger.info(f"Received data: {data}")
+
+    miner_id = data.get('minerID')
     predictions = data.get('predictions', [])
 
-    bt.logging.info(f"Received prediction submission for miner: {miner_hotkey}")
+    if not miner_id or not predictions:
+        return jsonify({'error': 'Invalid request data'}), 400
 
-    # Get miner uid from hotkey
-    miner_uid = get_miner_uid(miner_hotkey)
-    bt.logging.info(f"Miner UID: {miner_uid}")
+    app.logger.info(f"Received prediction submission for miner: {miner_id}")
+    app.logger.info(f"Number of predictions: {len(predictions)}")
 
-    # Generate a unique message ID 
+    # Get miner UID
+    miner_uid = get_miner_uid(miner_id)
+    app.logger.info(f"Miner UID: {miner_uid}")
+
+    if miner_uid is None:
+        return jsonify({'error': 'Miner not found'}), 404
+
+    # Generate a unique message ID
     message_id = str(uuid.uuid4())
-    bt.logging.info(f"Generated message ID: {message_id}")
+    app.logger.info(f"Generated message ID: {message_id}")
 
-    # Prepare the message to be published
+    # Prepare the message with the correct action
     message = {
+        'action': 'make_prediction',  # Set the action explicitly
         'message_id': message_id,
-        'minerID': miner_hotkey,
+        'miner_id': miner_id,
         'predictions': predictions
     }
 
-    # Publish the prediction data to the miner's channel
-    channel = f'miner:{miner_uid}:{miner_hotkey}'
-    bt.logging.info(f"Publishing to channel: {channel}")
-    if not redis_interface.publish(channel, json.dumps(message)):
-        bt.logging.error("Failed to publish prediction request to Redis")
-        return jsonify({'message': 'Failed to publish prediction request'}), 500
+    # Publish the message to Redis
+    channel = f'miner:{miner_uid}:{miner_id}'
+    app.logger.info(f"Publishing to channel: {channel}")
+    redis_client.publish(channel, json.dumps(message))
 
-    bt.logging.info("Waiting for response...")
+    # Wait for the response
+    app.logger.info("Waiting for response...")
+    response = redis_client.get(f'response:{message_id}')
 
-    # Wait for the response with a timeout
-    start_time = time.time()
-    timeout = 60  # 60 seconds timeout
-    while time.time() - start_time < timeout:
-        response = redis_interface.get(f'response:{message_id}')
-        if response:
-            bt.logging.info("Response received")
-            result = json.loads(response)
-            return jsonify(result), 200
-        time.sleep(0.1)  # Short sleep to prevent busy-waiting
+    if response:
+        return jsonify(json.loads(response))
+    else:
+        return jsonify({'error': 'No response from miner'}), 500
 
-    bt.logging.error("Prediction submission timed out")
-    return jsonify({'message': 'Prediction submission timed out after 60 seconds'}), 408
-
-@app.route('/get_predictions', methods=['GET'])
-@limiter.limit("50 per minute")
-@token_required
-def get_predictions():
-    if not config.LOCAL_SERVER:
-        return jsonify({'message': 'Endpoint not available'}), 403
-    
-    miner_uid = request.args.get('miner_uid')
-    if not miner_uid:
-        return jsonify({'message': 'Miner UID is required'}), 400
-
-    db_manager = get_db_manager(miner_uid)
-    predictions = {}
-    
-    with db_manager.get_cursor() as cursor:
-        cursor.execute("SELECT * FROM predictions")
-        columns = [column[0] for column in cursor.description]
-        for row in cursor.fetchall():
-            predictions[row[0]] = {columns[i]: row[i] for i in range(len(columns))}
-    
-    return jsonify(predictions), 200
+def get_miner_uid(hotkey: str):
+    bt.logging.info(f"Getting miner UID for hotkey: {hotkey}")
+    try:
+        with psycopg2.connect(
+                dbname="bettensor",
+                user="root",
+                password="bettensor_password",
+                host="localhost"
+            ) as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM miner_stats WHERE miner_hotkey = %s", (hotkey,))
+                miner = cur.fetchone()
+            if miner:
+                bt.logging.info(f"Found miner UID: {miner['miner_uid']}")
+                return miner['miner_uid']
+            else:
+                bt.logging.warning(f"No miner found for hotkey: {hotkey}")
+                return None
+    except Exception as e:
+        bt.logging.error(f"Error in get_miner_uid: {str(e)}")
+        bt.logging.error(traceback.format_exc())
+        raise
 
 def get_miners() -> list:
     bt.logging.debug("Attempting to retrieve miners from database")
@@ -226,42 +263,16 @@ def get_miner_uid(hotkey: str):
             miner = cur.fetchone()
         return miner['miner_uid']
 
-@app.route('/heartbeat', methods=['GET'])
-@limiter.limit("2 per minute")
-@token_required
+@app.route('/heartbeat')
 def heartbeat():
-    '''
-    When connected to the central server, this endpoint will be called every minute.
-    It is used to check if the miner(s) are still connected to the central server.
-    If the miner(s) are not connected, the central server will assume the miner(s) are offline and will not send any more requests to the miner(s).
-    schema:
-        "headers": {
-            "Authorization": JWT for verifying the central server requests
-        }
-        data: {
-            
-        }
-
-    returns:
-    {
-        'http status': '200' or '401' or '403' or '500',
-        'data': {
-            'tokenStatus': 'valid' or 'invalid',
-            'miners': [MinerStats]
-        }
-    }
-
-    '''
-    # Update server information in Redis
-    update_server_info()
-    token = request.headers.get('Authorization', '').split(" ")[-1]  # Get token from Authorization header
-    token_status = get_token_status(token)
-    response = {
-        "tokenStatus": token_status,
-        "miners": get_miners()
-    }
-    return jsonify(response), 200
-
+    uptime = int(time.time() - server_start_time)
+    return jsonify({
+        "status": "alive",
+        "ip": request.host.split(':')[0],
+        "port": int(request.host.split(':')[1]) if ':' in request.host else 5000,
+        "connected_miners": len(connected_miners),
+        "uptime": uptime
+    }), 200
 
 def get_token_status(token: str):
     with open("token_store.json", "r") as f:
@@ -274,40 +285,43 @@ def get_token_status(token: str):
 def get_redis_client():
     return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 
+# Modify the update_server_info function
 def update_server_info():
-    bt.logging.debug("Updating server info")
-    uptime = int(time.time() - server_start_time)
-    try:
-        ip = requests.get('https://api.ipify.org').text
-        bt.logging.debug(f"Retrieved IP: {ip}")
-    except Exception as e:
-        ip = "Unable to determine IP"
-        bt.logging.error(f"Error retrieving IP: {str(e)}")
-    
-    server_info = {
-        "status": "running",
-        "ip": ip,
-        "port": str(SERVER_PORT),
-        "connected_miners": str(len(get_miners())),
-        "uptime": f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s"
-    }
-    
-    bt.logging.debug(f"Server info to update: {server_info}")
-    
-    # Update each field individually
-    for key, value in server_info.items():
+    global connected_miners  # Ensure we're modifying the global variable
+    while True:
         try:
-            result = redis_interface.set(f"server_info:{key}", value)
-            bt.logging.debug(f"Set {key}: {value} - Result: {result}")
+            uptime = int(time.time() - server_start_time)
+            hostname = socket.gethostname()
+            ip = socket.gethostbyname(hostname)
+            
+            # Update connected_miners using get_miners function
+            connected_miners = get_miners()
+            
+            server_info = {
+                "status": "alive",
+                "ip": ip,
+                "port": args.port,  # Use the port from command line arguments
+                "connected_miners": len(connected_miners),
+                "uptime": uptime
+            }
+            for key, value in server_info.items():
+                redis_key = f"server_info:{key}"
+                redis_client.set(redis_key, str(value))
+                app.logger.info(f"Updated Redis key: {redis_key} with value: {value}")
+            time.sleep(60)  # Update every 60 seconds
         except Exception as e:
-            bt.logging.error(f"Error setting {key}: {str(e)}")
+            app.logger.error(f"Error updating server info: {e}")
+            time.sleep(60)  # Wait before trying again
 
-    bt.logging.debug("Server info update complete")
-
-    # Verify the data was set correctly
-    for key in server_info.keys():
-        value = redis_interface.get(f"server_info:{key}")
-        bt.logging.debug(f"Verified {key}: {value}")
+# Add a function to check Redis connection
+def check_redis_connection():
+    try:
+        redis_client.ping()
+        app.logger.info("Redis connection successful")
+        return True
+    except redis.ConnectionError:
+        app.logger.error("Unable to connect to Redis. Please check your Redis server and connection details.")
+        return False
 
 def handle_token_management():
     r = get_redis_client()
@@ -339,52 +353,40 @@ def handle_token_management():
 token_management_thread = threading.Thread(target=handle_token_management)
 token_management_thread.start()
 
-def update_server_info_periodically():
-    bt.logging.info("Server info update thread started")
-    while True:
-        bt.logging.debug("Periodic update of server info")
-        try:
-            update_server_info()
-        except Exception as e:
-            bt.logging.error(f"Error updating server info: {str(e)}")
-        bt.logging.debug("Sleeping for 60 seconds")
-        time.sleep(60)  # Update every minute
+@app.before_request
+def before_request():
+    g.start_time = time.time()
+    bt.logging.info(f"Received request: {request.method} {request.path}")
+    bt.logging.info(f"Headers: {request.headers}")
+
+@app.after_request
+def after_request(response):
+    diff = time.time() - g.start_time
+    bt.logging.info(f"Request processed in {diff:.2f} seconds")
+    bt.logging.info(f"Response status: {response.status}")
+    return response
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    bt.logging.error("Unhandled exception occurred:")
+    bt.logging.error(traceback.format_exc())
+    return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Bettensor Miner Interface Server')
-    parser.add_argument('--host', type=str, default='127.0.0.1', help='Host to run the server on')
+    parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5000, help='Port to run the server on')
+    parser.add_argument('--host', type=str, default='127.0.0.1', help='Host to run the server on')
+    parser.add_argument('--public', action='store_true', help='Run server in public mode')
     args = parser.parse_args()
 
-    SERVER_PORT = args.port
-
-    # Initialize and connect to Redis
-    redis_interface = RedisInterface(host=config.REDIS_HOST, port=config.REDIS_PORT)
-    if not redis_interface.connect():
-        bt.logging.error("Failed to connect to Redis. Exiting.")
+    if check_redis_connection():
+        server_info_thread = threading.Thread(target=update_server_info, daemon=True)
+        server_info_thread.start()  # Start the server info update thread
+        app.logger.info(f"Starting Flask server on {args.host}:{args.port}")
+        app.run(host=args.host, port=args.port)
+    else:
+        app.logger.error("Exiting due to Redis connection failure")
         sys.exit(1)
-
-    # Update server info immediately
-    bt.logging.info("Updating server info immediately")
-    update_server_info()
-
-    # Start a thread to update server info periodically
-    server_info_thread = threading.Thread(target=update_server_info_periodically)
-    server_info_thread.daemon = True
-    server_info_thread.start()
-    bt.logging.info("Server info update thread started")
-
-    # Verify Redis connection
-    try:
-        redis_interface.ping()
-        bt.logging.info("Redis connection verified")
-    except Exception as e:
-        bt.logging.error(f"Redis connection failed: {str(e)}")
-
-    bt.logging.info(f"Starting Flask server on {args.host}:{args.port}")
-    app.run(host=args.host, port=args.port, debug=True, threaded=True)
-
-
 
 @app.before_request
 def check_blacklist():

@@ -143,13 +143,10 @@ class GamesHandler:
         bt.logging.trace(f"Retrieved {len(active_games)} active games")
         return active_games
 
-    def game_exists(self, game_id):
-        bt.logging.trace(f"Checking if game exists: {game_id}")
+    def game_exists(self, team_game_id):
         query = "SELECT COUNT(*) FROM games WHERE externalID = %s"
-        result = self.db_manager.execute_query(query, (game_id,))
-        exists = result[0][0] > 0
-        bt.logging.trace(f"Game {game_id} exists: {exists}")
-        return exists
+        result = self.db_manager.execute_query(query, (team_game_id,))
+        return result[0]['count'] > 0
 
     def _mark_old_games_inactive(self):
         bt.logging.trace("Marking old games as inactive")

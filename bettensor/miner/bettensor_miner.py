@@ -18,6 +18,7 @@ from bettensor.miner.database.games import GamesHandler
 from bettensor.miner.database.predictions import PredictionsHandler
 from bettensor.miner.utils.cache_manager import CacheManager
 from bettensor.miner.interfaces.redis_interface import RedisInterface
+from bettensor.miner.models.model_utils import SoccerPredictor, MinerConfig
 import uuid
 from datetime import datetime, timezone
 
@@ -138,6 +139,12 @@ class BettensorMiner(BaseNeuron):
 
         self.last_incentive_update = None
         self.incentive_update_interval = 600  # Update every 10 minutes
+
+        # Initialize MinerConfig
+        self.miner_config = MinerConfig()
+
+        # Initialize SoccerPredictor
+        #self.soccer_predictor = SoccerPredictor(model_name="your_model_name_here")
 
     def forward(self, synapse: GameData) -> GameData:
         bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
@@ -382,16 +389,30 @@ class BettensorMiner(BaseNeuron):
 
                 for message in pubsub.listen():
                     if message['type'] == 'message':
-                        data = json.loads(message['data'])
-                        bt.logging.info(f"Received message: {data}")
-                        
-                        # Process the message (e.g., make a prediction)
-                        result = self.process_prediction_request(data)
-
-                        # Send the result back
-                        response_key = f'response:{data["message_id"]}'
-                        bt.logging.info(f"Publishing response to key: {response_key}")
-                        self.redis_interface.set(response_key, json.dumps(result), ex=60)  # Set expiration to 60 seconds
+                        try:
+                            data = json.loads(message['data'])
+                            bt.logging.info(f"Received message: {data}")
+                            
+                            action = data.get('action')
+                            if action is None:
+                                bt.logging.warning(f"Received message without 'action' field: {data}")
+                                continue
+                            
+                            if action == 'make_prediction':
+                                result = self.process_prediction_request(data)
+                                
+                                # Send the result back
+                                response_key = f'response:{data.get("message_id", "unknown")}'
+                                bt.logging.info(f"Publishing response to key: {response_key}")
+                                self.redis_interface.set(response_key, json.dumps(result), ex=60)  # Set expiration to 60 seconds
+                            else:
+                                bt.logging.warning(f"Unknown action: {action}")
+                        except json.JSONDecodeError:
+                            bt.logging.error(f"Failed to decode JSON message: {message['data']}")
+                        except KeyError as e:
+                            bt.logging.error(f"Missing key in message: {e}")
+                        except Exception as e:
+                            bt.logging.error(f"Error processing message: {str(e)}")
 
             except Exception as e:
                 bt.logging.error(f"Error in Redis listener: {str(e)}")
@@ -400,31 +421,38 @@ class BettensorMiner(BaseNeuron):
     def process_prediction_request(self, data):
         bt.logging.info(f"Processing prediction request: {data}")
 
-        predictions = data.get('predictions', [])
+        predictions = data.get('predictions')
+        if not predictions:
+            bt.logging.warning("Received prediction request without 'predictions' field")
+            return {
+                'status': 'error',
+                'message': "No predictions provided",
+                'miner_uid': self.miner_uid,
+                'miner_hotkey': self.wallet.hotkey.ss58_address
+            }
+
         results = []
 
         for prediction in predictions:
             bt.logging.info(f"Processing prediction: {prediction}")
             
             try:
-                # Check if the teamGameID exists in the games table
-                game_exists = self.games_handler.game_exists(prediction['teamGameID'])
+                # Check if the game exists using the teamGameID
+                game_exists = self.games_handler.game_exists(prediction.get('teamGameID'))
                 if not game_exists:
-                    bt.logging.warning(f"Game with ID {prediction['teamGameID']} does not exist")
+                    bt.logging.warning(f"Game with ID {prediction.get('teamGameID')} does not exist")
                     results.append({
-                        'predictionID': prediction.get('predictionID', str(uuid.uuid4())),
                         'status': 'error',
-                        'message': f"Game with ID {prediction['teamGameID']} does not exist"
+                        'message': f"Game with ID {prediction.get('teamGameID')} does not exist"
                     })
                     continue
 
-                # Generate a new predictionID if not provided
-                if 'predictionID' not in prediction:
-                    prediction['predictionID'] = str(uuid.uuid4())
+                # Generate a new predictionID
+                prediction['predictionID'] = str(uuid.uuid4())
 
-                # Set minerID and predictionDate
+                # Set minerID and ensure predictionDate is in the correct format
                 prediction['minerID'] = self.miner_uid
-                prediction['predictionDate'] = datetime.now(timezone.utc).isoformat()
+                prediction['predictionDate'] = datetime.fromisoformat(prediction['predictionDate']).replace(tzinfo=timezone.utc).isoformat()
 
                 # Set initial outcome to 'Unfinished'
                 prediction['outcome'] = 'Unfinished'
@@ -434,13 +462,12 @@ class BettensorMiner(BaseNeuron):
                 bt.logging.info(f"Prediction added: {result}")
                 results.append({
                     'predictionID': prediction['predictionID'],
-                    'status': result['status'],
-                    'message': result['message']
+                    'status': 'success',
+                    'message': 'Prediction added successfully'
                 })
             except Exception as e:
                 bt.logging.error(f"Error processing prediction: {str(e)}")
                 results.append({
-                    'predictionID': prediction.get('predictionID', str(uuid.uuid4())),
                     'status': 'error',
                     'message': f"Error processing prediction: {str(e)}"
                 })

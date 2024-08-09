@@ -49,12 +49,32 @@ prompt_yes_no() {
     done
 }
 
+# Function to prompt for server type
+prompt_for_server_type() {
+    local prompt="Do you want to run the server locally or connect to a central server?"
+    local var_name="SERVER_TYPE"
+    while true; do
+        read -p "$prompt [local/central]: " user_input
+        case $user_input in
+            [Ll]ocal ) eval $var_name="local"; break;;
+            [Cc]entral ) eval $var_name="central"; break;;
+            * ) echo "Please answer local or central.";;
+        esac
+    done
+}
+
 # Function to start Flask server
 start_flask_server() {
     echo "Starting Flask server..."
-    pm2 start --name "flask-server" python -- \
-        -m bettensor.miner.interfaces.miner_interface_server \
-        --host "127.0.0.1" --port 5000
+    if [ "$SERVER_TYPE" = "local" ]; then
+        pm2 start --name "flask-server" python -- \
+            -m bettensor.miner.interfaces.miner_interface_server \
+            --host "127.0.0.1" --port 5000
+    else
+        pm2 start --name "flask-server" python -- \
+            -m bettensor.miner.interfaces.miner_interface_server \
+            --host "0.0.0.0" --port 5000 --public
+    fi
     
     sleep 2  # Give the server a moment to start
 
@@ -136,6 +156,9 @@ if [ $MINER_COUNT -gt 0 ]; then
         exit 0
     fi
 fi
+
+# Prompt for server type
+prompt_for_server_type
 
 # Start the neuron with PM2
 MINER_NAME="miner$MINER_COUNT"

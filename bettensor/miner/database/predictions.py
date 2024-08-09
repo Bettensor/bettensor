@@ -3,8 +3,6 @@ from typing import Any, List, Dict, Optional
 from bettensor.protocol import TeamGamePrediction, TeamGame
 import bittensor as bt
 from datetime import datetime, timezone, timedelta
-from bettensor.miner.models.model_utils import SoccerPredictor
-from fuzzywuzzy import process
 
 class PredictionsHandler:
     def __init__(self, db_manager, state_manager, miner_hotkey: str):
@@ -14,7 +12,6 @@ class PredictionsHandler:
         self.miner_hotkey = miner_hotkey
         self.miner_uid = state_manager.miner_uid
         self.new_prediction_window = timedelta(hours=24)
-        self.soccer_predictor = SoccerPredictor(model_name='podos_soccer_model')
         self.update_predictions_with_hotkey()
         self.update_predictions_with_minerid()
         bt.logging.trace("PredictionsHandler initialization complete")
@@ -51,33 +48,9 @@ class PredictionsHandler:
         bt.logging.trace(f"Processing predictions for {len(updated_games)} updated games and {len(new_games)} new games")
         updated_predictions = self.process_game_results(updated_games)
         recent_predictions = self.get_recent_predictions()
-
-        soccer_games = {game_id: game for game_id, game in new_games.items() if game.sport == 'soccer'}
-
-        if soccer_games:
-            home_teams = [game.homeTeam for game in soccer_games.values()]
-            away_teams = [game.awayTeam for game in soccer_games.values()]
-            odds = [[game.teamAodds, game.tieOdds, game.teamBodds] for game in soccer_games.values()]
-
-            encoded_teams = set(self.soccer_predictor.le.classes_)
-            matched_home_teams = [self.get_best_match(team, encoded_teams) for team in home_teams]
-            matched_away_teams = [self.get_best_match(team, encoded_teams) for team in away_teams]
-
-            if None not in matched_home_teams + matched_away_teams:
-                soccer_predictions = self.soccer_predictor.predict(matched_home_teams, matched_away_teams, odds)
-            else:
-                bt.logging.warning("Some teams not found in label encoder, skipping model predictions")
-
         result = {pred.predictionID: pred for pred in recent_predictions}
         bt.logging.trace(f"Processed {len(result)} predictions")
         return result
-
-    def get_best_match(self, team_name, encoded_teams):
-        match, score = process.extract0ne(team_name, encoded_teams)
-        if score >= 80:
-            return match
-        else:
-            return None
 
     def process_game_results(self, updated_games: Dict[str, TeamGame]):
         bt.logging.trace(f"Processing game results for {len(updated_games)} games")
