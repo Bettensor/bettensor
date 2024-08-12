@@ -1,4 +1,5 @@
 import numpy as np
+import os
 import pickle
 import torch
 import torch.nn as nn
@@ -7,12 +8,16 @@ from sklearn.preprocessing import StandardScaler
 from huggingface_hub import PyTorchModelHubMixin
 
 class SoccerPredictor:
-    def __init__(self, model_name, label_encoder_path='label_encoder.pkl'):
+    def __init__(self, model_name, label_encoder_path=None, team_averages_path=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self.get_HFmodel(model_name)
+        if label_encoder_path is None:
+            label_encoder_path = os.path.join(os.path.dirname(__file__), '..','models', 'label_encoder.pkl')
         self.le = self.load_label_encoder(label_encoder_path)
         self.scaler = StandardScaler()
-        self.team_averages_path = 'team_averages_last_5_games_aug.csv'
+        if team_averages_path is None:
+            team_averages_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'team_averages_last_5_games_aug.csv')
+        self.team_averages_path = team_averages_path
 
     def load_label_encoder(self, path):
         with open(path, 'rb') as file:
@@ -27,6 +32,7 @@ class SoccerPredictor:
             return None
 
     def preprocess_data(self, home_teams, away_teams, odds):
+        odds = np.array(odds) 
         df = pd.DataFrame({
             'HomeTeam': home_teams,
             'AwayTeam': away_teams,

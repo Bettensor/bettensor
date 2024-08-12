@@ -40,7 +40,7 @@ class PredictionsHandler:
 
         if None not in matched_home_teams + matched_away_teams:
             model_predictions = model.predict_games(matched_home_teams, matched_away_teams, odds)
-
+            
             for (game_id, game), prediction in zip(games.items(), model_predictions):
                 pred_dict = {
                     'predictionID': str(uuid.uuid4()),
