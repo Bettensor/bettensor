@@ -25,6 +25,8 @@ class SoccerPredictor:
 
     def get_HFmodel(self, model_name):
         try:
+            import warnings
+            warnings.filterwarnings("ignore", message="enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.self_attn.batch_first was not True")
             model = PodosTransformer.from_pretrained(f"Bettensor/{model_name}").to(self.device);
             return model
         except Exception as e:
