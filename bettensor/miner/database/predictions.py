@@ -116,6 +116,54 @@ class PredictionsHandler:
         result = {pred.predictionID: pred for pred in recent_predictions}
         bt.logging.trace(f"Processed {len(result)} predictions")
         return result
+    
+    def process_model_predictions(self, games: Dict[str, TeamGame], sport: str) -> Dict[str, TeamGamePrediction]:
+        if sport not in self.models:
+            bt.logging.warning(f"Model for sport {sport} not found, skipping model predictions")
+            return {}
+        
+        model = self.models[sport]
+        predictions = {}
+
+        home_teams = [game.teamA for game in games.values()]
+        away_teams = [game.teamB for game in games.values()]
+        odds = [[game.teamAodds, game.tieOdds, game.teamBodds] for game in games.values()]
+
+        encoded_teams = set(model.le.classes_)
+        matched_home_teams = [self.get_best_match(team, encoded_teams) for team in home_teams]
+        matched_away_teams = [self.get_best_match(team, encoded_teams) for team in away_teams]
+
+        if None not in matched_home_teams + matched_away_teams:
+            model_predictions = model.predict_games(matched_home_teams, matched_away_teams, odds)
+            
+            for (game_id, game), prediction in zip(games.items(), model_predictions):
+                pred_dict = {
+                    'predictionID': str(uuid.uuid4()),
+                    'teamGameID': game_id,
+                    'minerID': self.miner_uid,
+                    'predictionDate': datetime.now(timezone.utc).isoformat(),
+                    'predictedOutcome': game.teamA if prediction['PredictedOutcome'] == 'Home Win' else game.teamB if prediction['PredictedOutcome'] == 'Away Win' else 'Tie',
+                    'wager': prediction['recommendedWager'],
+                    'teamAodds': game.teamAodds,
+                    'teamBodds': game.teamBodds,
+                    'tieOdds': game.tieOdds,
+                    'outcome': 'unfinished',
+                    'teamA': game.teamA,
+                    'teamB': game.teamB
+                }
+                predictions[game_id] = TeamGamePrediction(**pred_dict)
+                self.add_prediction(pred_dict)
+        else:
+            bt.logging.warning(f"Some teams not found in label encoder for {sport}, skipping model predictions.")
+
+        return predictions
+
+    def get_best_match(self, team_name, encoded_teams):
+        match, score = process.extractOne(team_name, encoded_teams)
+        if score >= 80:
+            return match
+        else:
+            return None
 
     def process_game_results(self, updated_games: Dict[str, TeamGame]):
         bt.logging.trace(f"Processing game results for {len(updated_games)} games")

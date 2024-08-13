@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
+import os
 import pickle
 import torch
 import torch.nn as nn
@@ -12,12 +13,16 @@ class MinerConfig:
     model_prediction: bool = False
 
 class SoccerPredictor:
-    def __init__(self, model_name, label_encoder_path='label_encoder.pkl'):
+    def __init__(self, model_name, label_encoder_path=None, team_averages_path=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self.get_HFmodel(model_name)
+        if label_encoder_path is None:
+            label_encoder_path = os.path.join(os.path.dirname(__file__), '..','models', 'label_encoder.pkl')
         self.le = self.load_label_encoder(label_encoder_path)
         self.scaler = StandardScaler()
-        self.team_averages_path = 'team_averages_last_5_games_aug.csv'
+        if team_averages_path is None:
+            team_averages_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'team_averages_last_5_games_aug.csv')
+        self.team_averages_path = team_averages_path
 
     def load_label_encoder(self, path):
         with open(path, 'rb') as file:
@@ -25,13 +30,16 @@ class SoccerPredictor:
 
     def get_HFmodel(self, model_name):
         try:
-            model = PodosTransformer.from_pretrained(f"Bettensor/{model_name}").to(self.device)
+            import warnings
+            warnings.filterwarnings("ignore", message="enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.self_attn.batch_first was not True")
+            model = PodosTransformer.from_pretrained(f"Bettensor/{model_name}").to(self.device);
             return model
         except Exception as e:
             print(f"Error pulling huggingface model: {e}")
             return None
 
     def preprocess_data(self, home_teams, away_teams, odds):
+        odds = np.array(odds) 
         df = pd.DataFrame({
             'HomeTeam': home_teams,
             'AwayTeam': away_teams,
@@ -59,6 +67,30 @@ class SoccerPredictor:
         ]
         return df[features]
 
+    def recommend_wager_distribution(self, confidence_scores, max_daily_wager=1000.0, min_wager=20.0, top_n = 10):
+        confidence_scores = np.clip(confidence_scores, 0.0, 1.0)
+        top_indices = np.argsort(confidence_scores)[-top_n:]
+        top_confidences = confidence_scores[top_indices]
+        sigmoids = 1 / (1 + np.exp(-10 * (top_confidences - 0.5)))
+        normalized_sigmoids = sigmoids / np.sum(sigmoids)
+        
+        wagers = normalized_sigmoids * max_daily_wager
+        wagers = np.maximum(wagers, min_wager)
+        wagers = np.round(wagers, 2)
+        
+        if np.sum(wagers) > max_daily_wager:
+            excess = np.sum(wagers) - max_daily_wager
+            while excess > 0.01:
+                wagers[wagers > min_wager] -= 0.01
+                wagers = np.round(wagers, 2)
+                excess = np.sum(wagers) - max_daily_wager
+        
+        final_wagers = [0.0] * len(confidence_scores)
+        for idx, wager in zip(top_indices, wagers):
+            final_wagers[idx] = wager
+        
+        return final_wagers
+
     def predict_games(self, home_teams, away_teams, odds):
         df = self.preprocess_data(home_teams, away_teams, odds)
         x = self.scaler.fit_transform(df)
@@ -73,13 +105,17 @@ class SoccerPredictor:
         outcome_map = {0: "Home Win", 1: "Tie", 2: "Away Win"}
         pred_outcomes = [outcome_map[label.item()] for label in pred_labels]
 
+        confidence_scores = confidence_scores.cpu().numpy()
+        wagers = self.recommend_wager_distribution(confidence_scores)
+
         results = []
         for i in range(len(home_teams)):
             result = {
                 'Home Team': home_teams[i],
                 'Away Team': away_teams[i],
                 'PredictedOutcome': pred_outcomes[i],
-                'ConfidenceScore': np.round(confidence_scores[i].item(), 2)
+                'ConfidenceScore': np.round(confidence_scores[i].item(), 2),
+                'recommendedWager' : wagers[i]
             }
             results.append(result)
         
