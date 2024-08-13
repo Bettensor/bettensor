@@ -211,7 +211,7 @@ class Application:
 
         @self.kb.add('t', filter=Condition(lambda: self.current_view == "enter_prediction"))
         def _(event):
-            self.prediction_outcome = "Draw"
+            self.prediction_outcome = "Tie"
 
         @self.kb.add('w', filter=Condition(lambda: self.current_view == "enter_prediction"))
         def _(event):

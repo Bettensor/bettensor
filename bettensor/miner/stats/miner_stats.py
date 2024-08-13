@@ -130,7 +130,7 @@ class MinerStatsHandler:
                             payout = pred['wager'] * pred['teamaodds']
                         elif pred['predictedoutcome'] == pred['teamb']:
                             payout = pred['wager'] * pred['teambodds']
-                        elif pred['predictedoutcome'] == "Draw":
+                        elif pred['predictedoutcome'] == "Tie":
                             payout = pred['wager'] * pred['tieodds']
                         else:
                             payout = 0

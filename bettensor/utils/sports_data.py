@@ -262,7 +262,7 @@ class SportsData:
                         # Use next() to find the correct odds regardless of order
                         home_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Home"))
                         away_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Away"))
-                        tie_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Draw"))
+                        tie_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Tie"))
                         
                         total_home_odds += home_odds
                         total_away_odds += away_odds

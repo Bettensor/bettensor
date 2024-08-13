@@ -183,8 +183,8 @@ class PredictionsHandler:
             return "Team A Win"
         elif outcome in [1, "1", "Team B Win"]:
             return "Team B Win"
-        elif outcome in [2, "2", "Draw"]:
-            return "Draw"
+        elif outcome in [2, "2", "Tie"]:
+            return "Tie"
         else:
             bt.logging.warning(f"Unknown game outcome: {outcome}")
             return "Unknown"
@@ -194,8 +194,8 @@ class PredictionsHandler:
             return "Team A Win"
         elif outcome in ["Team B Win", "Away Win"] or outcome == game_data.teamB:
             return "Team B Win"
-        elif "Draw" in outcome:
-            return "Draw"
+        elif "Tie" in outcome:
+            return "Tie"
         else:
             bt.logging.warning(f"Unknown predicted outcome: {outcome}")
             return "Unknown"
@@ -222,7 +222,7 @@ class PredictionsHandler:
         
         if (predicted_team == "Team A Win" and result == 0) or \
            (predicted_team == "Team B Win" and result == 1) or \
-           (predicted_team == "Draw" and result == 2):
+           (predicted_team == "Tie" and result == 2):
             earnings = wager * odds 
         else:
             earnings = 0

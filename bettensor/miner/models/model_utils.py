@@ -70,7 +70,7 @@ class SoccerPredictor:
             probs = nn.Softmax(dim=1)(outputs.cpu())
             confidence_scores, pred_labels = torch.max(probs, dim=1)
 
-        outcome_map = {0: "Home Win", 1: "Draw", 2: "Away Win"}
+        outcome_map = {0: "Home Win", 1: "Tie", 2: "Away Win"}
         pred_outcomes = [outcome_map[label.item()] for label in pred_labels]
 
         results = []
