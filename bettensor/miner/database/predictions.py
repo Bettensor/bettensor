@@ -68,7 +68,7 @@ class PredictionsHandler:
             prediction['tieOdds'],
             prediction['outcome']
         )
-        
+
         try:
             bt.logging.debug(f"Executing query: {query}")
             bt.logging.debug(f"Query parameters: {params}")

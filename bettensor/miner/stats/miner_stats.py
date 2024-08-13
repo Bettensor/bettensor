@@ -200,6 +200,11 @@ class MinerStatsHandler:
         self.stats.update(default_stats)
         self.state_manager.update_state(default_stats)
         # bt.logging.info("Initialized stats with default values")
+    def get_miner_cash(self) -> float:
+        with self.lock:
+            cash = self.stats.get('miner_cash', 0.0)
+            bt.logging.info(f"Retrieved miner cash: {cash}")
+            return cash
 
 class MinerStateManager:
     DAILY_CASH = 1000.0

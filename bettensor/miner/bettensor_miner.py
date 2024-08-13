@@ -147,8 +147,7 @@ class BettensorMiner(BaseNeuron):
         self._check_version(synapse.metadata.subnet_version)
 
         bt.logging.debug(f"Processing game data: {len(synapse.gamedata_dict)} games")
-        for game in synapse.gamedata_dict.values():
-            bt.logging.debug(f"Game: {game}")
+        
         try:
             # Check if there are any changes in game data
             changed_games = self.cache_manager.filter_changed_games(synapse.gamedata_dict)
@@ -397,6 +396,8 @@ class BettensorMiner(BaseNeuron):
                                 response_key = f'response:{data.get("message_id", "unknown")}'
                                 bt.logging.info(f"Publishing response to key: {response_key}")
                                 self.redis_interface.set(response_key, json.dumps(result), ex=60)  # Set expiration to 60 seconds
+                            elif action == 'get_upcoming_game_ids':
+                                self.handle_get_upcoming_game_ids(data)
                             else:
                                 bt.logging.warning(f"Unknown action: {action}")
                         except json.JSONDecodeError:
@@ -416,59 +417,164 @@ class BettensorMiner(BaseNeuron):
         predictions = data.get('predictions')
         if not predictions:
             bt.logging.warning("Received prediction request without 'predictions' field")
-            return {
-                'status': 'error',
-                'message': "No predictions provided",
-                'miner_uid': self.miner_uid,
-                'miner_hotkey': self.wallet.hotkey.ss58_address
-            }
+            return self.create_prediction_response(success=False, original_response={})
 
-        results = []
+        try:
+            results = []
+            for prediction in predictions:
+                bt.logging.info(f"Processing prediction: {prediction}")
+                
+                try:
+                    external_id = prediction.get('externalId')
+                    bt.logging.info(f"Extracted external_id: {external_id}")
+                    
+                    if not external_id:
+                        bt.logging.warning(f"Prediction missing externalId: {prediction}")
+                        results.append({
+                            'status': 'error',
+                            'message': "Prediction missing externalId"
+                        })
+                        continue
+                    bt.logging.info(f"Checking if game exists with externalID: {external_id}")
+                    try:
+                        game_exists = self.games_handler.game_exists(external_id)
+                    except Exception as e:
+                        bt.logging.error(f"Error checking game existence: {str(e)}")
+                        results.append({
+                            'status': 'error',
+                            'message': f"Error checking game existence: {str(e)}"
+                        })
+                        continue
 
-        for prediction in predictions:
-            bt.logging.info(f"Processing prediction: {prediction}")
-            
-            try:
-                # Check if the game exists using the externalID
-                game_exists = self.games_handler.game_exists(prediction.get('externalID'))
-                if not game_exists:
-                    bt.logging.warning(f"Game with ID {prediction.get('externalID')} does not exist")
+                    bt.logging.info(f"Game exists: {game_exists}")
+                    
+                    if not game_exists:
+                        bt.logging.warning(f"Game with ID {external_id} does not exist")
+                        results.append({
+                            'status': 'error',
+                            'message': f"Game with ID {external_id} does not exist"
+                        })
+                        continue
+
+                    # Generate a new predictionID
+                    prediction['predictionID'] = str(uuid.uuid4())
+
+                    # Set minerID and ensure predictionDate is in the correct format
+                    prediction['minerID'] = self.miner_uid
+                    prediction['predictionDate'] = datetime.now(timezone.utc).isoformat()
+
+                    # Set initial outcome to 'Unfinished'
+                    prediction['outcome'] = 'Unfinished'
+
+                    # Map externalId to teamGameID
+                    prediction['teamGameID'] = prediction['externalId']
+                    del prediction['externalId']
+
+                    # Ensure all required fields are present
+                    required_fields = ['predictionID', 'teamGameID', 'minerID', 'predictionDate', 'predictedOutcome',
+                                       'teamA', 'teamB', 'wager', 'teamAodds', 'teamBodds', 'tieOdds', 'outcome']
+                    missing_fields = [field for field in required_fields if field not in prediction]
+                    if missing_fields:
+                        bt.logging.warning(f"Prediction missing required fields: {missing_fields}")
+                        results.append({
+                            'status': 'error',
+                            'message': f"Prediction missing required fields: {missing_fields}"
+                        })
+                        continue
+
+                    bt.logging.info(f"Adding prediction to database: {prediction}")
+                    # Add the prediction to the database
+                    result = self.predictions_handler.add_prediction(prediction)
+                    bt.logging.info(f"Prediction added: {result}")
+                    results.append(result)
+
+                except Exception as e:
+                    bt.logging.error(f"Error processing prediction: {str(e)}")
+                    bt.logging.error(f"Traceback: {traceback.format_exc()}")
                     results.append({
                         'status': 'error',
-                        'message': f"Game with ID {prediction.get('externalID')} does not exist"
+                        'message': f"Error processing prediction: {str(e)}",
+                        'traceback': traceback.format_exc()
                     })
-                    continue
 
-                # Generate a new predictionID
-                prediction['predictionID'] = str(uuid.uuid4())
+            bt.logging.info("All predictions processed, creating response")
+            response = self.create_prediction_response(success=True, original_response={'results': results})
+            bt.logging.info(f"Created response: {response}")
+            
+            # Send the response back to Redis
+            message_id = data.get('message_id')
+            if message_id:
+                redis_key = f"response:{message_id}"
+                redis_value = json.dumps(response)
+                bt.logging.info(f"Attempting to set Redis key: {redis_key} with value: {redis_value}")
+                self.redis_interface.set(redis_key, redis_value, ex=60)
+                bt.logging.info(f"Response sent to Redis with key: {redis_key}")
+            else:
+                bt.logging.warning("No message_id provided in the request, couldn't send response to Redis")
 
-                # Set minerID and ensure predictionDate is in the correct format
-                prediction['minerID'] = self.miner_uid
-                prediction['predictionDate'] = datetime.fromisoformat(prediction['predictionDate']).replace(tzinfo=timezone.utc).isoformat()
+            return response
 
-                # Set initial outcome to 'Unfinished'
-                prediction['outcome'] = 'Unfinished'
+        except Exception as e:
+            bt.logging.error(f"Error processing prediction request: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            response = self.create_prediction_response(success=False, original_response={})
+            
+            # Send the error response back to Redis
+            message_id = data.get('message_id')
+            if message_id:
+                redis_key = f"response:{message_id}"
+                redis_value = json.dumps(response)
+                bt.logging.info(f"Attempting to set Redis key for error: {redis_key} with value: {redis_value}")
+                self.redis_interface.set(redis_key, redis_value, ex=60)
+                bt.logging.info(f"Error response sent to Redis with key: {redis_key}")
+            else:
+                bt.logging.warning("No message_id provided in the request, couldn't send error response to Redis")
 
-                # Add the prediction to the database
-                result = self.predictions_handler.add_prediction(prediction)
-                bt.logging.info(f"Prediction added: {result}")
-                results.append(result)
+            return response
 
-            except Exception as e:
-                bt.logging.error(f"Error processing prediction: {str(e)}")
-                bt.logging.error(f"Traceback: {traceback.format_exc()}")
-                results.append({
-                    'status': 'error',
-                    'message': f"Error processing prediction: {str(e)}"
-                })
-
-        return {
-            'status': 'success',
-            'message': "Predictions processed",
-            'results': results,
-            'miner_uid': self.miner_uid,
-            'miner_hotkey': self.wallet.hotkey.ss58_address
+    def create_prediction_response(self, success, original_response):
+        bt.logging.info("Creating prediction response")
+        current_cash = self.get_miner_cash_from_db()
+        bt.logging.info(f"Current miner cash: {current_cash}")
+        token_status = "VALID" if success else "INVALID"
+        
+        response = {
+            "amountLeft": current_cash,
+            "tokenStatus": token_status
         }
+        
+        bt.logging.info(f"Created prediction response: {response}")
+        return response
+
+    def get_miner_cash_from_db(self):
+        bt.logging.info("Fetching miner cash directly from database")
+        query = "SELECT miner_cash FROM miner_stats WHERE miner_uid = %s"
+        try:
+            conn, cur = self.db_manager.connection_pool.getconn(), None
+            cur = conn.cursor()
+            cur.execute(query, (self.miner_uid,))
+            result = cur.fetchone()
+            if result:
+                cash = float(result[0])
+                bt.logging.info(f"Fetched miner cash from DB: {cash}")
+                return cash
+            else:
+                bt.logging.warning("No miner cash found in database")
+                return 0.0
+        except Exception as e:
+            bt.logging.error(f"Error fetching miner cash from database: {str(e)}")
+            return 0.0
+        finally:
+            if cur:
+                cur.close()
+            if conn:
+                self.db_manager.connection_pool.putconn(conn)
+
+    def handle_get_upcoming_game_ids(self, data):
+        upcoming_game_ids = self.games_handler.get_upcoming_game_ids()
+        
+        response = json.dumps(upcoming_game_ids)
+        self.redis_interface.set(f"response:{data['message_id']}", response, ex=60)  # Expire after 60 seconds
 
     def health_check(self):
         while True:

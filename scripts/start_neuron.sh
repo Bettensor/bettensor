@@ -63,47 +63,60 @@ prompt_for_server_type() {
     done
 }
 
+# Function to check if a PM2 process is running
+is_pm2_process_running() {
+    pm2 list | grep -q "$1"
+}
+
 # Function to start Flask server
 start_flask_server() {
-    echo "Starting Flask server..."
-    if [ "$SERVER_TYPE" = "local" ]; then
-        pm2 start --name "flask-server" python -- \
-            -m bettensor.miner.interfaces.miner_interface_server \
-            --host "127.0.0.1" --port 5000
-    else
-        pm2 start --name "flask-server" python -- \
-            -m bettensor.miner.interfaces.miner_interface_server \
-            --host "0.0.0.0" --port 5000 --public
-    fi
-    
-    sleep 2  # Give the server a moment to start
+    if ! is_pm2_process_running "flask-server"; then
+        echo "Starting Flask server..."
+        if [ "$SERVER_TYPE" = "local" ]; then
+            pm2 start --name "flask-server" python -- \
+                -m bettensor.miner.interfaces.miner_interface_server \
+                --host "127.0.0.1" --port 5000
+        else
+            pm2 start --name "flask-server" python -- \
+                -m bettensor.miner.interfaces.miner_interface_server \
+                --host "0.0.0.0" --port 5000 --public
+        fi
+        
+        sleep 2  # Give the server a moment to start
 
-    # Check if the server started successfully
-    if pm2 list | grep -q "flask-server"; then
-        echo "Flask server started successfully."
-        pm2 logs "flask-server" --lines 20 --nostream
+        # Check if the server started successfully
+        if is_pm2_process_running "flask-server"; then
+            echo "Flask server started successfully."
+            pm2 logs "flask-server" --lines 20 --nostream
+        else
+            echo "Failed to start Flask server. Check logs for details."
+            pm2 logs "flask-server" --lines 20 --nostream
+        fi
     else
-        echo "Failed to start Flask server. Check logs for details."
-        pm2 logs "flask-server" --lines 20 --nostream
+        echo "Flask server is already running."
     fi
 }
 
 # Function to start auto-updater
 start_auto_updater() {
-    echo "Starting auto-updater..."
-    pm2 start --name "auto-updater" \
-        --cwd "$REPO_ROOT" \
-        bash \
-        -- scripts/auto_update.sh
-    
-    sleep 5  # Give the process a moment to start
+    if ! is_pm2_process_running "auto-updater"; then
+        echo "Starting auto-updater..."
+        pm2 start --name "auto-updater" \
+            --cwd "$REPO_ROOT" \
+            bash \
+            -- scripts/auto_update.sh
+        
+        sleep 5  # Give the process a moment to start
 
-    if pm2 list | grep -q "auto-updater"; then
-        echo "Auto-updater started successfully."
-        pm2 logs "auto-updater" --lines 20 --nostream
+        if is_pm2_process_running "auto-updater"; then
+            echo "Auto-updater started successfully."
+            pm2 logs "auto-updater" --lines 20 --nostream
+        else
+            echo "Failed to start auto-updater. Check logs for details."
+            pm2 logs "auto-updater" --lines 20 --nostream
+        fi
     else
-        echo "Failed to start auto-updater. Check logs for details."
-        pm2 logs "auto-updater" --lines 20 --nostream
+        echo "Auto-updater is already running."
     fi
 }
 

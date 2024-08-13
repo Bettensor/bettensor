@@ -5,6 +5,17 @@ import subprocess
 import requests
 import bittensor as bt
 from bettensor.miner.interfaces.redis_interface import RedisInterface
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+from rich.layout import Layout
+from prompt_toolkit import Application
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout.containers import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout import Layout as PromptLayout
+from prompt_toolkit.formatted_text import ANSI
 
 # Set up logging
 bt.logging.set_trace(True)
@@ -13,6 +24,139 @@ bt.logging.set_debug(True)
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
 REDIS_DB = 0
+
+# Define custom colors
+DARK_GREEN = "dark_green"
+LIGHT_GREEN = "green"
+GOLD = "gold1"
+LIGHT_GOLD = "yellow"
+
+class MenuApplication:
+    def __init__(self):
+        self.console = Console()
+        self.r = get_redis_client()
+        self.kb = KeyBindings()
+        self.setup_keybindings()
+
+    def setup_keybindings(self):
+        @self.kb.add('q')
+        def _(event):
+            event.app.exit()
+
+        @self.kb.add('1')
+        def _(event):
+            event.app.exit()
+            self.selected_option = self.access_cli
+
+        @self.kb.add('2')
+        def _(event):
+            event.app.exit()
+            self.selected_option = self.edit_model_parameters
+
+        @self.kb.add('3')
+        def _(event):
+            event.app.exit()
+            self.selected_option = self.sign_new_token
+
+        @self.kb.add('4')
+        def _(event):
+            event.app.exit()
+            self.selected_option = self.revoke_current_token
+
+        @self.kb.add('5')
+        def _(event):
+            event.app.exit()
+            self.selected_option = self.check_token_status
+
+    def clear_screen(self):
+        os.system('cls' if os.name == 'nt' else 'clear')
+
+    def get_formatted_text(self):
+        layout = self.generate_layout()
+        with self.console.capture() as capture:
+            self.console.print(layout)
+        return ANSI(capture.get())
+
+    def generate_layout(self):
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="body", ratio=1),
+            Layout(name="footer", size=3)
+        )
+
+        layout["header"].update(Panel("BetTensor Miner Menu", style=f"bold {GOLD}"))
+        layout["body"].update(self.generate_menu())
+        layout["footer"].update(Panel("Press q to quit", style=f"italic {LIGHT_GREEN}"))
+
+        return layout
+
+    def generate_menu(self):
+        table = Table(show_header=False, box=None, expand=True, border_style=DARK_GREEN)
+        table.add_column("Option", style=LIGHT_GREEN)
+        table.add_column("Description", style=GOLD)
+
+        options = [
+            ("1", "Access CLI"),
+            ("2", "Edit Model Parameters"),
+            ("3", "Sign new token"),
+            ("4", "Revoke current token"),
+            ("5", "Check token status")
+        ]
+
+        for option, description in options:
+            table.add_row(f"[{option}]", description)
+
+        return Panel(table, title="Main Menu", border_style=DARK_GREEN)
+
+    def run(self):
+        self.selected_option = None
+        layout = PromptLayout(Window(content=FormattedTextControl(self.get_formatted_text)))
+        app = Application(layout=layout, key_bindings=self.kb, full_screen=True)
+        app.run()
+        
+        if self.selected_option:
+            self.clear_screen()
+            self.selected_option()
+
+    def access_cli(self):
+        subprocess.run(["python", "bettensor/miner/cli.py"])
+
+    def edit_model_parameters(self):
+        subprocess.run(["python", "bettensor/miner/model_params_tui.py"])
+
+    def sign_new_token(self):
+        from bettensor.miner.utils.sign_token import main as sign_token_main
+        sign_token_main()
+        
+        print("\nToken signing process completed.")
+        input("Press Enter to return to the main menu...")
+
+    def revoke_current_token(self):
+        token_data = get_stored_token()
+        if token_data:
+            self.r.publish("token_management", json.dumps({"action": "revoke", "data": token_data}))
+            response = self.r.blpop("token_management_response", timeout=5)
+            if response:
+                self.console.print(json.loads(response[1])["message"], style=LIGHT_GREEN)
+            else:
+                self.console.print("No response from server.", style="red")
+        else:
+            self.console.print("No token found.", style="yellow")
+        input("Press Enter to continue...")
+
+    def check_token_status(self):
+        token_data = get_stored_token()
+        if token_data:
+            self.r.publish("token_management", json.dumps({"action": "check", "data": token_data}))
+            response = self.r.blpop("token_management_response", timeout=5)
+            if response:
+                self.console.print(json.loads(response[1])["message"], style=LIGHT_GREEN)
+            else:
+                self.console.print("No response from server.", style="red")
+        else:
+            self.console.print("No token found.", style="yellow")
+        input("Press Enter to continue...")
 
 def get_redis_client():
     return RedisInterface(host=REDIS_HOST, port=REDIS_PORT)
@@ -23,87 +167,10 @@ def get_stored_token():
             return json.load(f)
     return None
 
-def get_server_info(r):
-    #bt.logging.debug("Attempting to retrieve server info from Redis")
-    server_info = {}
-    keys = ["status", "ip", "port", "connected_miners", "uptime"]
-    for key in keys:
-        value = r.get(f"server_info:{key}")
-        if value:
-            server_info[key] = value.decode('utf-8')
-        else:
-            bt.logging.warning(f"No value found for key: server_info:{key}")
-    
-    #bt.logging.debug(f"Retrieved server info: {server_info}")
-    return server_info if server_info else None
-
-def display_server_info(server_info):
-    if not server_info:
-        bt.logging.warning("Unable to retrieve server information.")
-        bt.logging.warning("Please ensure that:")
-        bt.logging.warning("1. Redis server is running")
-        bt.logging.warning("2. The miner server is running and updating server information in Redis")
-        bt.logging.warning("3. The Redis connection details (host, port, db) are correct")
-        return
-
-    print("\nServer Information:")
-    print(f"Status: {server_info.get('status', 'Unknown')}")
-    print(f"IP: {server_info.get('ip', 'Unknown')}")
-    print(f"Port: {server_info.get('port', 'Unknown')}")
-    print(f"Connected Miners: {server_info.get('connected_miners', 'Unknown')}")
-    print(f"Uptime: {server_info.get('uptime', 'Unknown')}")
-    print()
-
-def prompt_loop():
-    r = get_redis_client()
-    if not r.connect():
-        bt.logging.error("Failed to connect to Redis. Exiting.")
-        return
-
-    while True:
-        server_info = get_server_info(r)
-        display_server_info(server_info)
-
-        print("1. Access CLI")
-        print("2. Edit Model Parameters")
-        print("3. Sign new token")
-        print("4. Revoke current token")
-        print("5. Check token status")
-        print("6. Exit")
-        choice = input("Enter your choice (1-6): ")
-
-        if choice == "1":
-            subprocess.run(["python", "bettensor/miner/cli.py"])
-        elif choice == "2":
-            subprocess.run(["python", "bettensor/miner/model_params_tui.py"])
-        elif choice == "3":
-            subprocess.run(["python", "bettensor/miner/utils/sign_token.py"])
-        elif choice == "4":
-            token_data = get_stored_token()
-            if token_data:
-                r.publish("token_management", json.dumps({"action": "revoke", "data": token_data}))
-                response = r.blpop("token_management_response", timeout=5)
-                if response:
-                    print(json.loads(response[1])["message"])
-                else:
-                    print("No response from server.")
-            else:
-                print("No token found.")
-        elif choice == "5":
-            token_data = get_stored_token()
-            if token_data:
-                r.publish("token_management", json.dumps({"action": "check", "data": token_data}))
-                response = r.blpop("token_management_response", timeout=5)
-                if response:
-                    print(json.loads(response[1])["message"])
-                else:
-                    print("No response from server.")
-            else:
-                print("No token found.")
-        elif choice == "6":
-            break
-        else:
-            print("Invalid choice. Please try again.")
-
 if __name__ == "__main__":
-    prompt_loop()
+    while True:
+        menu_app = MenuApplication()
+        menu_app.run()
+        if menu_app.selected_option is None:
+            break
+        menu_app.clear_screen()

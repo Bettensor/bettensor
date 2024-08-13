@@ -3,7 +3,7 @@ import json
 import sys
 import threading
 import time
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g, make_response
 from flask_cors import CORS
 import redis
 import requests
@@ -54,7 +54,7 @@ request_count = {}
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
-    default_limits=["10 per minute"]
+    default_limits=["20 per minute"]
 )
 
 # Configuration
@@ -83,19 +83,32 @@ if not redis_interface.connect():
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        bt.logging.info("Entering token_required decorator")
-        token = None
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            try:
-                token = auth_header.split(" ")[1]  # Remove 'Bearer ' prefix
-            except IndexError:
-                token = auth_header  # No 'Bearer ' prefix
+        print("==== Token Required Decorator ====")
+        print(f"Request Method: {request.method}")
+        print(f"Request URL: {request.url}")
+        print("Request Headers:")
+        for header, value in request.headers:
+            print(f"  {header}: {value}")
+        print("Request Data:")
+        print(request.get_data(as_text=True))
+        print("================================")
 
-        bt.logging.info(f"Received token: {token[:10]}...") if token else bt.logging.info("No token received")
+        token = None
+        auth_header = request.headers.get('Authorization')
+        
+        if auth_header:
+            print(f"Authorization header found: {auth_header}")
+            try:
+                token = auth_header.split(" ")[1]
+                print(f"Extracted token: {token[:10]}...")
+            except IndexError:
+                token = auth_header
+                print(f"No 'Bearer ' prefix, using full header as token: {token[:10]}...")
+        else:
+            print("No Authorization header found")
 
         if not token:
-            bt.logging.warning("Token is missing")
+            print("Token is missing")
             return jsonify({'message': 'Token is missing!'}), 401
 
         # Check if the token matches the one in token_store.json
@@ -105,33 +118,33 @@ def token_required(f):
                     stored_data = json.load(file)
                     stored_jwt = stored_data.get("jwt")
                     if stored_jwt and stored_jwt != token:
-                        bt.logging.warning("Received token does not match the stored token")
+                        print("Received token does not match the stored token")
                         return jsonify({'message': 'Invalid token!'}), 401
                     else:
-                        bt.logging.info("Token matches stored token")
+                        print("Token matches stored token")
             except json.JSONDecodeError as e:
-                bt.logging.error(f"Error decoding token_store.json: {str(e)}")
+                print(f"Error decoding token_store.json: {str(e)}")
                 return jsonify({'message': 'Error reading stored token!'}), 500
         else:
-            bt.logging.warning("token_store.json not found")
+            print("token_store.json not found")
 
         try:
             # Decode the token without verifying the signature
             decoded = pyjwt.decode(token, options={"verify_signature": False})
-            bt.logging.info(f"Decoded token: {decoded}")
+            print(f"Decoded token: {decoded}")
             
             # Now verify the signature separately
             pyjwt.decode(token, config.JWT_SECRET, algorithms=["HS256"], options={"verify_aud": False})
-            bt.logging.info("Token signature successfully verified")
+            print("Token signature successfully verified")
         except ExpiredSignatureError:
-            bt.logging.error("Token has expired")
+            print("Token has expired")
             return jsonify({'message': 'Token has expired!'}), 401
         except (InvalidTokenError, pyjwt.DecodeError) as e:
-            bt.logging.error(f"Invalid token: {str(e)}")
-            bt.logging.error(f"JWT_SECRET used: {config.JWT_SECRET}")
+            print(f"Invalid token: {str(e)}")
+            print(f"JWT_SECRET used: {config.JWT_SECRET}")
             return jsonify({'message': 'Token is invalid!'}), 401
 
-        bt.logging.info("Token validation successful")
+        print("Token validation successful")
         return f(*args, **kwargs)
 
     return decorated
@@ -142,54 +155,108 @@ def get_miner_uids():
 @app.route('/submit_predictions', methods=['POST'])
 @token_required
 def submit_predictions():
-    data = request.json
-    app.logger.info(f"Entering submit_predictions endpoint")
-    app.logger.info(f"Received data: {data}")
+    print("==== Submit Predictions Function ====")
+    print(f"Request Method: {request.method}")
+    print(f"Request URL: {request.url}")
+    print("Request Headers:")
+    for header, value in request.headers:
+        print(f"  {header}: {value}")
+    print("Request Data:")
+    print(request.get_data(as_text=True))
+    print("=====================================")
 
-    miner_id = data.get('minerID')
-    predictions = data.get('predictions', [])
+    try:
+        print("Attempting to parse request JSON")
+        data = request.json
+        print(f"Received data: {json.dumps(data, indent=2)}")
 
-    if not miner_id or not predictions:
-        return jsonify({'error': 'Invalid request data'}), 400
+        print("Extracting miner ID and predictions from data")
+        miner_id = data.get('minerID')
+        predictions = data.get('predictions', [])
 
-    app.logger.info(f"Received prediction submission for miner: {miner_id}")
-    app.logger.info(f"Number of predictions: {len(predictions)}")
+        print(f"Miner ID: {miner_id}")
+        print(f"Number of predictions: {len(predictions)}")
+        print(f"Predictions: {json.dumps(predictions, indent=2)}")
 
-    # Get miner UID
-    miner_uid = get_miner_uid(miner_id)
-    app.logger.info(f"Miner UID: {miner_uid}")
+        if not miner_id or not predictions:
+            print("Invalid request data: missing miner ID or predictions")
+            return jsonify({'error': 'Invalid request data'}), 400
 
-    if miner_uid is None:
-        return jsonify({'error': 'Miner not found'}), 404
+        print("Attempting to get miner UID")
+        miner_uid = get_miner_uid(miner_id)
+        print(f"Miner UID: {miner_uid}")
 
-    # Generate a unique message ID
-    message_id = str(uuid.uuid4())
-    app.logger.info(f"Generated message ID: {message_id}")
+        if miner_uid is None:
+            print(f"Miner not found for ID: {miner_id}")
+            return jsonify({'error': 'Miner not found'}), 404
 
-    # Prepare the message with the correct action
-    message = {
-        'action': 'make_prediction',  # Set the action explicitly
-        'message_id': message_id,
-        'miner_id': miner_id,
-        'predictions': predictions
-    }
+        print("Generating unique message ID")
+        message_id = str(uuid.uuid4())
+        print(f"Generated message ID: {message_id}")
 
-    # Publish the message to Redis
-    channel = f'miner:{miner_uid}:{miner_id}'
-    app.logger.info(f"Publishing to channel: {channel}")
-    redis_client.publish(channel, json.dumps(message))
+        print("Preparing message for Redis")
+        message = {
+            'action': 'make_prediction',
+            'message_id': message_id,
+            'miner_id': miner_id,
+            'predictions': predictions
+        }
+        print(f"Prepared message: {json.dumps(message, indent=2)}")
 
-    # Wait for the response
-    app.logger.info("Waiting for response...")
-    response = redis_client.get(f'response:{message_id}')
+        print("Preparing to publish message to Redis")
+        channel = f'miner:{miner_uid}:{miner_id}'
+        print(f"Publishing to channel: {channel}")
+        
+        print("Attempting to publish message to Redis")
+        try:
+            publish_result = redis_client.publish(channel, json.dumps(message))
+            print(f"Publish result: {publish_result}")
+        except Exception as redis_error:
+            print(f"Error publishing to Redis: {str(redis_error)}")
+            print(traceback.format_exc())
+            return jsonify({'error': 'Error communicating with Redis'}), 500
 
-    if response:
-        return jsonify(json.loads(response))
-    else:
-        return jsonify({'error': 'No response from miner'}), 500
+        print(f"Waiting for response with key: response:{message_id}")
+        response = None
+        max_retries = 5
+        for i in range(max_retries):
+            print(f"Attempt {i+1} to get response from Redis")
+            response = redis_client.get(f'response:{message_id}')
+            if response:
+                print(f"Received response: {response}")
+                break
+            else:
+                print(f"No response received, waiting 1 second before retry")
+                time.sleep(1)
+
+        if response:
+            print("Parsing and returning response")
+            full_response = json.loads(response)
+            # Extract only the necessary fields for the server response
+            server_response = {
+                "amountLeft": full_response.get("amountLeft"),
+                "tokenStatus": full_response.get("tokenStatus")
+            }
+            return jsonify(server_response)
+        else:
+            print("No response received from miner after all retries")
+            return jsonify({'error': 'No response from miner'}), 500
+
+    except json.JSONDecodeError as json_error:
+        print(f"JSON Decode Error: {str(json_error)}")
+        print(traceback.format_exc())
+        return jsonify({'error': 'Invalid JSON in request'}), 400
+    except redis.RedisError as redis_error:
+        print(f"Redis Error: {str(redis_error)}")
+        print(traceback.format_exc())
+        return jsonify({'error': 'Redis communication error'}), 500
+    except Exception as e:
+        print(f"Unexpected Exception in submit_predictions: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 def get_miner_uid(hotkey: str):
-    bt.logging.info(f"Getting miner UID for hotkey: {hotkey}")
+    print(f"Getting miner UID for hotkey: {hotkey}")
     try:
         with psycopg2.connect(
                 dbname="bettensor",
@@ -201,18 +268,18 @@ def get_miner_uid(hotkey: str):
                 cur.execute("SELECT * FROM miner_stats WHERE miner_hotkey = %s", (hotkey,))
                 miner = cur.fetchone()
             if miner:
-                bt.logging.info(f"Found miner UID: {miner['miner_uid']}")
+                print(f"Found miner UID: {miner['miner_uid']}")
                 return miner['miner_uid']
             else:
-                bt.logging.warning(f"No miner found for hotkey: {hotkey}")
+                print(f"No miner found for hotkey: {hotkey}")
                 return None
     except Exception as e:
-        bt.logging.error(f"Error in get_miner_uid: {str(e)}")
-        bt.logging.error(traceback.format_exc())
+        print(f"Error in get_miner_uid: {str(e)}")
+        print(traceback.format_exc())
         raise
 
 def get_miners() -> list:
-    bt.logging.debug("Attempting to retrieve miners from database")
+    print("Attempting to retrieve miners from database")
     try:
         conn = psycopg2.connect(
             dbname="bettensor",
@@ -220,7 +287,7 @@ def get_miners() -> list:
             password="bettensor_password",
             host="localhost"
         )
-        bt.logging.debug("Database connection established")
+        print("Database connection established")
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT 
@@ -241,13 +308,13 @@ def get_miners() -> list:
             """)
             miners = cur.fetchall()
         conn.close()
-        bt.logging.debug(f"Retrieved {len(miners)} miners from database")
+        print(f"Retrieved {len(miners)} miners from database")
         return [dict(miner) for miner in miners]
     except psycopg2.Error as e:
-        bt.logging.error(f"Database error: {e}")
+        print(f"Database error: {e}")
         return []
     except Exception as e:
-        bt.logging.error(f"Unexpected error in get_miners: {str(e)}")
+        print(f"Unexpected error in get_miners: {str(e)}")
         return []
 
 def get_miner_uid(hotkey: str):
@@ -263,24 +330,116 @@ def get_miner_uid(hotkey: str):
             miner = cur.fetchone()
         return miner['miner_uid']
 
-@app.route('/heartbeat')
+@app.route('/heartbeat', methods=['GET'])
+@limiter.exempt
+@token_required
 def heartbeat():
+    print("==== Heartbeat Function ====")
+    print(f"Request Method: {request.method}")
+    print(f"Request URL: {request.url}")
+    print("Request Headers:")
+    for header, value in request.headers:
+        print(f"  {header}: {value}")
+    print("Request Data:")
+    print(request.get_data(as_text=True))
+    print("=============================")
+
+    start_time = time.time()
+    
     uptime = int(time.time() - server_start_time)
-    return jsonify({
-        "status": "alive",
-        "ip": request.host.split(':')[0],
-        "port": int(request.host.split(':')[1]) if ':' in request.host else 5000,
-        "connected_miners": len(connected_miners),
-        "uptime": uptime
-    }), 200
+    print(f"Server uptime: {uptime} seconds")
+    
+    token_status = get_token_status(request.headers.get('Authorization'))
+    print(f"Token status: {token_status}")
+
+    # Request upcoming game IDs
+    message_id = str(uuid.uuid4())
+    print(f"Requesting upcoming game IDs with message_id: {message_id}")
+    redis_client.publish('game_requests', json.dumps({
+        'action': 'get_upcoming_game_ids',
+        'message_id': message_id
+    }))
+    
+    # Wait for response
+    response_key = f'response:{message_id}'
+    upcoming_game_ids = []
+    max_wait = 5  # Maximum wait time in seconds
+    wait_start_time = time.time()
+    
+    while time.time() - wait_start_time < max_wait:
+        response = redis_client.get(response_key)
+        if response:
+            print(f"Received response for upcoming game IDs: {response}")
+            upcoming_game_ids = json.loads(response)
+            redis_client.delete(response_key)
+            break
+        time.sleep(0.1)
+    
+    if not upcoming_game_ids:
+        print("No upcoming game IDs received within the timeout period")
+    
+    miners = get_miners()
+    print(f"Retrieved {len(miners)} miners")
+    
+    # Fetch miner games
+    miner_games = get_miner_games()
+    print(f"Retrieved {len(miner_games)} miner game IDs")
+    
+    response_data = {
+        "tokenStatus": token_status,
+        "miners": miners,
+        "minerGames": miner_games
+    }
+    
+    print(f"Heartbeat response prepared: {json.dumps(response_data, indent=2)}")
+    
+    end_time = time.time()
+    print(f"Heartbeat request processed in {end_time - start_time:.2f} seconds")
+
+    response = make_response(jsonify(response_data))
+    
+    # Add CORS headers
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET')
+    
+    print("Response Headers:")
+    for header, value in response.headers:
+        print(f"  {header}: {value}")
+    
+    return response
+
+def get_miner_games():
+    print("Fetching miner games")
+    try:
+        with psycopg2.connect(
+            dbname="bettensor",
+            user="root",
+            password="bettensor_password",
+            host="localhost"
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT externalID
+                    FROM games
+                    WHERE CAST(eventStartDate AS TIMESTAMP) > NOW()
+                    ORDER BY CAST(eventStartDate AS TIMESTAMP) ASC
+                """)
+                miner_games = [row[0] for row in cur.fetchall()]
+        print(f"Fetched {len(miner_games)} miner game IDs")
+        return miner_games
+    except Exception as e:
+        print(f"Error fetching miner games: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        return []
 
 def get_token_status(token: str):
     with open("token_store.json", "r") as f:
         token_data = json.load(f)
         if token_data["jwt"] == token and token_data["revoked"] == False:
-            return "valid"
+            return "VALID"
         else:
-            return "invalid"
+            return "INVALID"
 
 def get_redis_client():
     return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
@@ -356,20 +515,43 @@ token_management_thread.start()
 @app.before_request
 def before_request():
     g.start_time = time.time()
-    bt.logging.info(f"Received request: {request.method} {request.path}")
-    bt.logging.info(f"Headers: {request.headers}")
+    print(f"Received request: {request.method} {request.path}")
+    print(f"Headers: {request.headers}")
 
 @app.after_request
 def after_request(response):
-    diff = time.time() - g.start_time
-    bt.logging.info(f"Request processed in {diff:.2f} seconds")
-    bt.logging.info(f"Response status: {response.status}")
+    if hasattr(g, 'start_time'):
+        diff = time.time() - g.start_time
+        print(f"Request processed in {diff:.2f} seconds")
+    print(f"Response status: {response.status}")
+    return response
+
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    print(f"Rate limit exceeded: {e}")
+    return jsonify(error="Rate limit exceeded", message=str(e)), 429
+
+@app.errorhandler(401)
+def unauthorized(error):
+    print("==== 401 Unauthorized Error ====")
+    print(f"Error: {error}")
+    print(f"Request Method: {request.method}")
+    print(f"Request URL: {request.url}")
+    print("Request Headers:")
+    for header, value in request.headers:
+        print(f"  {header}: {value}")
+    print("Request Data:")
+    print(request.get_data(as_text=True))
+    print("================================")
+    
+    response = jsonify({'error': 'Unauthorized', 'message': str(error)})
+    response.status_code = 401
     return response
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    bt.logging.error("Unhandled exception occurred:")
-    bt.logging.error(traceback.format_exc())
+    print("Unhandled exception occurred:")
+    print(traceback.format_exc())
     return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
 if __name__ == '__main__':
@@ -382,10 +564,10 @@ if __name__ == '__main__':
     if check_redis_connection():
         server_info_thread = threading.Thread(target=update_server_info, daemon=True)
         server_info_thread.start()  # Start the server info update thread
-        app.logger.info(f"Starting Flask server on {args.host}:{args.port}")
+        print(f"Starting Flask server on {args.host}:{args.port}")
         app.run(host=args.host, port=args.port)
     else:
-        app.logger.error("Exiting due to Redis connection failure")
+        print("Exiting due to Redis connection failure")
         sys.exit(1)
 
 @app.before_request
@@ -406,7 +588,6 @@ def check_blacklist():
         if len(request_count[ip]) > MAX_REQUESTS:
             blacklist[ip] = current_time
             return jsonify({"error": "Too many requests, IP blacklisted"}), 429
-
 @app.errorhandler(429)
 def ratelimit_handler(e):
     return jsonify({"error": "Rate limit exceeded"}), 429
