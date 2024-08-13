@@ -212,6 +212,27 @@ pip install -r requirements.txt
 # Install additional dependencies for Redis and PostgreSQL
 pip install redis psycopg2-binary
 
+# Function to check if a process is running
+is_process_running() {
+    pgrep -f "$1" > /dev/null
+}
+
+# Check and start auto-updater if not running
+if ! is_process_running "python3 auto_updater.py"; then
+    echo "Starting auto-updater..."
+    pm2 start auto_updater.py --name auto-updater --interpreter python3
+else
+    echo "Auto-updater is already running."
+fi
+
+# Check and start flask server if not running
+if ! is_process_running "python3 app.py"; then
+    echo "Starting flask server..."
+    pm2 start app.py --name flask-server --interpreter python3
+else
+    echo "Flask server is already running."
+fi
+
 # Verify installation
 python -c "import bittensor; print(bittensor.__version__)"
 

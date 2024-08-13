@@ -220,9 +220,9 @@ class Application:
                 self.wager_input_mode = False
                 try:
                     self.prediction_wager = float(self.wager_input)
-                    self.console_print(f"[bold green]Wager of ${self.prediction_wager:.2f} entered successfully[/bold green]")
+                    #self.console_print(f"[bold green]Wager of ${self.prediction_wager:.2f} entered successfully[/bold green]")
                 except ValueError:
-                    self.console_print("[bold red]Invalid wager amount. Please enter a number.[/bold red]")
+                    #self.console_print("[bold red]Invalid wager amount. Please enter a number.[/bold red]")
                     self.prediction_wager = None
                 finally:
                     self.wager_input = ""
@@ -264,7 +264,7 @@ class Application:
                 self.submit_prediction()
             else:
                 logging.warning("Attempted to submit prediction without outcome or wager")
-                self.console_print("[bold red]Please select an outcome and enter a wager amount[/bold red]")
+                #self.console_print("[bold red]Please select an outcome and enter a wager amount[/bold red]")
             event.app.invalidate()  # Force redraw
 
     def initialize(self):
@@ -328,7 +328,7 @@ class Application:
         self.available_miners = self.get_available_miners()
 
         if not self.available_miners:
-            self.console_print("[bold yellow]Warning: No miners found in the database. Some features may not work correctly.[/bold yellow]")
+            #self.console_print("[bold yellow]Warning: No miners found in the database. Some features may not work correctly.[/bold yellow]")
             self.available_miners = [{'miner_uid': 'default', 'miner_hotkey': 'default', 'miner_cash': 1000, 'miner_rank': 'N/A'}]
 
         self.miner_stats = {str(row['miner_uid']): row for row in self.available_miners}
@@ -413,7 +413,7 @@ class Application:
         self.miner_hotkey = str(next_miner['miner_hotkey'])
         self.miner_cash = float(next_miner['miner_cash'])  # Update miner cash
         self.save_miner_uid(self.miner_uid)
-        self.console_print(f"[bold green]Switched to miner with UID: {self.miner_uid}[/bold green]")
+        #self.console_print(f"[bold green]Switched to miner with UID: {self.miner_uid}[/bold green]")
         self.reload_data()
 
     def quit(self):
@@ -444,7 +444,7 @@ class Application:
         file_path = 'current_miner_uid.txt'
         with open(file_path, 'w') as f:
             f.write(str(uid))
-        bt.logging.info(f"Saved miner UID {uid} to {file_path}")
+        #bt.logging.info(f"Saved miner UID {uid} to {file_path}")
 
     def reload_data(self):
         """
