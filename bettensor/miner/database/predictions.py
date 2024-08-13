@@ -1,9 +1,12 @@
 import traceback
 from typing import Any, List, Dict, Optional, Union
+import uuid
 from bettensor.protocol import TeamGamePrediction, TeamGame
 import bittensor as bt
 from datetime import datetime, timezone, timedelta
 import psycopg2
+from bettensor.miner.models.model_utils import SoccerPredictor
+from fuzzywuzzy import process
 from psycopg2.extras import RealDictCursor
 from bettensor.miner.stats.miner_stats import MinerStatsHandler
 
