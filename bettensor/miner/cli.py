@@ -38,23 +38,22 @@ import random
 from rich.live import Live
 from rich.columns import Columns
 from rich.text import Text
+import psycopg2
 
-# Set up logging (unchanged)
-log_dir = "./logs"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
+# Set up logging
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_file = os.path.join(log_dir, f"cli_{timestamp}.log")
 
-cli_log_file = os.path.join(log_dir, f"cli_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(cli_log_file),
-        logging.StreamHandler(sys.stderr)
-    ]
+    filename=log_file,
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-cli_logger = logging.getLogger("cli")
+logging.info("Starting Bettensor CLI application")
 
 # Define custom colors
 DARK_GREEN = "dark_green"
@@ -82,37 +81,39 @@ class Application:
         self.last_key_press = None
         self.esc_pressed_once = False
         self.submission_message = None
-        self.central_server = None
 
     def setup_keybindings(self):
-        @self.kb.add('q')
+        def is_not_searching():
+            return not (self.search_mode or self.predictions_search_mode)
+
+        @self.kb.add('q', filter=Condition(is_not_searching))
         def _(event):
             self.quit()
             event.app.exit()
 
-        @self.kb.add('m')
+        @self.kb.add('m', filter=Condition(is_not_searching))
         def _(event):
             self.current_view = "main_menu"
             self.page = 1
             self.cursor_position = 0
 
-        @self.kb.add('p')
+        @self.kb.add('p', filter=Condition(is_not_searching))
         def _(event):
             self.current_view = "predictions"
             self.page = 1
             self.cursor_position = 0
 
-        @self.kb.add('g')
+        @self.kb.add('g', filter=Condition(is_not_searching))
         def _(event):
             self.current_view = "games"
             self.page = 1
             self.cursor_position = 0
 
-        @self.kb.add('n')
+        @self.kb.add('n', filter=Condition(is_not_searching))
         def _(event):
             self.select_next_miner()
 
-        @self.kb.add('f')
+        @self.kb.add('f', filter=Condition(is_not_searching))
         def _(event):
             self.filter_games()
 
@@ -121,23 +122,62 @@ class Application:
             self.search_mode = True
             self.search_query = ""
 
-        @self.kb.add(Keys.Escape, filter=Condition(lambda: self.search_mode))
+        @self.kb.add('s', filter=Condition(lambda: self.current_view == "predictions" and not self.predictions_search_mode))
+        def _(event):
+            self.predictions_search_mode = True
+            self.predictions_search_query = ""
+
+        @self.kb.add(Keys.Escape, filter=Condition(lambda: self.search_mode or self.predictions_search_mode))
         def _(event):
             self.search_mode = False
+            self.predictions_search_mode = False
             self.search_query = ""
+            self.predictions_search_query = ""
             self.page = 1
             self.cursor_position = 0
 
-        @self.kb.add(Keys.Any, filter=Condition(lambda: self.search_mode))
+        @self.kb.add(Keys.Any, filter=Condition(lambda: self.search_mode or self.predictions_search_mode))
         def _(event):
+            logging.debug(f"Key pressed in search mode: {repr(event.data)}")
+            
             if event.data == Keys.ControlJ:  # Enter key
+                logging.debug("Enter key pressed, exiting search mode")
                 self.search_mode = False
-            elif event.data in (Keys.Backspace, Keys.Delete):
-                self.search_query = self.search_query[:-1]
-            elif len(event.data) == 1:  # Printable characters
-                self.search_query += event.data
+                self.predictions_search_mode = False
+            elif event.data in (Keys.Backspace, Keys.Delete, '\x7f'):  # Include '\x7f' for backspace
+                logging.debug(f"Backspace or Delete key pressed: {repr(event.data)}")
+                if self.search_mode and self.search_query:
+                    self.search_query = self.search_query[:-1]
+                    logging.debug(f"Updated search query: {self.search_query}")
+                elif self.predictions_search_mode and self.predictions_search_query:
+                    self.predictions_search_query = self.predictions_search_query[:-1]
+                    logging.debug(f"Updated predictions search query: {self.predictions_search_query}")
+            elif event.data and len(event.data) == 1 and event.data.isprintable():
+                if self.search_mode:
+                    self.search_query += event.data
+                    logging.debug(f"Added character to search query: {self.search_query}")
+                else:
+                    self.predictions_search_query += event.data
+                    logging.debug(f"Added character to predictions search query: {self.predictions_search_query}")
+            else:
+                logging.debug(f"Unrecognized key: {repr(event.data)}")
+            
             self.page = 1
             self.cursor_position = 0
+            event.app.invalidate()
+
+        @self.kb.add(Keys.Backspace, filter=Condition(lambda: self.search_mode or self.predictions_search_mode))
+        def _(event):
+            logging.debug("Explicit Backspace key pressed")
+            if self.search_mode and self.search_query:
+                self.search_query = self.search_query[:-1]
+                logging.debug(f"Updated search query: {self.search_query}")
+            elif self.predictions_search_mode and self.predictions_search_query:
+                self.predictions_search_query = self.predictions_search_query[:-1]
+                logging.debug(f"Updated predictions search query: {self.predictions_search_query}")
+            self.page = 1
+            self.cursor_position = 0
+            event.app.invalidate()
 
         @self.kb.add('up', filter=Condition(lambda: self.current_view in ["games", "predictions"]))
         def _(event):
@@ -171,7 +211,7 @@ class Application:
 
         @self.kb.add('t', filter=Condition(lambda: self.current_view == "enter_prediction"))
         def _(event):
-            self.prediction_outcome = "Tie"
+            self.prediction_outcome = "Draw"
 
         @self.kb.add('w', filter=Condition(lambda: self.current_view == "enter_prediction"))
         def _(event):
@@ -194,10 +234,14 @@ class Application:
 
         @self.kb.add(Keys.Any, filter=Condition(lambda: self.wager_input_mode))
         def _(event):
-            if event.data in (Keys.Backspace, Keys.Delete):
+            logging.debug(f"Key pressed in wager input mode: {event.data}")
+            if event.data == Keys.Backspace:
+                logging.debug("Backspace key pressed in wager input mode")
                 self.wager_input = self.wager_input[:-1]
+                logging.debug(f"Updated wager input: {self.wager_input}")
             elif len(event.data) == 1 and (event.data.isdigit() or event.data == '.'):
                 self.wager_input += event.data
+                logging.debug(f"Added character to wager input: {self.wager_input}")
             event.app.invalidate()
 
         @self.kb.add(Keys.Escape, filter=Condition(lambda: self.current_view == "enter_prediction"))
@@ -223,34 +267,6 @@ class Application:
                 self.console_print("[bold red]Please select an outcome and enter a wager amount[/bold red]")
             event.app.invalidate()  # Force redraw
 
-        @self.kb.add('s', filter=Condition(lambda: self.current_view == "predictions" and not self.predictions_search_mode))
-        def _(event):
-            self.predictions_search_mode = True
-            self.predictions_search_query = ""
-
-        @self.kb.add(Keys.Escape, filter=Condition(lambda: self.predictions_search_mode))
-        def _(event):
-            self.predictions_search_mode = False
-            self.predictions_search_query = ""
-            self.page = 1
-            self.cursor_position = 0
-
-        @self.kb.add(Keys.Any, filter=Condition(lambda: self.predictions_search_mode))
-        def _(event):
-            if event.data == Keys.ControlJ:  # Enter key
-                self.predictions_search_mode = False
-            elif event.data in (Keys.Backspace, Keys.Delete):
-                self.predictions_search_query = self.predictions_search_query[:-1]
-            elif len(event.data) == 1:  # Printable characters
-                self.predictions_search_query += event.data
-            self.page = 1
-            self.cursor_position = 0
-
-    def prompt_for_central_server(self):
-        default_server = "http://localhost:8000"  # You can change this default as needed
-        server_address = Prompt.ask("Enter the central server address", default=default_server)
-        return server_address
-
     def initialize(self):
         with Progress(
             SpinnerColumn(),
@@ -258,10 +274,7 @@ class Application:
             transient=True,
             console=self.console
         ) as progress:
-            task = progress.add_task("Initializing...", total=7)  # Increased total by 1
-
-            progress.update(task, advance=1, description="Prompting for central server...")
-            self.central_server = self.prompt_for_central_server()
+            task = progress.add_task("Initializing...", total=6)  # Reduced total by 1
 
             progress.update(task, advance=1, description="Connecting to database...")
             self.init_database()
@@ -274,6 +287,7 @@ class Application:
 
             progress.update(task, advance=1, description="Initializing predictions handler...")
             self.init_predictions_handler()
+            logging.debug(f"PredictionsHandler initialized: {self.predictions_handler}")
 
             progress.update(task, advance=1, description="Initializing games handler...")
             self.init_games_handler()
@@ -281,27 +295,41 @@ class Application:
             progress.update(task, advance=1, description="Reloading miner data...")
             self.reload_data()
 
-            progress.update(task, advance=1, description="Connecting to central server...")
-            self.connect_to_central_server()
+            progress.update(task, advance=1, description="Testing database connection...")
+            test_query = "SELECT 1"
+            test_result = self.db_manager.execute_query(test_query)
+            logging.debug(f"Test query result: {test_result}")
 
     def init_database(self):
         db_host = os.getenv('DB_HOST', 'localhost')
         db_name = os.getenv('DB_NAME', 'bettensor')
         db_user = os.getenv('DB_USER', 'root')
         db_password = os.getenv('DB_PASSWORD', 'bettensor_password')
-        self.db_manager = DatabaseManager(db_name, db_user, db_password, db_host)
         
-        self.db_manager.db_path = os.getenv('DB_PATH', os.path.expanduser("~/bettensor/data/miner.db"))
+        max_retries = 5
+        retry_delay = 5  # seconds
         
-        if not os.path.exists(self.db_manager.db_path):
-            raise ValueError("Error: Database not found. Please start the miner first.")
+        for attempt in range(max_retries):
+            try:
+                self.db_manager = DatabaseManager(db_name, db_user, db_password, db_host)
+                # Test the connection
+                self.db_manager.execute_query("SELECT 1")
+                bt.logging.info("Successfully connected to the database.")
+                break
+            except (psycopg2.OperationalError, psycopg2.Error) as e:
+                if attempt < max_retries - 1:
+                    bt.logging.warning(f"Failed to connect to the database (attempt {attempt + 1}/{max_retries}). Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    bt.logging.error("Failed to connect to the database after multiple attempts.")
+                    raise ValueError("Error: Unable to connect to the database. Please check your database configuration and ensure the database is running.")
 
     def init_miners(self):
         self.available_miners = self.get_available_miners()
 
         if not self.available_miners:
             self.console_print("[bold yellow]Warning: No miners found in the database. Some features may not work correctly.[/bold yellow]")
-            self.available_miners = [{'miner_uid': 'default', 'miner_hotkey': 'default', 'miner_cash': 0, 'miner_rank': 'N/A'}]
+            self.available_miners = [{'miner_uid': 'default', 'miner_hotkey': 'default', 'miner_cash': 1000, 'miner_rank': 'N/A'}]
 
         self.miner_stats = {str(row['miner_uid']): row for row in self.available_miners}
 
@@ -315,12 +343,14 @@ class Application:
             if str(miner['miner_uid']) == str(self.current_miner_uid):
                 self.miner_hotkey = str(miner['miner_hotkey'])
                 self.miner_uid = str(miner['miner_uid'])
+                self.miner_cash = float(miner['miner_cash'])  # Explicitly store miner cash
                 valid_miner_found = True
                 break
 
         if not valid_miner_found:
             self.miner_hotkey = str(self.available_miners[0]['miner_hotkey'])
             self.miner_uid = str(self.available_miners[0]['miner_uid'])
+            self.miner_cash = float(self.available_miners[0]['miner_cash'])  # Explicitly store miner cash
 
         self.save_miner_uid(self.miner_uid)
 
@@ -329,15 +359,16 @@ class Application:
         query = "SELECT miner_uid, miner_hotkey, miner_cash, miner_rank FROM miner_stats"
         try:
             result = self.db_manager.execute_query(query)
+            logging.debug(f"Retrieved miners: {result}")
             return result
         except Exception as e:
             self.console_print(f"[bold red]Failed to retrieve miners: {e}[/bold red]")
+            logging.error(f"Error retrieving miners: {e}")
             return []
 
     def init_state_manager(self):
-        self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid, None)
-        self.stats_handler = MinerStatsHandler(self.db_manager, self.state_manager)
-        self.state_manager.stats_handler = self.stats_handler
+        self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid)
+        self.stats_handler = MinerStatsHandler(self.state_manager)
         self.state_manager.load_state()
 
     def init_predictions_handler(self):
@@ -347,14 +378,6 @@ class Application:
         self.games_handler = GamesHandler(self.db_manager, self.predictions_handler)
         self.unsubmitted_predictions = {}
 
-    def connect_to_central_server(self):
-        # Here you would implement the logic to connect to the central server
-        # For now, we'll just print a message
-        self.console_print(f"Connecting to central server at {self.central_server}")
-        # In a real implementation, you might do something like:
-        # self.server_connection = ServerConnection(self.central_server)
-        # self.server_connection.connect()
-
     def run(self):
         try:
             self.initialize()
@@ -363,9 +386,8 @@ class Application:
             app.run()
         except Exception as e:
             self.console_print(f"[bold red]An error occurred: {e}[/bold red]")
-            self.console_print("[bold yellow]Please check the logs for more details.[/bold yellow]")
-            bt.logging.error(f"Unhandled exception: {e}")
-            bt.logging.error(traceback.format_exc())
+            self.console_print(f"[bold yellow]Please check the log file: {log_file}[/bold yellow]")
+            logging.error(f"Unhandled exception: {e}", exc_info=True)
 
     def get_formatted_text(self):
         layout = self.generate_layout()
@@ -389,14 +411,18 @@ class Application:
         next_miner = self.available_miners[next_index]
         self.miner_uid = str(next_miner['miner_uid'])
         self.miner_hotkey = str(next_miner['miner_hotkey'])
+        self.miner_cash = float(next_miner['miner_cash'])  # Update miner cash
         self.save_miner_uid(self.miner_uid)
         self.console_print(f"[bold green]Switched to miner with UID: {self.miner_uid}[/bold green]")
         self.reload_data()
 
     def quit(self):
-        self.running = False
+        bt.logging.info("Received signal 2. Shutting down...")
+        bt.logging.info("Stopping miner")
         self.state_manager.save_state()
-        self.console_print("[bold red]Exiting...[/bold red]")
+        bt.logging.info("Miner stopped")
+        bt.logging.info("Exiting due to signal")
+        sys.exit(0)
 
     def get_saved_miner_uid(self):
         """
@@ -427,6 +453,7 @@ class Application:
         try:
             self.state_manager.load_state()
             self.miner_stats = self.state_manager.get_stats()
+            self.miner_cash = float(self.miner_stats.get('miner_cash', 0))  # Update miner cash
         except Exception as e:
             bt.logging.error(f"Error reloading data: {str(e)}")
 
@@ -442,7 +469,12 @@ class Application:
 
     @staticmethod
     def format_event_start_date(event_start_date):
-        dt = datetime.fromisoformat(event_start_date.replace('Z', '+00:00'))
+        if isinstance(event_start_date, str):
+            dt = datetime.fromisoformat(event_start_date.replace('Z', '+00:00'))
+        elif isinstance(event_start_date, datetime):
+            dt = event_start_date
+        else:
+            return str(event_start_date)
         return dt.strftime("%Y-%m-%d %H:%M")
 
     @staticmethod
@@ -525,8 +557,8 @@ class Application:
             ("Miner Hotkey", self.miner_hotkey),
             ("Miner UID", self.miner_uid),
             ("Miner Rank", str(miner_stats.get('miner_rank', 'N/A'))),
-            ("Miner Cash", f"${miner_stats.get('miner_cash', 0):.2f}"),
-            ("Current Incentive", f"{self.state_manager.get_current_incentive():.2f} τ per day"),
+            ("Miner Cash", f"${self.miner_cash:.2f}"),  # Use self.miner_cash here
+            ("Current Incentive", f"{self.stats_handler.get_current_incentive():.2f} τ per day"),
             ("Last Prediction", self.format_last_prediction_date(self.state_manager.get_stats().get('miner_last_prediction_date'))),
             ("Lifetime Earnings", f"${self.state_manager.get_stats().get('miner_lifetime_earnings', 0):.2f}"),
             ("Lifetime Wager Amount", f"${self.state_manager.get_stats().get('miner_lifetime_wager', 0):.2f}"),
@@ -541,49 +573,77 @@ class Application:
         return Panel(table, title="Miner Statistics", border_style=DARK_GREEN, expand=True)
 
     def generate_predictions_view(self):
-        predictions = self.predictions_handler.get_predictions_with_teams(self.miner_hotkey)
+        predictions = self.predictions_handler.get_predictions_with_teams(self.miner_uid)
+        logging.debug(f"Retrieved {len(predictions)} predictions")
         
         if self.predictions_search_query:
-            predictions = {k: v for k, v in predictions.items() if 
-                           self.predictions_search_query.lower() in v['Home'].lower() or 
-                           self.predictions_search_query.lower() in v['Away'].lower() or 
-                           self.predictions_search_query.lower() in v['predictedOutcome'].lower() or 
+            filtered_predictions = {k: v for k, v in predictions.items() if 
+                           self.predictions_search_query.lower() in v['home'].lower() or 
+                           self.predictions_search_query.lower() in v['away'].lower() or 
+                           self.predictions_search_query.lower() in v['predictedoutcome'].lower() or 
                            self.predictions_search_query.lower() in v['outcome'].lower()}
+            logging.debug(f"Filtered to {len(filtered_predictions)} predictions")
+            predictions = filtered_predictions
         
         if not predictions:
+            logging.debug("No predictions found matching the search criteria.")
             return Panel(Text("No predictions found matching the search criteria.", justify="center", style=LIGHT_GREEN), title="Predictions", border_style=DARK_GREEN)
 
         # Calculate max widths for each column
         max_widths = {
-            "Date": max(len(self.format_date(pred['predictionDate'])) for pred in predictions.values()),
-            "Home": max(len(pred['Home']) for pred in predictions.values()),
-            "Away": max(len(pred['Away']) for pred in predictions.values()),
-            "Predicted Outcome": max(len(pred['predictedOutcome']) for pred in predictions.values()),
+            "Date": max(len(self.format_date(pred['predictiondate'])) for pred in predictions.values()),
+            "Game ID": max(len(pred['teamgameid']) for pred in predictions.values()),
+            "Home": max(len(pred['home']) for pred in predictions.values()),
+            "Away": max(len(pred['away']) for pred in predictions.values()),
+            "Predicted Outcome": max(len(pred['predictedoutcome']) for pred in predictions.values()),
             "Wager": max(len(f"${pred['wager']:.2f}") for pred in predictions.values()),
-            "Wager Odds": max(len(f"{pred['wagerOdds']:.2f}") for pred in predictions.values()),
-            "Result": max(len(pred['outcome']) for pred in predictions.values())
+            "Wager Odds": max(len(f"{pred['teamaodds']:.2f}") for pred in predictions.values()),  # Use teamaodds as a placeholder
+            "Result": max(len(pred['outcome']) for pred in predictions.values()),
+            "Payout": 10  # Assuming a reasonable width for payout
         }
 
         table = Table(title="Predictions", box=box.ROUNDED, expand=True, border_style=DARK_GREEN)
         table.add_column("Date", style=LIGHT_GREEN, width=max_widths["Date"])
+        table.add_column("Game ID", style=LIGHT_GREEN, width=max_widths["Game ID"])
         table.add_column("Home", style=GOLD, width=max_widths["Home"])
         table.add_column("Away", style=GOLD, width=max_widths["Away"])
         table.add_column("Predicted Outcome", style=LIGHT_GREEN, width=max_widths["Predicted Outcome"])
         table.add_column("Wager", style=LIGHT_GOLD, width=max_widths["Wager"])
         table.add_column("Wager Odds", style=LIGHT_GOLD, width=max_widths["Wager Odds"])
         table.add_column("Result", style=LIGHT_GREEN, width=max_widths["Result"])
+        table.add_column("Payout", style=LIGHT_GOLD, width=max_widths["Payout"])
 
         start = (self.page - 1) * self.items_per_page
         end = start + self.items_per_page
-        for pred in list(predictions.values())[start:end]:
+        predictions_to_display = list(predictions.values())[start:end]
+        logging.debug(f"Displaying predictions {start} to {end} (total: {len(predictions_to_display)})")
+        for pred in predictions_to_display:
+            # Calculate wager odds based on the predicted outcome
+            if pred['predictedoutcome'] == pred['home']:
+                wager_odds = pred['teamaodds']
+            elif pred['predictedoutcome'] == pred['away']:
+                wager_odds = pred['teambodds']
+            else:
+                wager_odds = pred['tieodds'] if 'tieodds' in pred else 'N/A'
+
+            # Calculate payout
+            if pred['outcome'] == 'Wager Won':
+                payout = pred['wager'] * wager_odds
+            elif pred['outcome'] == 'Wager Lost':
+                payout = 0
+            else:
+                payout = 'Pending'
+
             table.add_row(
-                self.format_date(pred['predictionDate']),
-                pred['Home'],
-                pred['Away'],
-                pred['predictedOutcome'],
+                self.format_date(pred['predictiondate']),
+                pred['teamgameid'],
+                pred['home'],
+                pred['away'],
+                pred['predictedoutcome'],
                 f"${pred['wager']:.2f}",
-                f"{pred['wagerOdds']:.2f}",
-                pred['outcome']
+                f"{wager_odds:.2f}" if isinstance(wager_odds, (int, float)) else str(wager_odds),
+                pred['outcome'],
+                f"${payout:.2f}" if isinstance(payout, (int, float)) else str(payout)
             )
 
         if self.predictions_search_mode:
@@ -596,13 +656,12 @@ class Application:
         games = self.games_handler.get_active_games()
         if self.search_query:
             games = {k: v for k, v in games.items() if self.search_query.lower() in v.sport.lower() or 
-                     self.search_query.lower() in v.teamA.lower() or 
-                     self.search_query.lower() in v.teamB.lower()}
+                    self.search_query.lower() in v.teamA.lower() or 
+                    self.search_query.lower() in v.teamB.lower()}
         
         if not games:
             return Panel(Text("No games found matching the search criteria.", justify="center", style=LIGHT_GREEN), title="Active Games", border_style=DARK_GREEN)
 
-        # Calculate max widths for each column
         max_widths = {
             "Sport": max((len(game.sport) for game in games.values()), default=10),
             "Team A": max((len(game.teamA) for game in games.values()), default=10),
@@ -641,6 +700,7 @@ class Application:
             footer = f"Search: {self.search_query} | Page {self.page} of {max(1, (len(games) - 1) // self.items_per_page + 1)}"
         else:
             footer = f"Page {self.page} of {max(1, (len(games) - 1) // self.items_per_page + 1)}"
+
         return Panel(Group(table, Text(footer, justify="center", style=LIGHT_GREEN)), title="Active Games", border_style=DARK_GREEN)
 
     def enter_prediction_for_selected_game(self):
@@ -668,13 +728,13 @@ class Application:
         table.add_row("Predicted Outcome", self.prediction_outcome or "Not selected")
         
         if self.wager_input_mode:
-            table.add_row("Wager Amount", f"${self.wager_input}_")
+            table.add_row("Wager Amount", f"${self.wager_input}")
         else:
             table.add_row("Wager Amount", f"${self.prediction_wager:.2f}" if self.prediction_wager is not None else "Not entered")
 
         footer_text = "Press 'a' for Team A, 'b' for Team B, 't' for Tie, 'w' to enter/exit wager input, 'c' to confirm, 'esc' to cancel"
         if self.wager_input_mode:
-            footer_text = f"Enter wager amount (press 'w' to confirm). Current input: ${self.wager_input}"
+            footer_text = f"Enter wager amount (press 'w' to confirm, backspace to delete). Current input: ${self.wager_input}"
         
         content = [table]
         if hasattr(self, 'submission_message') and self.submission_message:
@@ -698,22 +758,6 @@ class Application:
         self.games_handler.active_games = filtered_games
         self.current_view = "games"
 
-    def enter_prediction(self):
-        game_id = IntPrompt.ask("Enter the ID of the game you want to predict")
-        games = self.games_handler.get_active_games()
-        if game_id not in games:
-            self.console_print("[bold red]Invalid game ID[/bold red]")
-            return
-
-        game = games[game_id]
-        outcome = Prompt.ask("Enter predicted outcome", choices=[game.teamA, game.teamB, "Tie"])
-        wager = FloatPrompt.ask("Enter wager amount")
-
-        # Here you would call a method to submit the prediction to your system
-        # For example:
-        # self.predictions_handler.submit_prediction(self.miner_hotkey, game_id, outcome, wager)
-
-        self.console_print("[bold green]Prediction submitted successfully[/bold green]")
 
     def console_print(self, message, style="bold"):
         self.console.print(message, style=f"{style} {LIGHT_GREEN}")
@@ -733,7 +777,8 @@ class Application:
     def submit_prediction(self):
         prediction = {
             'predictionID': str(uuid.uuid4()),
-            'teamGameID': self.selected_game.id,
+            'teamGameID': self.selected_game.externalId,
+            'minerID': self.miner_uid,
             'predictionDate': datetime.now(timezone.utc).isoformat(),
             'predictedOutcome': self.prediction_outcome,
             'teamA': self.selected_game.teamA,
@@ -742,17 +787,29 @@ class Application:
             'teamAodds': self.selected_game.teamAodds,
             'teamBodds': self.selected_game.teamBodds,
             'tieOdds': self.selected_game.tieOdds,
-            'outcome': 'Pending'
+            'outcome': 'Unfinished'  # Initial outcome
         }
+        logging.debug(f"Prediction externalID: {self.selected_game.externalId}")
+        logging.debug(f"Submitting prediction: {prediction}")
+        print(f"About to call predictions_handler.add_prediction: {self.predictions_handler}")
+        try:
+            result = self.predictions_handler.add_prediction(prediction)
+            logging.debug(f"Prediction submission result: {result}")
 
-        result = self.predictions_handler.add_prediction(prediction)
-
-        if result['status'] == 'success':
-            self.submission_message = "[bold green]Prediction submitted successfully[/bold green]"
-            self.money_rain_animation()
-            self.current_view = "games"
-        else:
-            self.submission_message = f"[bold red]Error submitting prediction: {result['message']}[/bold red]"
+            if result['status'] == 'success':
+                # Update stats only after successful submission
+                self.stats_handler.update_on_prediction({
+                    'wager': self.prediction_wager,
+                    'predictionDate': prediction['predictionDate']
+                })
+                self.submission_message = "[bold green]Prediction submitted successfully[/bold green]"
+                logging.info(f"Prediction submitted successfully: {result['data']}")
+            else:
+                self.submission_message = f"[bold red]Error submitting prediction: {result['message']}[/bold red]"
+                logging.error(f"Error submitting prediction: {result['message']}")
+        except Exception as e:
+            self.submission_message = f"[bold red]Exception occurred while submitting prediction: {str(e)}[/bold red]"
+            logging.exception(f"Exception occurred while submitting prediction: {str(e)}")
         
         # Reset prediction data
         self.prediction_outcome = None
@@ -760,7 +817,5 @@ class Application:
         self.wager_input = ""
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, filename='bettensor_cli.log', filemode='w',
-                        format='%(asctime)s - %(levelname)s - %(message)s')
     app = Application()
     app.run()

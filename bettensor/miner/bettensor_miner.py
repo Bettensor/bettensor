@@ -3,6 +3,7 @@ import signal
 import sys
 from argparse import ArgumentParser
 import time
+import traceback
 from typing import Tuple
 import bittensor as bt
 import sqlite3
@@ -92,7 +93,7 @@ class BettensorMiner(BaseNeuron):
             "max_connections": self.args.max_connections
         }
         self.db_manager = DatabaseManager(**db_params)
-
+        self.db_manager.initialize_default_model_params(miner_uid=self.miner_uid)
         # Setup state manager
         bt.logging.info("Initializing state manager")
         self.miner_hotkey = self.wallet.hotkey.ss58_address
@@ -101,19 +102,11 @@ class BettensorMiner(BaseNeuron):
         self.state_manager = MinerStateManager(
             db_manager=self.db_manager,
             miner_hotkey=self.miner_hotkey,
-            miner_uid=self.miner_uid,
-            stats_handler=None  # Temporarily set to None
+            miner_uid=self.miner_uid
         )
 
         # Create an instance of MinerStatsHandler
-        self.stats_handler = MinerStatsHandler(self.db_manager, self.state_manager)
-
-        # Now set the correct stats_handler in state_manager
-        self.state_manager.stats_handler = self.stats_handler
-
-        self.state_manager.ensure_correct_column_names()
-        self.state_manager.update_predictions_with_hotkey()
-        self.state_manager.update_predictions_with_minerid()
+        self.stats_handler = MinerStatsHandler(self.state_manager)
 
         # Setup handlers
         bt.logging.info("Initializing handlers")
@@ -154,7 +147,8 @@ class BettensorMiner(BaseNeuron):
         self._check_version(synapse.metadata.subnet_version)
 
         bt.logging.debug(f"Processing game data: {len(synapse.gamedata_dict)} games")
-
+        for game in synapse.gamedata_dict.values():
+            bt.logging.debug(f"Game: {game}")
         try:
             # Check if there are any changes in game data
             changed_games = self.cache_manager.filter_changed_games(synapse.gamedata_dict)
@@ -166,9 +160,6 @@ class BettensorMiner(BaseNeuron):
                 
                 # Update cache with new predictions
                 self.cache_manager.update_cached_predictions(recent_predictions)
-
-                # Update miner stats
-                self.state_manager.update_stats_from_predictions()
             else:
                 bt.logging.info("No changes in game data, using cached predictions")
                 recent_predictions = self.cache_manager.get_cached_predictions()
@@ -177,8 +168,6 @@ class BettensorMiner(BaseNeuron):
                 bt.logging.warning("No predictions available")
                 return self._clean_synapse(synapse)
 
-            # Periodic database update
-            self.state_manager.periodic_db_update()
 
             synapse.prediction_dict = recent_predictions
             synapse.gamedata_dict = None
@@ -229,7 +218,7 @@ class BettensorMiner(BaseNeuron):
 
     def start(self):
         bt.logging.info("Starting miner")
-        self.state_manager.reset_daily_cash()
+        self.stats_handler.reset_daily_cash()
         
         # Start Redis listener in a separate thread
         self.redis_thread = threading.Thread(target=self.listen_for_redis_messages)
@@ -245,8 +234,11 @@ class BettensorMiner(BaseNeuron):
 
     def stop(self):
         bt.logging.info("Stopping miner")
-        self.state_manager.save_state()
-        # No need to explicitly close Redis connection as it's handled by RedisInterface
+        try:
+            current_state = self.state_manager.get_stats()
+            self.state_manager.save_state(current_state)
+        except Exception as e:
+            bt.logging.error(f"Error saving state: {e}")
         bt.logging.info("Miner stopped")
 
     def signal_handler(self, signum, frame):
@@ -359,8 +351,8 @@ class BettensorMiner(BaseNeuron):
                 miner_uid_int = int(self.miner_uid)
                 incentive = self.metagraph.I[miner_uid_int].item() if miner_uid_int < len(self.metagraph.I) else 0.0
                 
-                # Update the state manager with the new incentive
-                self.state_manager.update_current_incentive(incentive)
+                # Update the stats handler with the new incentive
+                self.stats_handler.update_current_incentive(incentive)
                 
                 self.last_incentive_update = current_time
                 
@@ -370,8 +362,8 @@ class BettensorMiner(BaseNeuron):
                 bt.logging.error(f"Error updating current incentive: {e}")
                 return None
         else:
-            # If it's not time to update, return the last known incentive from the state manager
-            return self.state_manager.get_current_incentive()
+            # If it's not time to update, return the last known incentive from the stats handler
+            return self.stats_handler.get_current_incentive()
 
     def listen_for_redis_messages(self):
         channel = f'miner:{self.miner_uid}:{self.wallet.hotkey.ss58_address}'
@@ -437,13 +429,13 @@ class BettensorMiner(BaseNeuron):
             bt.logging.info(f"Processing prediction: {prediction}")
             
             try:
-                # Check if the game exists using the teamGameID
-                game_exists = self.games_handler.game_exists(prediction.get('teamGameID'))
+                # Check if the game exists using the externalID
+                game_exists = self.games_handler.game_exists(prediction.get('externalID'))
                 if not game_exists:
-                    bt.logging.warning(f"Game with ID {prediction.get('teamGameID')} does not exist")
+                    bt.logging.warning(f"Game with ID {prediction.get('externalID')} does not exist")
                     results.append({
                         'status': 'error',
-                        'message': f"Game with ID {prediction.get('teamGameID')} does not exist"
+                        'message': f"Game with ID {prediction.get('externalID')} does not exist"
                     })
                     continue
 
@@ -460,21 +452,20 @@ class BettensorMiner(BaseNeuron):
                 # Add the prediction to the database
                 result = self.predictions_handler.add_prediction(prediction)
                 bt.logging.info(f"Prediction added: {result}")
-                results.append({
-                    'predictionID': prediction['predictionID'],
-                    'status': 'success',
-                    'message': 'Prediction added successfully'
-                })
+                results.append(result)
+
             except Exception as e:
                 bt.logging.error(f"Error processing prediction: {str(e)}")
+                bt.logging.error(f"Traceback: {traceback.format_exc()}")
                 results.append({
                     'status': 'error',
                     'message': f"Error processing prediction: {str(e)}"
                 })
 
-        bt.logging.info(f"Processed all predictions. Results: {results}")
         return {
-            'predictions': results,
+            'status': 'success',
+            'message': "Predictions processed",
+            'results': results,
             'miner_uid': self.miner_uid,
             'miner_hotkey': self.wallet.hotkey.ss58_address
         }

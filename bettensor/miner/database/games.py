@@ -40,6 +40,7 @@ class GamesHandler:
             createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (externalID) DO UPDATE SET
+            gameID = EXCLUDED.gameID,
             teamA = EXCLUDED.teamA,
             teamAodds = EXCLUDED.teamAodds,
             teamB = EXCLUDED.teamB,
@@ -58,7 +59,7 @@ class GamesHandler:
         params_list = []
         for game_data in game_data_dict_by_external_id.values():
             event_start_date = self._ensure_timezone_aware(game_data.eventStartDate)
-            is_active = bool(current_time <= event_start_date)
+            is_active = 1 if current_time <= datetime.fromisoformat(event_start_date) else 0
             params = (
                 game_data.id, game_data.teamA, game_data.teamAodds, game_data.teamB, game_data.teamBodds,
                 game_data.sport, game_data.league, game_data.externalId, self._ensure_timezone_aware(game_data.createDate),
@@ -99,8 +100,8 @@ class GamesHandler:
         if isinstance(dt, str):
             dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
 
     def get_game(self, external_id: str) -> Optional[TeamGame]:
         bt.logging.trace(f"Retrieving game with external ID: {external_id}")
@@ -116,8 +117,8 @@ class GamesHandler:
         bt.logging.trace("Retrieving active games")
         query = """
         SELECT * FROM games
-        WHERE active = true AND eventstartdate > NOW()
-        ORDER BY eventstartdate ASC
+        WHERE active = 1 AND CAST(eventStartDate AS TIMESTAMP WITH TIME ZONE) > NOW()
+        ORDER BY CAST(eventStartDate AS TIMESTAMP WITH TIME ZONE) ASC
         """
         results = self.db_manager.execute_query(query)
         active_games = {}
@@ -131,20 +132,28 @@ class GamesHandler:
                 sport=row['sport'],
                 league=row['league'],
                 externalId=row['externalid'],
-                createDate=row['createdate'].isoformat(),
-                lastUpdateDate=row['lastupdatedate'].isoformat(),
-                eventStartDate=row['eventstartdate'].isoformat(),
+                createDate=self._ensure_iso_format(row['createdate']),
+                lastUpdateDate=self._ensure_iso_format(row['lastupdatedate']),
+                eventStartDate=self._ensure_iso_format(row['eventstartdate']),
                 active=bool(row['active']),
                 outcome=row['outcome'],
-                tieOdds=float(row['tieodds']),
+                tieOdds=float(row['tieodds']) if row['tieodds'] is not None else None,
                 canTie=bool(row['cantie'])
             )
-            active_games[row['gameid']] = team_game
+            active_games[row['externalid']] = team_game
         bt.logging.trace(f"Retrieved {len(active_games)} active games")
         return active_games
 
+    def _ensure_iso_format(self, dt):
+        if isinstance(dt, datetime):
+            return dt.isoformat()
+        elif isinstance(dt, str):
+            return dt
+        else:
+            return str(dt)
+
     def game_exists(self, team_game_id):
-        query = "SELECT COUNT(*) FROM games WHERE externalID = %s"
+        query = "SELECT COUNT(*) FROM games WHERE externalID = ?"
         result = self.db_manager.execute_query(query, (team_game_id,))
         return result[0]['count'] > 0
 

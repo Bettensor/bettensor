@@ -64,15 +64,21 @@ def prompt_loop():
         server_info = get_server_info(r)
         display_server_info(server_info)
 
-        print("1. Sign new token")
-        print("2. Revoke current token")
-        print("3. Check token status")
-        print("4. Exit")
-        choice = input("Enter your choice (1-4): ")
+        print("1. Access CLI")
+        print("2. Edit Model Parameters")
+        print("3. Sign new token")
+        print("4. Revoke current token")
+        print("5. Check token status")
+        print("6. Exit")
+        choice = input("Enter your choice (1-6): ")
 
         if choice == "1":
-            subprocess.run(["python", "bettensor/miner/utils/sign_token.py"])
+            subprocess.run(["python", "bettensor/miner/cli.py"])
         elif choice == "2":
+            subprocess.run(["python", "bettensor/miner/model_params_tui.py"])
+        elif choice == "3":
+            subprocess.run(["python", "bettensor/miner/utils/sign_token.py"])
+        elif choice == "4":
             token_data = get_stored_token()
             if token_data:
                 r.publish("token_management", json.dumps({"action": "revoke", "data": token_data}))
@@ -83,7 +89,7 @@ def prompt_loop():
                     print("No response from server.")
             else:
                 print("No token found.")
-        elif choice == "3":
+        elif choice == "5":
             token_data = get_stored_token()
             if token_data:
                 r.publish("token_management", json.dumps({"action": "check", "data": token_data}))
@@ -94,7 +100,7 @@ def prompt_loop():
                     print("No response from server.")
             else:
                 print("No token found.")
-        elif choice == "4":
+        elif choice == "6":
             break
         else:
             print("Invalid choice. Please try again.")

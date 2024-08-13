@@ -95,13 +95,22 @@ def main(miner: BettensorMiner):
                 # Check if the miners hotkey is on the remote blacklist
                 # miner.check_remote_blacklist()
 
+
                 if miner.step % 600 == 0:
                     bt.logging.debug(
                         f"Syncing metagraph: {miner.metagraph} with subtensor: {miner.subtensor}"
                     )
-                    miner.state_manager.update_current_incentive(miner.get_current_incentive())
+                    
+                    # Update the current incentive
+                    current_incentive = miner.get_current_incentive()
+                    if current_incentive is not None:
+                        miner.stats_handler.update_current_incentive(current_incentive)
 
                     miner.metagraph.sync(subtensor=miner.subtensor)
+
+                if miner.step % 2400 == 0:
+                    bt.logging.info("Checking and resetting daily cash if necessary")
+                    miner.stats_handler.check_and_reset_daily_cash()
 
                 miner.metagraph = miner.subtensor.metagraph(miner.neuron_config.netuid)
                 miner_uid_int = int(miner.miner_uid)

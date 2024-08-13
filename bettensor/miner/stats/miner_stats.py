@@ -1,151 +1,236 @@
 import threading
-from typing import Dict, List, Any, Optional
+import traceback
+from typing import Dict, Any
+from psycopg2.extras import RealDictCursor
 import bittensor as bt
 from datetime import datetime, timezone, timedelta
-import traceback
-
-import torch
-from bettensor.protocol import TeamGamePrediction  # Add this import
 
 class MinerStatsHandler:
-    def __init__(self, db_manager, state_manager):
-        bt.logging.trace("Initializing MinerStatsHandler")
-        self.db_manager = db_manager
+    def __init__(self, state_manager):
+        # bt.logging.trace("Initializing MinerStatsHandler")
         self.state_manager = state_manager
-        self.recalculate_stats_from_predictions()
-        bt.logging.trace("MinerStatsHandler initialization complete")
+        self.db_manager = state_manager.db_manager
+        self.stats = self.state_manager.state
+        if 'miner_current_incentive' not in self.stats:
+            self.stats['miner_current_incentive'] = 0.0
+        self.lock = threading.Lock()
+        self.update_stats_from_predictions()
+        # bt.logging.trace("MinerStatsHandler initialization complete")
 
-    def recalculate_stats_from_predictions(self):
-        bt.logging.info("Recalculating miner stats from existing predictions")
-        
-        # First, let's check all predictions
-        all_predictions_query = """
-        SELECT minerHotkey, COUNT(*) as count
-        FROM predictions
-        GROUP BY minerHotkey
-        """
-        all_predictions_result = self.db_manager.execute_query(all_predictions_query)
-        bt.logging.debug(f"All predictions by miner hotkey: {all_predictions_result}")
-        
-        # Now, let's check predictions for this miner
-        query = """
-        SELECT predictionid AS "predictionID", teamgameid AS "teamGameID", minerid AS "minerID", minerhotkey AS "minerHotkey", 
-               predictiondate AS "predictionDate", predictedoutcome AS "predictedOutcome", teama AS "teamA", teamb AS "teamB", 
-               wager, teamaodds AS "teamAodds", teambodds AS "teamBodds", tieodds AS "tieOdds", outcome
-        FROM predictions
-        WHERE minerHotkey = %s
-        """
-        try:
-            results = self.db_manager.execute_query(query, (self.state_manager.miner_hotkey,))
-            bt.logging.debug(f"Query results for miner {self.state_manager.miner_hotkey}: {results}")
+    def load_stats_from_state(self):
+        with self.lock:
+            self.stats = self.state_manager.get_stats()
+
+    def update_stats(self, new_stats: Dict[str, Any]):
+        with self.lock:
+            self.stats.update(new_stats)
+            self.state_manager.update_state(new_stats)
+
+    def get_stats(self) -> Dict[str, Any]:
+        with self.lock:
+            return self.stats.copy()
+
+    def update_on_prediction(self, prediction_data: Dict[str, Any]):
+        with self.lock:
+            self.stats['miner_lifetime_predictions'] = self.stats.get('miner_lifetime_predictions', 0) + 1
+            self.stats['miner_lifetime_wager'] = self.stats.get('miner_lifetime_wager', 0) + prediction_data['wager']
+            self.stats['miner_last_prediction_date'] = prediction_data['predictionDate']
+            self.state_manager.update_state(self.stats)
+
+    def update_on_game_result(self, result_data: Dict[str, Any]):
+        with self.lock:
+            if result_data['outcome'] == 'Wager Won':
+                self.stats['miner_lifetime_wins'] = self.stats.get('miner_lifetime_wins', 0) + 1
+                self.stats['miner_lifetime_earnings'] = self.stats.get('miner_lifetime_earnings', 0) + result_data['earnings']
+            elif result_data['outcome'] == 'Wager Lost':
+                self.stats['miner_lifetime_losses'] = self.stats.get('miner_lifetime_losses', 0) + 1
             
-            if not results:
-                bt.logging.warning(f"No predictions found for miner with hotkey {self.state_manager.miner_hotkey}")
+            self.stats['miner_lifetime_wager'] = self.stats.get('miner_lifetime_wager', 0) + result_data['wager']
+            self.update_win_loss_ratio()
+            self.state_manager.update_state(self.stats)
+
+    def update_win_loss_ratio(self):
+        total_games = self.stats['miner_lifetime_wins'] + self.stats['miner_lifetime_losses']
+        self.stats['miner_win_loss_ratio'] = self.stats['miner_lifetime_wins'] / total_games if total_games > 0 else 0.0
+
+    def update_current_incentive(self, incentive: float):
+        with self.lock:
+            self.stats['miner_current_incentive'] = incentive
+            self.state_manager.update_state({'miner_current_incentive': incentive})
+
+    def get_current_incentive(self) -> float:
+        return self.stats['miner_current_incentive']
+
+    def deduct_wager(self, amount: float) -> bool:
+        with self.lock:
+            if self.stats['miner_cash'] >= amount:
+                self.stats['miner_cash'] -= amount
+                self.state_manager.update_state({'miner_cash': self.stats['miner_cash']})
+                return True
+            return False
+
+    def reset_daily_cash(self):
+        with self.lock:
+            self.stats['miner_cash'] = self.state_manager.DAILY_CASH
+            self.stats['last_daily_reset'] = datetime.now(timezone.utc).isoformat()
+            self.state_manager.update_state(self.stats)
+            print(f"DEBUG: Reset daily cash to {self.state_manager.DAILY_CASH}")
+
+    def update_stats_from_predictions(self):
+        print("DEBUG: Updating miner stats from all predictions")
+        with self.lock:
+            miner_uid = self.state_manager.miner_uid
+            print(f"DEBUG: Miner UID: {miner_uid}")
+            if miner_uid is None:
                 return
 
-            # Convert query results to TeamGamePrediction objects
-            predictions = [TeamGamePrediction(
-                predictionID=row['predictionID'],
-                teamGameID=row['teamGameID'],
-                minerID=row['minerID'],
-                predictionDate=row['predictionDate'].isoformat() if isinstance(row['predictionDate'], datetime) else row['predictionDate'],
-                predictedOutcome=row['predictedOutcome'],
-                teamA=row.get('teamA'),
-                teamB=row.get('teamB'),
-                wager=row['wager'],
-                teamAodds=row['teamAodds'],
-                teamBodds=row['teamBodds'],
-                tieOdds=row.get('tieOdds'),
-                outcome=row['outcome']
-            ) for row in results]
+            query = """
+            SELECT 
+                p.predictedOutcome, p.outcome, p.wager, p.teamAodds, p.teamBodds, p.tieOdds, p.predictionDate,
+                g.teamA, g.teamB
+            FROM predictions p
+            JOIN games g ON p.teamGameID = g.externalID
+            WHERE p.minerID = %s
+            """
             
-            stats = self.calculate_stats(predictions)
-            bt.logging.info(f"Calculated stats: {stats}")
-            self.state_manager.update_state(stats)
-            bt.logging.info(f"Updated state: {self.state_manager.state}")
-        except Exception as e:
-            bt.logging.error(f"Error in recalculate_stats_from_predictions: {str(e)}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            conn, cur = self.db_manager.connection_pool.getconn(), None
+            try:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
+                cur.execute(query, (miner_uid,))
+                predictions = cur.fetchall()
+                print(f"DEBUG: Fetched {len(predictions)} predictions")
 
-    def calculate_stats(self, predictions: List[TeamGamePrediction]) -> Dict[str, Any]:
-        total_predictions = len(predictions)
-        total_wins = 0
-        total_losses = 0
-        total_earnings = 0.0
-        total_wager = 0.0
-        last_prediction_date = None
-        outcomes = set()
+                total_predictions = 0
+                total_wins = 0
+                total_losses = 0
+                total_wager = 0
+                total_earnings = 0
+                last_prediction_date = None
+                daily_wager = 0
+                today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                
+                for pred in predictions:
+                    print(f"DEBUG: Processing prediction: {pred}")
+                    total_predictions += 1
+                    total_wager += pred['wager']
+                    print(f"DEBUG: Total wager so far: {total_wager}")
 
-        bt.logging.debug(f"Calculating stats for {total_predictions} predictions")
+                    pred_date = pred.get('predictiondate')
+                    if pred_date:
+                        pred_date = datetime.fromisoformat(pred_date)
+                        if pred_date >= today:
+                            daily_wager += pred['wager']
+                        if last_prediction_date is None or pred_date > last_prediction_date:
+                            last_prediction_date = pred_date
 
-        for pred in predictions:
-            bt.logging.debug(f"Processing prediction: {pred}")
-            total_wager += float(pred.wager)
-            outcomes.add(pred.outcome)
+                    print(f"DEBUG: Prediction details - Outcome: {pred['outcome']}, Predicted: {pred['predictedoutcome']}, Wager: {pred['wager']}, Odds: {pred['teamaodds']}/{pred['teambodds']}/{pred['tieodds']}, Team A: {pred['teama']}, Team B: {pred['teamb']}")
+                    if 'Wager Won' in pred['outcome']:
+                        total_wins += 1
+                        if pred['predictedoutcome'] == pred['teama']:
+                            payout = pred['wager'] * pred['teamaodds']
+                        elif pred['predictedoutcome'] == pred['teamb']:
+                            payout = pred['wager'] * pred['teambodds']
+                        elif pred['predictedoutcome'] == "Draw":
+                            payout = pred['wager'] * pred['tieodds']
+                        else:
+                            payout = 0
+                        print(f"DEBUG: Wager won. Payout: {payout}")
+                        total_earnings += payout
+                    elif 'Wager Lost' in pred['outcome']:
+                        total_losses += 1
+                        print(f"DEBUG: Wager lost. Payout: 0")
+                    else:
+                        print(f"DEBUG: Unfinished wager. Outcome: {pred['outcome']}")
 
-            if pred.outcome.startswith('Wager Won'):
-                total_wins += 1
-                if pred.predictedOutcome == pred.teamA:
-                    odds = float(pred.teamAodds)
-                elif pred.predictedOutcome == pred.teamB:
-                    odds = float(pred.teamBodds)
-                else:
-                    odds = float(pred.tieOdds) if pred.tieOdds is not None else 0
-                total_earnings += float(pred.wager) * odds
-            elif pred.outcome.startswith('Wager Lost'):
-                total_losses += 1
+                    print(f"DEBUG: Total earnings so far: {total_earnings}")
 
-            pred_date = datetime.fromisoformat(pred.predictionDate)
-            if last_prediction_date is None or pred_date > last_prediction_date:
-                last_prediction_date = pred_date
+                # Calculate current cash
+                current_cash = self.state_manager.DAILY_CASH - daily_wager
 
-        win_loss_ratio = total_wins / total_losses if total_losses > 0 else 0.0
+                print(f"DEBUG: Final stats - Total predictions: {total_predictions}, Total wins: {total_wins}, Total losses: {total_losses}")
+                print(f"DEBUG: Final stats - Total wager: {total_wager}, Total earnings: {total_earnings}")
 
-        stats = {
-            'miner_lifetime_predictions': total_predictions,
-            'miner_lifetime_wins': total_wins,
-            'miner_lifetime_losses': total_losses,
-            'miner_lifetime_earnings': total_earnings,
-            'miner_lifetime_wager': total_wager,
-            'miner_win_loss_ratio': win_loss_ratio,
-            'miner_last_prediction_date': last_prediction_date.isoformat() if last_prediction_date else None
+                self.stats.update({
+                    'miner_lifetime_predictions': total_predictions,
+                    'miner_lifetime_wins': total_wins,
+                    'miner_lifetime_losses': total_losses,
+                    'miner_lifetime_wager': total_wager,
+                    'miner_lifetime_earnings': total_earnings,
+                    'miner_last_prediction_date': last_prediction_date.isoformat() if last_prediction_date else None,
+                    'miner_cash': current_cash
+                })
+                self.update_win_loss_ratio()
+                self.state_manager.update_state(self.stats)
+                print(f"DEBUG: Updated stats: {self.stats}")
+
+            except Exception as e:
+                print(f"DEBUG: Error updating stats from predictions: {str(e)}")
+                print(f"DEBUG: Traceback: {traceback.format_exc()}")
+            finally:
+                if cur:
+                    cur.close()
+                if conn:
+                    self.db_manager.connection_pool.putconn(conn)
+
+    def check_and_reset_daily_cash(self):
+        with self.lock:
+            last_reset = datetime.fromisoformat(self.stats.get('last_daily_reset', '2000-01-01T00:00:00+00:00'))
+            now = datetime.now(timezone.utc)
+            if now.date() > last_reset.date():
+                self.reset_daily_cash()
+                self.update_stats_from_predictions()  # Recalculate stats after reset
+
+    def reset_daily_cash(self):
+        with self.lock:
+            self.stats['miner_cash'] = self.state_manager.DAILY_CASH
+            self.stats['last_daily_reset'] = datetime.now(timezone.utc).isoformat()
+            self.state_manager.update_state(self.stats)
+            print(f"DEBUG: Reset daily cash to {self.state_manager.DAILY_CASH}")
+
+    def initialize_default_stats(self):
+        default_stats = {
+            'miner_lifetime_predictions': 0,
+            'miner_lifetime_wins': 0,
+            'miner_lifetime_losses': 0,
+            'miner_lifetime_wager': 0.0,
+            'miner_lifetime_earnings': 0.0,
+            'miner_win_loss_ratio': 0.0,
+            'miner_last_prediction_date': None
         }
-
-        return stats
-
-    # ... (other methods remain the same)
+        self.stats.update(default_stats)
+        self.state_manager.update_state(default_stats)
+        # bt.logging.info("Initialized stats with default values")
 
 class MinerStateManager:
     DAILY_CASH = 1000.0
 
-    def __init__(self, db_manager, miner_hotkey: str, miner_uid: str, stats_handler):
-        bt.logging.trace("Initializing MinerStateManager")
+    def __init__(self, db_manager, miner_hotkey: str, miner_uid: str):
         self.db_manager = db_manager
         self.miner_hotkey = miner_hotkey
-        self.miner_uid = miner_uid
-        self.stats_handler = stats_handler
-        self.lock = threading.Lock()
+        self.miner_uid = miner_uid if miner_uid != "default" else None
         self.state = self.load_state()
-        self.reconcile_state()
 
     def load_state(self) -> Dict[str, Any]:
-        bt.logging.trace("Loading miner state")
+        # bt.logging.trace("Loading miner state from database")
         query = "SELECT * FROM miner_stats WHERE miner_hotkey = %s"
-        result = self.db_manager.execute_query(query, (self.miner_hotkey,))
-        if result:
-            state = result[0]
-            # Ensure last_daily_reset is a string
-            state['last_daily_reset'] = state['last_daily_reset'].isoformat() if isinstance(state['last_daily_reset'], datetime) else state['last_daily_reset']
-            # Ensure miner_last_prediction_date is a string
-            if state['miner_last_prediction_date'] is not None:
-                state['miner_last_prediction_date'] = state['miner_last_prediction_date'].isoformat() if isinstance(state['miner_last_prediction_date'], datetime) else state['miner_last_prediction_date']
-            return state
-        else:
-            return self.initialize_state()
+        conn, cur = self.db_manager.connection_pool.getconn(), None
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(query, (self.miner_hotkey,))
+            result = cur.fetchone()
+            if result:
+                return result
+            else:
+                return self.initialize_state()
+        finally:
+            if cur:
+                cur.close()
+            if conn:
+                self.db_manager.connection_pool.putconn(conn)
 
     def initialize_state(self) -> Dict[str, Any]:
-        bt.logging.trace("Initializing new miner state")
-        state = {
+        # bt.logging.trace("Initializing new miner state in database")
+        initial_state = {
             'miner_hotkey': self.miner_hotkey,
             'miner_uid': self.miner_uid,
             'miner_cash': self.DAILY_CASH,
@@ -157,178 +242,96 @@ class MinerStateManager:
             'miner_lifetime_wins': 0,
             'miner_lifetime_losses': 0,
             'miner_win_loss_ratio': 0.0,
-            'last_daily_reset': datetime.now(timezone.utc).isoformat()  # Ensure this is a string
+            'last_daily_reset': datetime.now(timezone.utc).isoformat()
         }
-        self.save_state(state)
-        return state
+        self.save_state(initial_state)
+        return initial_state
 
-    def save_state(self, state: Optional[Dict[str, Any]] = None):
+    def save_state(self, state: Dict[str, Any] = None):
+        # bt.logging.info("Saving miner state")
         if state is None:
             state = self.state
-        bt.logging.trace("Saving miner state")
-        query = """
-        INSERT INTO miner_stats (miner_hotkey, miner_uid, miner_cash, miner_current_incentive, miner_last_prediction_date, 
-                                 miner_lifetime_earnings, miner_lifetime_wager, miner_lifetime_predictions, miner_lifetime_wins, 
-                                 miner_lifetime_losses, miner_win_loss_ratio, last_daily_reset)
-        VALUES (%(miner_hotkey)s, %(miner_uid)s, %(miner_cash)s, %(miner_current_incentive)s, %(miner_last_prediction_date)s, 
-                %(miner_lifetime_earnings)s, %(miner_lifetime_wager)s, %(miner_lifetime_predictions)s, %(miner_lifetime_wins)s, 
-                %(miner_lifetime_losses)s, %(miner_win_loss_ratio)s, %(last_daily_reset)s)
-        ON CONFLICT (miner_hotkey) DO UPDATE SET
-            miner_uid = EXCLUDED.miner_uid,
-            miner_cash = EXCLUDED.miner_cash,
-            miner_current_incentive = EXCLUDED.miner_current_incentive,
-            miner_last_prediction_date = EXCLUDED.miner_last_prediction_date,
-            miner_lifetime_earnings = EXCLUDED.miner_lifetime_earnings,
-            miner_lifetime_wager = EXCLUDED.miner_lifetime_wager,
-            miner_lifetime_predictions = EXCLUDED.miner_lifetime_predictions,
-            miner_lifetime_wins = EXCLUDED.miner_lifetime_wins,
-            miner_lifetime_losses = EXCLUDED.miner_lifetime_losses,
-            miner_win_loss_ratio = EXCLUDED.miner_win_loss_ratio,
-            last_daily_reset = EXCLUDED.last_daily_reset
-        """
-        self.db_manager.execute_query(query, state)
-
-    def reconcile_state(self):
-        bt.logging.trace("Reconciling miner state")
-        now = datetime.now(timezone.utc)
-        last_reset = datetime.fromisoformat(self.state['last_daily_reset'])
-        # Ensure last_reset is timezone-aware
-        if last_reset.tzinfo is None:
-            last_reset = last_reset.replace(tzinfo=timezone.utc)
-        if now - last_reset >= timedelta(days=1):
-            self.reset_daily_cash()
-
-    def reset_daily_cash(self):
-        bt.logging.trace("Resetting daily cash")
-        with self.lock:
-            self.state['miner_cash'] = self.DAILY_CASH
-            self.state['last_daily_reset'] = datetime.now(timezone.utc).isoformat()
-            self.save_state()
-
-    def update_on_prediction(self, prediction_data):
-        with self.lock:
-            bt.logging.trace(f"Updating state for prediction: {prediction_data}")
-            self.state['miner_lifetime_predictions'] += 1
-            if prediction_data['wager'] > 0:
-                self.state['miner_cash'] -= prediction_data['wager']
-                self.state['miner_lifetime_wager'] += prediction_data['wager']
-            self.state['miner_last_prediction_date'] = datetime.now(timezone.utc).isoformat()
-            self.save_state()
-
-    def update_on_game_result(self, result_data):
-        with self.lock:
-            bt.logging.trace(f"Updating state for game result: {result_data}")
-            if 'Wager Won' in result_data['outcome']:
-                self.state['miner_lifetime_wins'] += 1
-                self.state['miner_lifetime_earnings'] += result_data['earnings']
-            elif 'Wager Lost' in result_data['outcome']:
-                self.state['miner_lifetime_losses'] += 1
-            self.update_win_loss_ratio()
-            self.save_state()
-
-    def update_win_loss_ratio(self):
-        total_games = self.state['miner_lifetime_wins'] + self.state['miner_lifetime_losses']
-        self.state['miner_win_loss_ratio'] = self.state['miner_lifetime_wins'] / total_games if total_games > 0 else 0.0
-
-    def update_current_incentive(self, incentive):
-        with self.lock:
-            bt.logging.trace(f"Updating current incentive: {incentive}")
-            if isinstance(incentive, torch.Tensor):
-                incentive = incentive.item() if incentive.numel() == 1 else None
-            self.state['miner_current_incentive'] = incentive
-            self.save_state()
-
-    def get_current_incentive(self):
-        return self.state['miner_current_incentive']
-
-    def get_stats(self):
-        bt.logging.trace("Getting miner stats")
-        with self.lock:
-            return self.state.copy()
-
-    def periodic_db_update(self):
-        bt.logging.trace("Performing periodic database update")
         try:
-            self.save_state()
-            self.stats_handler.recalculate_stats_from_predictions()
+            query = """
+            INSERT INTO miner_stats (
+                miner_hotkey, miner_uid, miner_cash, miner_current_incentive, 
+                miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager, 
+                miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses, 
+                miner_win_loss_ratio, last_daily_reset
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (miner_hotkey) DO UPDATE SET
+                miner_cash = EXCLUDED.miner_cash,
+                miner_current_incentive = EXCLUDED.miner_current_incentive,
+                miner_last_prediction_date = EXCLUDED.miner_last_prediction_date,
+                miner_lifetime_earnings = EXCLUDED.miner_lifetime_earnings,
+                miner_lifetime_wager = EXCLUDED.miner_lifetime_wager,
+                miner_lifetime_predictions = EXCLUDED.miner_lifetime_predictions,
+                miner_lifetime_wins = EXCLUDED.miner_lifetime_wins,
+                miner_lifetime_losses = EXCLUDED.miner_lifetime_losses,
+                miner_win_loss_ratio = EXCLUDED.miner_win_loss_ratio,
+                last_daily_reset = EXCLUDED.last_daily_reset
+            """
+            params = (
+                self.miner_hotkey,
+                self.miner_uid if self.miner_uid is not None else None,
+                state.get('miner_cash', 0),
+                state.get('miner_current_incentive', 0),
+                state.get('miner_last_prediction_date'),
+                state.get('miner_lifetime_earnings', 0),
+                state.get('miner_lifetime_wager', 0),
+                state.get('miner_lifetime_predictions', 0),
+                state.get('miner_lifetime_wins', 0),
+                state.get('miner_lifetime_losses', 0),
+                state.get('miner_win_loss_ratio', 0),
+                state.get('last_daily_reset')
+            )
+            conn, cur = self.db_manager.connection_pool.getconn(), None
+            try:
+                cur = conn.cursor()
+                cur.execute(query, params)
+                conn.commit()
+                # bt.logging.info("Miner state saved successfully")
+            finally:
+                if cur:
+                    cur.close()
+                if conn:
+                    self.db_manager.connection_pool.putconn(conn)
         except Exception as e:
-            bt.logging.error(f"Error in periodic_db_update: {e}")
-            bt.logging.error(traceback.format_exc())
+            # bt.logging.error(f"Error saving miner state: {e}")
+            # bt.logging.error(traceback.format_exc())
+            raise
 
-    def deduct_wager(self, amount):
-        with self.lock:
-            bt.logging.trace(f"Attempting to deduct wager: {amount}")
-            if self.state['miner_cash'] >= amount:
-                self.state['miner_cash'] -= amount
-                self.save_state()
-                bt.logging.trace(f"Wager deducted. New balance: {self.state['miner_cash']}")
-                return True
-            bt.logging.trace(f"Insufficient funds. Current balance: {self.state['miner_cash']}")
-            return False
-
-    def update_state(self, new_state: Dict):
-        with self.lock:
-            bt.logging.trace(f"Updating state with: {new_state}")
-            self.state.update(new_state)
-            self.save_state()
-
-    def get_miner_cash(self, miner_hotkey):
-        bt.logging.trace(f"Getting miner cash for hotkey: {miner_hotkey}")
-        query = "SELECT miner_cash FROM miner_stats WHERE miner_hotkey = %s"
-        result = self.db_manager.execute_query(query, (miner_hotkey,))
-        if result and result[0]:
-            return result[0][0]
-        return 0
-
-    def update_stats_from_predictions(self):
-        bt.logging.info("Updating stats from predictions")
-        self.stats_handler.recalculate_stats_from_predictions()
-
-    def update_predictions_with_hotkey(self):
-        bt.logging.trace("Updating predictions with miner hotkey")
-        query = """
-        UPDATE predictions
-        SET minerHotkey = %s
-        WHERE minerID = %s AND minerHotkey IS NULL
+    def update_state(self, new_state: Dict[str, Any]):
+        # bt.logging.trace("Updating miner state in database")
+        set_clause = ', '.join([f"{k} = %s" for k in new_state.keys()])
+        query = f"""
+        UPDATE miner_stats
+        SET {set_clause}
+        WHERE miner_hotkey = %s
         """
+        params = list(new_state.values()) + [self.miner_hotkey]
+        conn, cur = self.db_manager.connection_pool.getconn(), None
         try:
-            self.db_manager.execute_query(query, params=(self.miner_hotkey, self.miner_uid))
-            bt.logging.info("Successfully updated predictions with miner hotkey")
-        except Exception as e:
-            bt.logging.error(f"Error updating predictions with hotkey: {str(e)}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            cur = conn.cursor()
+            cur.execute(query, params)
+            conn.commit()
+        finally:
+            if cur:
+                cur.close()
+            if conn:
+                self.db_manager.connection_pool.putconn(conn)
 
-    def ensure_correct_column_names(self):
-        bt.logging.info("Ensuring correct column names in predictions table")
-        query = """
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'predictions' AND column_name = 'minerid') THEN
-                ALTER TABLE predictions ADD COLUMN minerID VARCHAR(255);
-            END IF;
-            
-            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'predictions' AND column_name = 'miner_uid') THEN
-                ALTER TABLE predictions DROP COLUMN miner_uid;
-            END IF;
-        END $$;
-        """
+    def get_stats(self) -> Dict[str, Any]:
+        # bt.logging.trace("Getting miner stats from database")
+        query = "SELECT * FROM miner_stats WHERE miner_hotkey = %s"
+        conn, cur = self.db_manager.connection_pool.getconn(), None
         try:
-            self.db_manager.execute_query(query)
-            bt.logging.info("Successfully ensured correct column names")
-        except Exception as e:
-            bt.logging.error(f"Error ensuring correct column names: {str(e)}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
-
-    def update_predictions_with_minerid(self):
-        bt.logging.trace("Updating predictions with miner ID")
-        query = """
-        UPDATE predictions
-        SET minerID = %s
-        WHERE minerID IS NULL
-        """
-        try:
-            self.db_manager.execute_query(query, params=(self.miner_uid,))
-            bt.logging.info("Successfully updated predictions with miner ID")
-        except Exception as e:
-            bt.logging.error(f"Error updating predictions with miner ID: {str(e)}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(query, (self.miner_hotkey,))
+            result = cur.fetchall()
+            return result[0] if result else {}
+        finally:
+            if cur:
+                cur.close()
+            if conn:
+                self.db_manager.connection_pool.putconn(conn)

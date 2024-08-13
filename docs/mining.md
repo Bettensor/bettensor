@@ -13,6 +13,7 @@ This guide provides detailed information for setting up and running a Bettensor 
 7. [Security Considerations](#security-considerations)
 8. [Troubleshooting](#troubleshooting)
 9. [Frequently Asked Questions](#frequently-asked-questions)
+10. [Database Setup](#database-setup)
 
 ## Getting Started
 
@@ -328,3 +329,71 @@ Here are some common issues miners might encounter and how to resolve them:
      ```
 
 If you continue to experience issues, please reach out to the community support channels for further assistance.
+
+## Database Setup
+
+Bettensor uses PostgreSQL as its database. The system is designed to work with both root and non-root users, but using the root user provides full functionality, especially during initial setup.
+
+### Database Configuration
+
+By default, the system attempts to connect to the database using the following configuration:
+
+- Host: localhost
+- Port: 5432
+- Database Name: bettensor
+- User: root
+- Password: bettensor_password
+
+You can override these settings using environment variables:
+
+- DB_HOST
+- DB_PORT
+- DB_NAME
+- DB_USER
+- DB_PASSWORD
+
+### Root User Privileges
+
+While the system can operate with non-root users, using the root user ensures that all operations, including database and table creation, can be performed without issues.
+
+If you're using a non-root user:
+1. Ensure the database exists before running the miner.
+2. Grant necessary permissions to the user for the bettensor database.
+
+### Setting Up PostgreSQL Root User
+
+If you haven't set up a root user in PostgreSQL, follow these steps:
+
+1. Switch to the postgres system user:
+   ```
+   sudo -i -u postgres
+   ```
+
+2. Access the PostgreSQL prompt:
+   ```
+   psql
+   ```
+
+3. Create a new superuser named 'root':
+   ```sql
+   CREATE USER root WITH SUPERUSER PASSWORD 'your_secure_password';
+   ```
+
+4. Exit the PostgreSQL prompt:
+   ```
+   \q
+   ```
+
+5. Update your .env file or environment variables with the new root user credentials.
+
+>[!IMPORTANT]
+> Always use a strong, unique password for your database root user. Never share this password or commit it to version control systems.
+
+### Database Initialization
+
+The DatabaseManager class handles database initialization:
+- It checks if the specified database exists.
+- If the database doesn't exist and the user has root privileges, it creates the database.
+- It creates necessary tables if they don't exist.
+
+If you encounter any database-related issues during setup or operation, check the logs for specific error messages and ensure your database configuration is correct.
