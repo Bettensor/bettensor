@@ -12,6 +12,18 @@ import uuid
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class MockDBManager:
+    def __init__(self):
+        self.connection_pool = self
+
+    def getconn(self):
+        return self
+
+    def putconn(self, conn):
+        pass
+
+    def cursor(self, cursor_factory=None):
+        return self.get_cursor()
+
     def get_cursor(self):
         class MockCursor:
             def __enter__(self):
@@ -31,8 +43,20 @@ class MockDBManager:
                     return (10, 5, 5, 500.0, 1000.0, "2023-01-01")
                 if "COALESCE(SUM(wager), 0)" in self.query:
                     return (100.0,)
+                if "FROM miner_stats WHERE miner_hotkey" in self.query:
+                    return None
                 return None
+            def close(self):
+                pass
         return MockCursor()
+
+    def execute_query(self, query, params=None):
+        cursor = self.get_cursor()
+        cursor.execute(query, params)
+        return cursor.fetchall()
+
+    def commit(self):
+        pass
 
 @pytest.fixture
 def mock_predictions_handler():
@@ -40,9 +64,8 @@ def mock_predictions_handler():
     miner_hotkey = "test_hotkey"
     miner_uid = "test_miner_uid"
     state_manager = MinerStateManager(db_manager, miner_hotkey, miner_uid)
-    handler = PredictionsHandler(db_manager, state_manager, "test_miner")
-    handler.models = {'soccer': SoccerPredictor(model_name='podos_soccer_model')}
-    return handler
+    models = {"soccer": SoccerPredictor(model_name='podos_soccer_model')}
+    return PredictionsHandler(db_manager, state_manager, miner_hotkey)
 
 def fetch_mock_games():
 

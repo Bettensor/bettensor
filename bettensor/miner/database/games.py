@@ -212,3 +212,11 @@ class GamesHandler:
         }
         redis_client.publish('game_requests', json.dumps(message))
         return message_id
+
+    def get_games_by_sport(self, sport: str) -> Dict[str, TeamGame]:
+        query = """
+        SELECT * FROM games
+        WHERE active = 1 AND LOWER(sport) = LOWER(%s)
+        """
+        results = self.db_manager.execute_query(query, (sport,))
+        return {row['externalid']: TeamGame(**row) for row in results}
