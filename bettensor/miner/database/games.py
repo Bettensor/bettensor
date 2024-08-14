@@ -214,9 +214,31 @@ class GamesHandler:
         return message_id
 
     def get_games_by_sport(self, sport: str) -> Dict[str, TeamGame]:
+        bt.logging.warning(f"Retrieving games by sport: {sport}")
         query = """
-        SELECT * FROM games
+        SELECT gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
+        FROM games
         WHERE active = 1 AND LOWER(sport) = LOWER(%s)
         """
         results = self.db_manager.execute_query(query, (sport,))
-        return {row['externalid']: TeamGame(**row) for row in results}
+        games = {}
+        for row in results:
+            team_game = TeamGame(
+                id=row['gameid'],
+                teamA=row['teama'],
+                teamB=row['teamb'],
+                sport=row['sport'],
+                league=row['league'],
+                externalId=row['externalid'],
+                createDate=self._ensure_iso_format(row['createdate']),
+                lastUpdateDate=self._ensure_iso_format(row['lastupdatedate']),
+                eventStartDate=self._ensure_iso_format(row['eventstartdate']),
+                active=bool(row['active']),
+                outcome=row['outcome'],
+                teamAodds=float(row['teamaodds']),
+                teamBodds=float(row['teambodds']),
+                tieOdds=float(row['tieodds']) if row['tieodds'] is not None else None,
+                canTie=bool(row['cantie'])
+            )
+            games[row['externalid']] = team_game
+        return games

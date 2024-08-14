@@ -9,6 +9,7 @@ from bettensor.miner.models.model_utils import SoccerPredictor
 from fuzzywuzzy import process
 from psycopg2.extras import RealDictCursor
 from bettensor.miner.stats.miner_stats import MinerStatsHandler
+import numpy as np
 
 class PredictionsHandler:
     def __init__(self, db_manager, state_manager, miner_hotkey: str):
@@ -41,7 +42,7 @@ class PredictionsHandler:
     def add_prediction(self, prediction: Dict[str, Any]):
         print(f"DEBUG: Adding prediction: {prediction}")
         # Deduct wager before adding prediction
-        wager_amount = prediction.get('wager', 0)
+        wager_amount = float(prediction.get('wager', 0))  # Convert to Python float
         bt.logging.debug(f"Attempting to deduct wager: {wager_amount}")
         if not self.stats_handler.deduct_wager(wager_amount):
             bt.logging.warning(f"Insufficient funds to place wager of {wager_amount}")
@@ -63,10 +64,10 @@ class PredictionsHandler:
             prediction['predictedOutcome'],
             prediction['teamA'],
             prediction['teamB'],
-            prediction['wager'],
-            prediction['teamAodds'],
-            prediction['teamBodds'],
-            prediction['tieOdds'],
+            float(prediction['wager']),  # Convert to Python float
+            float(prediction['teamAodds']),  # Convert to Python float
+            float(prediction['teamBodds']),  # Convert to Python float
+            float(prediction['tieOdds']) if prediction['tieOdds'] is not None else None,  # Convert to Python float
             prediction['outcome']
         )
 
@@ -78,7 +79,7 @@ class PredictionsHandler:
             if result:
                 inserted_row = result[0] if isinstance(result, list) else result
                 self.stats_handler.update_on_prediction({
-                    'wager': prediction.get('wager', 0),
+                    'wager': float(prediction.get('wager', 0)),  # Convert to Python float
                     'predictionDate': prediction.get('predictionDate')
                 })
                 bt.logging.info(f"Prediction {prediction['predictionID']} added successfully: {inserted_row}")
@@ -129,37 +130,53 @@ class PredictionsHandler:
         model = self.models[sport]
         predictions = {}
 
-        home_teams = [game.teamA for game in games.values()]
-        away_teams = [game.teamB for game in games.values()]
-        odds = [[game.teamAodds, game.tieOdds, game.teamBodds] for game in games.values()]
-
         encoded_teams = set(model.le.classes_)
-        matched_home_teams = [self.get_best_match(team, encoded_teams) for team in home_teams]
-        matched_away_teams = [self.get_best_match(team, encoded_teams) for team in away_teams]
 
-        if None not in matched_home_teams + matched_away_teams:
-            model_predictions = model.predict_games(matched_home_teams, matched_away_teams, odds)
+        matched_games = []
+        for game_id, game in games.items():
+            home_match = self.get_best_match(game.teamA, encoded_teams)
+            away_match = self.get_best_match(game.teamB, encoded_teams)
             
-            for (game_id, game), prediction in zip(games.items(), model_predictions):
+            if home_match and away_match:
+                matched_games.append({
+                    'game_id': game_id,
+                    'home_team': home_match,
+                    'away_team': away_match,
+                    'odds': [game.teamAodds, game.tieOdds, game.teamBodds],
+                    'original_game': game
+                })
+
+        bt.logging.debug(f"Matched games: {len(matched_games)} out of {len(games)}")
+
+        if matched_games:
+            home_teams = [game['home_team'] for game in matched_games]
+            away_teams = [game['away_team'] for game in matched_games]
+            odds = [game['odds'] for game in matched_games]
+
+            # Now you can proceed with your model predictions using these matched games
+            model_predictions = model.predict_games(home_teams, away_teams, odds)
+            
+            for game_data, prediction in zip(matched_games, model_predictions):
+                game = game_data['original_game']
                 pred_dict = {
                     'predictionID': str(uuid.uuid4()),
-                    'teamGameID': game_id,
+                    'teamGameID': game_data['game_id'],
                     'minerID': self.miner_uid,
                     'predictionDate': datetime.now(timezone.utc).isoformat(),
                     'predictedOutcome': game.teamA if prediction['PredictedOutcome'] == 'Home Win' else game.teamB if prediction['PredictedOutcome'] == 'Away Win' else 'Tie',
-                    'wager': prediction['recommendedWager'],
-                    'teamAodds': game.teamAodds,
-                    'teamBodds': game.teamBodds,
-                    'tieOdds': game.tieOdds,
+                    'wager': float(prediction['recommendedWager']),  # Convert to Python float
+                    'teamAodds': float(game.teamAodds),  # Convert to Python float
+                    'teamBodds': float(game.teamBodds),  # Convert to Python float
+                    'tieOdds': float(game.tieOdds) if game.tieOdds is not None else None,  # Convert to Python float
                     'outcome': 'unfinished',
                     'teamA': game.teamA,
                     'teamB': game.teamB
                 }
-                predictions[game_id] = TeamGamePrediction(**pred_dict)
+                predictions[game_data['game_id']] = TeamGamePrediction(**pred_dict)
                 self.add_prediction(pred_dict)
         else:
-            bt.logging.warning(f"Some teams not found in label encoder for {sport}, skipping model predictions.")
-             
+            bt.logging.warning(f"No games found with matching team names for {sport}")
+
         return predictions
 
     def get_best_match(self, team_name, encoded_teams):
