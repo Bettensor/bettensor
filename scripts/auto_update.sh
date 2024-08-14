@@ -11,11 +11,42 @@ echo "Auto-update enabled on branch: $current_branch"
 
 chmod +x scripts/restart_pm2_processes.sh
 
+# Check if this is the first run after update
+FIRST_RUN_FLAG="/tmp/bettensor_first_run_after_update"
+
+if [ ! -f "$FIRST_RUN_FLAG" ]; then
+    echo "First run after update. Executing migration and setup processes..."
+    
+    if [ -f ./scripts/backup_and_migrate.sh ]; then
+        chmod +x ./scripts/backup_and_migrate.sh
+        ./scripts/backup_and_migrate.sh
+    else
+        echo "backup_and_migrate.sh not found. Skipping backup and migration."
+    fi
+
+    if [ -f ./scripts/migrate.sh ]; then
+        chmod +x ./scripts/migrate.sh
+        bash ./scripts/migrate.sh
+    else
+        echo "migrate.sh not found. Skipping setup process."
+    fi
+
+    # Create the flag file to indicate that the first run process has been completed
+    touch "$FIRST_RUN_FLAG"
+    
+    echo "First run processes completed. Restarting the script..."
+    exec "$0" "$@"
+fi
+
+
+
 update_and_restart() {
     echo "New updates detected. Stashing local changes..."
     git stash
     echo "Pulling changes..."
     if git pull origin $current_branch; then
+        
+        rm -f "$FIRST_RUN_FLAG"
         echo "Making scripts executable..."
         find ./scripts -type f -name "*.sh" -exec chmod +x {} \;
         echo "Making post-merge hook executable..."
@@ -28,12 +59,19 @@ update_and_restart() {
         fi
         chmod +x .git/hooks/post-merge
         echo "Triggering backup, migration, and setup process..."
-        if [ -f ./scripts/backup_and_migrate.sh ] && [ -f ./scripts/migrate.sh ]; then
+        if [ -f ./scripts/backup_and_migrate.sh ]; then
+            chmod +x ./scripts/backup_and_migrate.sh
             ./scripts/backup_and_migrate.sh
-            ./scripts/migrate.sh
         else
-            echo "backup_and_migrate.sh or migrate.sh not found. Skipping backup, migration, and setup."
+            echo "backup_and_migrate.sh not found. Skipping backup and migration."
         fi
+
+        if [ -f ./scripts/migrate.sh ]; then
+            chmod +x ./scripts/migrate.sh
+            bash ./scripts/migrate.sh
+        else
+            echo "migrate.sh not found. Skipping setup process."
+        fi  
         echo "Reinstalling dependencies..."
         if pip install -e .; then
             echo "Scheduling PM2 restart..."
