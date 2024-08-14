@@ -21,7 +21,7 @@ class PredictionsHandler:
         self.miner_uid = state_manager.miner_uid
         self.new_prediction_window = timedelta(hours=24)
         self.stats_handler = MinerStatsHandler(state_manager)
-        self.models = {'soccer': SoccerPredictor(model_name='podos_soccer_model', id=self.miner_uid)}
+        self.models = {'soccer': SoccerPredictor(model_name='podos_soccer_model', id=self.miner_uid, db_manager=self.db_manager)}
         self.update_predictions_with_minerid()
         bt.logging.trace("PredictionsHandler initialization complete")
 

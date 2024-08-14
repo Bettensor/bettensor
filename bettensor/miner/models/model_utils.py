@@ -25,7 +25,7 @@ class SoccerPredictor:
             team_averages_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'team_averages_last_5_games_aug.csv')
         self.team_averages_path = team_averages_path
         self.db_manager = db_manager
-        
+
         #params
         self.id : int = id
         self.model_on : bool = False
@@ -43,12 +43,19 @@ class SoccerPredictor:
         self.wager_distribution_steepness = row['wager_distribution_steepness']
         self.fuzzy_match_percentage = row['fuzzy_match_percentage']
         self.minimum_wager_amount = row['minimum_wager_amount']
-        self.maximum_wager_amount = row['maximum_wager_amount']
+        self.maximum_wager_amount = row['max_wager_amount']
         self.top_n_games = row['top_n_games']
 
 
 
 
+    def check_max_wager_vs_miner_cash(self, max_wager):
+        '''
+        Return the lesser of the max_wager and the miner's cash for model wager distribution.
+
+        '''
+        miner_cash = self.db_manager.get_miner_cash(self.id)
+        return min(max_wager, miner_cash)
 
     def load_label_encoder(self, path):
         with open(path, 'rb') as file:
@@ -93,7 +100,11 @@ class SoccerPredictor:
         ]
         return df[features]
 
-    def recommend_wager_distribution(self, confidence_scores, max_daily_wager=1000.0, min_wager=20.0, top_n = 10):
+    def recommend_wager_distribution(self, confidence_scores):
+        max_daily_wager = self.check_max_wager_vs_miner_cash(self.maximum_wager_amount)
+        min_wager = self.minimum_wager_amount
+        top_n = self.top_n_games
+
         confidence_scores = np.clip(confidence_scores, 0.0, 1.0)
         top_indices = np.argsort(confidence_scores)[-top_n:]
         top_confidences = confidence_scores[top_indices]
@@ -117,7 +128,7 @@ class SoccerPredictor:
         
         return final_wagers
 
-    def predict_games(self, home_teams, away_teams, odds):
+    def predict_games(self, home_teams, away_teams, odds, max_daily_wager=None, min_wager=None, top_n=None):
         df = self.preprocess_data(home_teams, away_teams, odds)
         x = self.scaler.fit_transform(df)
         x_tensor = torch.tensor(x, dtype=torch.float32).to(self.device)
