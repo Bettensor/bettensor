@@ -22,15 +22,17 @@ update_and_restart() {
         if [ ! -f .git/hooks/post-merge ]; then
             echo "#!/bin/bash" > .git/hooks/post-merge
             echo "./scripts/backup_and_migrate.sh" >> .git/hooks/post-merge
+            echo "./scripts/migrate.sh" >> .git/hooks/post-merge
             echo "pip install -e ." >> .git/hooks/post-merge
             echo "./scripts/restart_pm2_processes.sh" >> .git/hooks/post-merge
         fi
         chmod +x .git/hooks/post-merge
-        echo "Triggering backup and migration process..."
-        if [ -f ./scripts/backup_and_migrate.sh ]; then
+        echo "Triggering backup, migration, and setup process..."
+        if [ -f ./scripts/backup_and_migrate.sh ] && [ -f ./scripts/migrate.sh ]; then
             ./scripts/backup_and_migrate.sh
+            ./scripts/migrate.sh
         else
-            echo "backup_and_migrate.sh not found. Skipping backup and migration."
+            echo "backup_and_migrate.sh or migrate.sh not found. Skipping backup, migration, and setup."
         fi
         echo "Reinstalling dependencies..."
         if pip install -e .; then
