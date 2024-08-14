@@ -13,8 +13,12 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
 fi
 
 # Set default values if not provided in .env
-DB_PATH=${DB_PATH:-"$PROJECT_ROOT/bettensor/miner/data/miner.db"}
+DB_PATH=${DB_PATH:-"$PROJECT_ROOT/data/miner.db"}
 BACKUP_DIR=${BACKUP_DIR:-"$PROJECT_ROOT/backups"}
+
+echo "DB_PATH: $DB_PATH"
+echo "BACKUP_DIR: $BACKUP_DIR"
+echo "Current working directory: $(pwd)"
 
 # Perform backup
 python -c "from bettensor.miner.utils.database_backup import trigger_backup; trigger_backup('$DB_PATH', '$BACKUP_DIR')"

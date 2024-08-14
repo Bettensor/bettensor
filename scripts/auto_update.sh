@@ -11,6 +11,9 @@ echo "Auto-update enabled on branch: $current_branch"
 
 chmod +x scripts/restart_pm2_processes.sh
 
+cd "$PROJECT_ROOT" || exit 1
+echo "Changed working directory to: $(pwd)"
+
 # Check if this is the first run after update
 FIRST_RUN_FLAG="/tmp/bettensor_first_run_after_update"
 

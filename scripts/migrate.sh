@@ -2,6 +2,10 @@
 
 # migration.sh
 
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+
 set -e
 
 echo "Starting Bettensor migration process..."
@@ -69,7 +73,7 @@ update_python_deps() {
 # Function to perform backup and data migration
 backup_and_migrate() {
     echo "Performing backup and data migration..."
-    ./backup_and_migrate.sh
+    "${SCRIPT_DIR}/backup_and_migrate.sh"
 }
 
 
