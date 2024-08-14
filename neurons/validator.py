@@ -251,12 +251,19 @@ async def main(validator: BettensorValidator):
                             validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                             bt.logging.info("Successfully updated weights and last updated block")
                         else:
+                            validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                             bt.logging.warning("Failed to set weights, continuing with next iteration.")
                     else:
+                        validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                         bt.logging.error("Failed to reinitialize subtensor. Skipping weight update.")
                 except Exception as e:
+                    validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                     bt.logging.error(f"Error during weight update process: {str(e)}")
                     bt.logging.warning("Continuing with next iteration despite weight update failure.")
+
+            # need to update the last_updated_block here regardless of success or failure on weight update, otherwise api will be called too often
+            
+            
 
             # End the current step and prepare for the next iteration.
             validator.step += 1
