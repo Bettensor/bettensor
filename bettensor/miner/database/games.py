@@ -164,3 +164,11 @@ class GamesHandler:
         query = "UPDATE games SET active = FALSE WHERE eventStartDate < %s"
         self.db_manager.execute_query(query, params=(cutoff_date.isoformat(),))
         bt.logging.trace("Old games marked as inactive")
+
+    def get_games_by_sport(self, sport: str) -> Dict[str, TeamGame]:
+        query = """
+        SELECT * FROM games
+        WHERE active = 1 AND LOWER(sport) = LOWER(%s)
+        """
+        results = self.db_manager.execute_query(query, (sport,))
+        return {row['externalid']: TeamGame(**row) for row in results}

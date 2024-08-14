@@ -112,6 +112,17 @@ def main(miner: BettensorMiner):
                     bt.logging.info("Checking and resetting daily cash if necessary")
                     miner.stats_handler.check_and_reset_daily_cash()
 
+                    
+                if miner.step %2400 == 300:
+                    soccer_games = miner.games_handler.get_games_by_sport("soccer")
+                    bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
+
+                    if soccer_games:
+                        processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
+                        bt.logging.info(f"Processed {len(processed_games)} soccer games")
+                    else:
+                        bt.logging.info("No soccer games to process")
+
                 miner.metagraph = miner.subtensor.metagraph(miner.neuron_config.netuid)
                 miner_uid_int = int(miner.miner_uid)
                 stake = miner.metagraph.S[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.S) else 0
