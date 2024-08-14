@@ -134,8 +134,8 @@ class PredictionsHandler:
 
         matched_games = []
         for game_id, game in games.items():
-            home_match = self.get_best_match(game.teamA, encoded_teams)
-            away_match = self.get_best_match(game.teamB, encoded_teams)
+            home_match = self.get_best_match(game.teamA, encoded_teams, sport)
+            away_match = self.get_best_match(game.teamB, encoded_teams, sport)
             
             if home_match and away_match:
                 matched_games.append({
@@ -179,9 +179,9 @@ class PredictionsHandler:
 
         return predictions
 
-    def get_best_match(self, team_name, encoded_teams):
+    def get_best_match(self, team_name, encoded_teams, sport):
         match, score = process.extractOne(team_name, encoded_teams)
-        if score >= 80:
+        if score >= self.models[sport].fuzzy_match_percentage:
             return match
         else:
             return None

@@ -91,7 +91,7 @@ def main(miner: BettensorMiner):
         try:
             # Below: Periodically update our knowledge of the network graph.
             if miner.step % 20 == 0:
-                if miner.predictions_handler.soccer_model.model_on:
+                if miner.predictions_handler.models['soccer'].model_on:
                     soccer_games = miner.games_handler.get_games_by_sport("soccer")
                     bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
 
