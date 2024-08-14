@@ -21,15 +21,23 @@ if [ ! -f "$FIRST_RUN_FLAG" ]; then
     echo "First run after update. Executing migration and setup processes..."
     
     if [ -f ./scripts/backup_and_migrate.sh ]; then
-        chmod +x ./scripts/backup_and_migrate.sh
-        ./scripts/backup_and_migrate.sh
+    chmod +x ./scripts/backup_and_migrate.sh
+    echo "Running backup_and_migrate.sh..."
+    if ! ./scripts/backup_and_migrate.sh; then
+        echo "backup_and_migrate.sh failed. Exiting."
+        exit 1
+    fi
     else
         echo "backup_and_migrate.sh not found. Skipping backup and migration."
     fi
 
     if [ -f ./scripts/migrate.sh ]; then
         chmod +x ./scripts/migrate.sh
-        bash ./scripts/migrate.sh
+        echo "Running migrate.sh..."
+        if ! bash ./scripts/migrate.sh; then
+            echo "migrate.sh failed. Exiting."
+            exit 1
+        fi
     else
         echo "migrate.sh not found. Skipping setup process."
     fi

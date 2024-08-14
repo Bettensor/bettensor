@@ -1,5 +1,12 @@
-import psycopg2
-from psycopg2.extras import DictCursor
+try:
+    import psycopg2
+    from psycopg2.extras import DictCursor
+except ImportError:
+    print("psycopg2 not found. Installing...")
+    import subprocess
+    subprocess.check_call(["pip", "install", "--no-cache-dir", "psycopg2-binary"])
+    import psycopg2
+    from psycopg2.extras import DictCursor
 import os
 import bittensor as bt
 import time

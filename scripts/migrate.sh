@@ -66,8 +66,10 @@ setup_postgres() {
 # Function to update Python dependencies
 update_python_deps() {
     echo "Updating Python dependencies..."
+    pip install --upgrade pip
     pip install -r requirements.txt
-    pip install redis psycopg2-binary
+    pip install --no-cache-dir psycopg2-binary
+    pip install --no-cache-dir torch
 }
 
 # Function to perform backup and data migration

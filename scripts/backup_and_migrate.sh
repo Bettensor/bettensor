@@ -21,9 +21,15 @@ echo "BACKUP_DIR: $BACKUP_DIR"
 echo "Current working directory: $(pwd)"
 
 # Perform backup
-python -c "from bettensor.miner.utils.database_backup import trigger_backup; trigger_backup('$DB_PATH', '$BACKUP_DIR')"
+if ! python -c "from bettensor.miner.utils.database_backup import trigger_backup; trigger_backup('$DB_PATH', '$BACKUP_DIR')"; then
+    echo "Backup failed. Exiting."
+    exit 1
+fi
 
 # Run migration script
-python "$PROJECT_ROOT/bettensor/miner/utils/migrate_to_postgres.py"
+if ! python "$PROJECT_ROOT/bettensor/miner/utils/migrate_to_postgres.py"; then
+    echo "Migration failed. Exiting."
+    exit 1
+fi
 
 echo "Backup and migration completed successfully."
