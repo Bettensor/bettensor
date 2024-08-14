@@ -177,19 +177,29 @@ class PredictionsHandler:
             predictions = self.get_predictions_for_game(external_id)
             
             for pred in predictions:
+                bt.logging.debug(f"Processing prediction {pred.predictionID} for game {external_id}")
                 processed_prediction = self.process_game_outcome(pred, game_data)
                 if processed_prediction: 
                     updated_predictions.append(processed_prediction)
-                    if processed_prediction.outcome != "Unfinished":
-                        self.stats_handler.update_on_game_result({
-                            'outcome': processed_prediction.outcome,
-                            'earnings': self.calculate_earnings(processed_prediction.wager, processed_prediction.predictedOutcome, game_data.outcome),
-                            'wager': processed_prediction.wager
-                        })
+                    batch_updates.append((processed_prediction.outcome, processed_prediction.predictionID))
+                    bt.logging.debug(f"Updated prediction {pred.predictionID} outcome to {processed_prediction.outcome}")
+                else:
+                    bt.logging.warning(f"Failed to process prediction {pred.predictionID} for game {external_id}")
 
         if batch_updates:
             query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
-            self.db_manager.execute_batch(query, batch_updates)
+            try:
+                self.db_manager.execute_batch(query, batch_updates)
+                bt.logging.info(f"Successfully updated {len(batch_updates)} predictions")
+            except Exception as e:
+                bt.logging.error(f"Error updating predictions in batch: {str(e)}")
+                bt.logging.error(f"Attempting individual updates...")
+                for outcome, prediction_id in batch_updates:
+                    try:
+                        self.db_manager.execute_query(query, (outcome, prediction_id))
+                        bt.logging.debug(f"Successfully updated prediction {prediction_id}")
+                    except Exception as e:
+                        bt.logging.error(f"Error updating prediction {prediction_id}: {str(e)}")
 
         bt.logging.trace(f"Processed {len(updated_predictions)} predictions")
         return updated_predictions
@@ -197,27 +207,26 @@ class PredictionsHandler:
     def process_game_outcome(self, prediction: TeamGamePrediction, game_data: TeamGame) -> Optional[TeamGamePrediction]:
         bt.logging.trace(f"Processing game outcome for prediction: {prediction.predictionID}, game: {game_data.id}")
         
-        if game_data.outcome is None or game_data.outcome == "Unfinished":
-            return None
-
         actual_outcome = self._map_game_outcome(game_data.outcome)
         predicted_outcome = self._map_predicted_outcome(prediction.predictedOutcome, game_data)
 
         bt.logging.debug(f"Actual outcome: {actual_outcome}, Predicted outcome: {predicted_outcome}")
 
-        if actual_outcome == predicted_outcome:
+        if actual_outcome == "Unknown":
+            new_outcome = "Unfinished"
+        elif actual_outcome == predicted_outcome:
             new_outcome = "Wager Won"
         else:
             new_outcome = "Wager Lost"
 
-        if prediction.outcome != new_outcome:
-            query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
-            self.db_manager.execute_query(query, (new_outcome, prediction.predictionID))
-            prediction.outcome = new_outcome
-            bt.logging.info(f"Updated prediction {prediction.predictionID} outcome to {new_outcome}")
+        query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
+        self.db_manager.execute_query(query, (new_outcome, prediction.predictionID))
+        prediction.outcome = new_outcome
+        bt.logging.info(f"Updated prediction {prediction.predictionID} outcome to {new_outcome}")
 
+        if new_outcome != "Unfinished":
             # Calculate earnings
-            earnings = self._calculate_earnings(prediction, game_data, new_outcome)
+            earnings = self.calculate_earnings(prediction.wager, prediction, game_data.outcome)
 
             # Update stats
             self.stats_handler.update_on_game_result({
@@ -226,8 +235,7 @@ class PredictionsHandler:
                 'wager': prediction.wager
             })
 
-            return prediction
-        return None
+        return prediction
 
     def _map_game_outcome(self, outcome):
         if outcome in [0, "0", "Team A Win"]:

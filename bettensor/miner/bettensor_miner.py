@@ -167,12 +167,21 @@ class BettensorMiner(BaseNeuron):
                 bt.logging.warning("No predictions available")
                 return self._clean_synapse(synapse)
 
+            # Filter out predictions with finished outcomes
+            unfinished_predictions = {
+                pred_id: pred for pred_id, pred in recent_predictions.items()
+                if pred.outcome == "Unfinished"
+            }
 
-            synapse.prediction_dict = recent_predictions
+            if not unfinished_predictions:
+                bt.logging.warning("No unfinished predictions available")
+                return self._clean_synapse(synapse)
+
+            synapse.prediction_dict = unfinished_predictions
             synapse.gamedata_dict = None
             synapse.metadata = self._create_metadata("prediction")
 
-            bt.logging.info(f"Number of predictions added to synapse: {len(recent_predictions)}")
+            bt.logging.info(f"Number of unfinished predictions added to synapse: {len(unfinished_predictions)}")
             
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")

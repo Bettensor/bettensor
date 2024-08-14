@@ -556,7 +556,6 @@ class Application:
         rows = [
             ("Miner Hotkey", self.miner_hotkey),
             ("Miner UID", self.miner_uid),
-            ("Miner Rank", str(miner_stats.get('miner_rank', 'N/A'))),
             ("Miner Cash", f"${self.miner_cash:.2f}"),  # Use self.miner_cash here
             ("Current Incentive", f"{self.stats_handler.get_current_incentive():.2f} τ per day"),
             ("Last Prediction", self.format_last_prediction_date(self.state_manager.get_stats().get('miner_last_prediction_date'))),

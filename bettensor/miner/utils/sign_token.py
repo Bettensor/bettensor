@@ -24,8 +24,7 @@ def get_jwt():
 def get_wallet(config):
     while True:
         if config.wallet.name is None:
-            wallet_name = input("Enter the name of the wallet to use: ").strip()
-            config.wallet.name = wallet_name
+            config.wallet.name = input("Enter the name of the wallet to use: ").strip()
 
         wallet = bt.wallet(config=config)
         

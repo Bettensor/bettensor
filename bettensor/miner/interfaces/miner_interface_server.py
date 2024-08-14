@@ -349,7 +349,11 @@ def heartbeat():
     uptime = int(time.time() - server_start_time)
     print(f"Server uptime: {uptime} seconds")
     
-    token_status = get_token_status(request.headers.get('Authorization'))
+    # Extract token from Authorization header
+    auth_header = request.headers.get('Authorization')
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith('Bearer ') else None
+    
+    token_status = get_token_status(token)
     print(f"Token status: {token_status}")
 
     # Request upcoming game IDs
@@ -434,12 +438,18 @@ def get_miner_games():
         return []
 
 def get_token_status(token: str):
-    with open("token_store.json", "r") as f:
-        token_data = json.load(f)
-        if token_data["jwt"] == token and token_data["revoked"] == False:
-            return "VALID"
-        else:
-            return "INVALID"
+    if not token:
+        return "INVALID"
+    
+    try:
+        with open("token_store.json", "r") as f:
+            token_data = json.load(f)
+            if token_data["jwt"] == token and not token_data["revoked"]:
+                return "VALID"
+            else:
+                return "INVALID"
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return "INVALID"
 
 def get_redis_client():
     return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)

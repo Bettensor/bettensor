@@ -3,6 +3,7 @@ from psycopg2.extras import DictCursor
 import os
 import bittensor as bt
 import time
+import sqlite3
 
 def get_postgres_connection() -> psycopg2.connection:
     try:
@@ -95,13 +96,56 @@ def create_postgres_tables(pg_cursor: psycopg2.cursor):
         except psycopg2.Error as e:
             bt.logging.error(f"Error creating table {table_name}: {e}")
 
-def setup_postgres():
+def migrate_data(source_conn, dest_conn):
+    source_cursor = source_conn.cursor()
+    dest_cursor = dest_conn.cursor()
+
+    # Migrate games table
+    source_cursor.execute("SELECT * FROM games")
+    games = source_cursor.fetchall()
+    for game in games:
+        dest_cursor.execute("""
+            INSERT INTO games (gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID,
+                               createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (externalID) DO NOTHING
+        """, game)
+
+    # Migrate predictions table
+    source_cursor.execute("SELECT * FROM predictions")
+    predictions = source_cursor.fetchall()
+    for prediction in predictions:
+        dest_cursor.execute("""
+            INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
+                                     teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (predictionID) DO NOTHING
+        """, prediction)
+
+    # Migrate miner_stats table
+    source_cursor.execute("SELECT * FROM miner_stats")
+    miner_stats = source_cursor.fetchall()
+    for stat in miner_stats:
+        dest_cursor.execute("""
+            INSERT INTO miner_stats (miner_hotkey, miner_uid, miner_cash, miner_current_incentive,
+                                     miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager,
+                                     miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses,
+                                     miner_win_loss_ratio, last_daily_reset)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (miner_hotkey) DO NOTHING
+        """, stat)
+
+    dest_conn.commit()
+
+def setup_postgres(sqlite_db_path):
     wait_for_postgres()
     pg_conn = get_postgres_connection()
+    sqlite_conn = sqlite3.connect(sqlite_db_path)
 
     try:
         with pg_conn.cursor(cursor_factory=DictCursor) as pg_cursor:
             create_postgres_tables(pg_cursor)
+            migrate_data(sqlite_conn, pg_conn)
         pg_conn.commit()
         bt.logging.info("PostgreSQL setup completed successfully")
     except Exception as e:
@@ -109,6 +153,8 @@ def setup_postgres():
         pg_conn.rollback()
     finally:
         pg_conn.close()
+        sqlite_conn.close()
 
 if __name__ == "__main__":
-    setup_postgres()
+    sqlite_db_path = "./bettensor/miner/data/miner.db"
+    setup_postgres(sqlite_db_path)

@@ -38,6 +38,25 @@ def table_exists(cursor, table_name):
     cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
     return cursor.fetchone() is not None
 
+def verify_migration(cursor, target_version):
+    tables = ['predictions', 'games', 'miner_stats']
+    for table in tables:
+        cursor.execute(f"SELECT COUNT(*) FROM {table}")
+        count = cursor.fetchone()[0]
+        if count == 0:
+            bt.logging.error(f"Migration verification failed: {table} is empty")
+            return False
+    
+    # Check if database_version was updated
+    cursor.execute("SELECT version FROM database_version ORDER BY timestamp DESC LIMIT 1")
+    current_version = cursor.fetchone()[0]
+    if current_version != target_version:
+        bt.logging.error(f"Migration verification failed: version mismatch. Expected {target_version}, got {current_version}")
+        return False
+
+    bt.logging.info("Migration verification passed")
+    return True
+
 def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1):
     bt.logging.info(f"Starting database migration to version {target_version}")
     
@@ -167,6 +186,14 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
     """, (target_version,))
     
     conn.commit()
+    
+    # Call verify_migration function
+    if verify_migration(cursor, target_version):
+        bt.logging.info("Migration verification successful")
+    else:
+        bt.logging.error("Migration verification failed")
+        return False
+    
     bt.logging.info(f"Database migration to version {target_version} completed successfully")
     return True
 

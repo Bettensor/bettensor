@@ -181,3 +181,4 @@ data/*
 
 current_miner_uid.txt
 token_store.json
+bettensor_backup*

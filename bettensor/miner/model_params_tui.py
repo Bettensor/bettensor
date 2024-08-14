@@ -162,6 +162,7 @@ class ModelParamsTUI:
         if key == 'model_on':
             self.params[key] = not self.params[key]
             self.save_params()
+            self.update_view()
         elif not self.edit_mode:
             self.edit_mode = True
             self.edit_value = str(self.params[key])

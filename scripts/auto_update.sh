@@ -16,13 +16,27 @@ update_and_restart() {
     git stash
     echo "Pulling changes..."
     if git pull origin $current_branch; then
+        echo "Making scripts executable..."
+        find ./scripts -type f -name "*.sh" -exec chmod +x {} \;
+        echo "Making post-merge hook executable..."
+        if [ ! -f .git/hooks/post-merge ]; then
+            echo "#!/bin/bash" > .git/hooks/post-merge
+            echo "./scripts/backup_and_migrate.sh" >> .git/hooks/post-merge
+            echo "pip install -e ." >> .git/hooks/post-merge
+            echo "./scripts/restart_pm2_processes.sh" >> .git/hooks/post-merge
+        fi
+        chmod +x .git/hooks/post-merge
+        echo "Triggering backup and migration process..."
+        if [ -f ./scripts/backup_and_migrate.sh ]; then
+            ./scripts/backup_and_migrate.sh
+        else
+            echo "backup_and_migrate.sh not found. Skipping backup and migration."
+        fi
         echo "Reinstalling dependencies..."
         if pip install -e .; then
             echo "Scheduling PM2 restart..."
-            # Run the restart script detached from this process
             nohup bash -c "sleep 10 && $(pwd)/scripts/restart_pm2_processes.sh" > /tmp/pm2_restart.log 2>&1 &
             echo "PM2 restart scheduled. The script will exit now and restart shortly."
-            # Force exit to ensure the process terminates
             exit 0
         else
             echo "Failed to install dependencies. Skipping restart."
@@ -35,7 +49,6 @@ update_and_restart() {
         return 1
     fi
 }
-
 while true; do
     echo "Fetching updates..."
     git fetch
