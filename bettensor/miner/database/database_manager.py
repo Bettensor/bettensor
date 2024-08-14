@@ -214,12 +214,12 @@ class DatabaseManager:
             """
             self.execute_query(insert_query, (miner_uid, *default_params.values()))
 
-    def get_miner_params(self, miner_uid):
+    def get_model_params(self, miner_uid):
         query = "SELECT * FROM model_params WHERE id = %s"
         result = self.execute_query(query, (miner_uid,))
         return result[0] if result else None
 
-    def update_miner_params(self, miner_uid, params):
+    def update_model_params(self, miner_uid, params):
         query = """
         UPDATE model_params SET
             model_on = %s,

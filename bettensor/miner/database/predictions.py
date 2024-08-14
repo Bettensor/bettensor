@@ -21,7 +21,7 @@ class PredictionsHandler:
         self.miner_uid = state_manager.miner_uid
         self.new_prediction_window = timedelta(hours=24)
         self.stats_handler = MinerStatsHandler(state_manager)
-        self.models = {'soccer': SoccerPredictor(model_name='podos_soccer_model')}
+        self.models = {'soccer': SoccerPredictor(model_name='podos_soccer_model', id=self.miner_uid)}
         self.update_predictions_with_minerid()
         bt.logging.trace("PredictionsHandler initialization complete")
 
@@ -42,7 +42,7 @@ class PredictionsHandler:
     def add_prediction(self, prediction: Dict[str, Any]):
         print(f"DEBUG: Adding prediction: {prediction}")
         # Deduct wager before adding prediction
-        wager_amount = float(prediction.get('wager', 0))  # Convert to Python float
+        wager_amount = prediction.get('wager', 0)
         bt.logging.debug(f"Attempting to deduct wager: {wager_amount}")
         if not self.stats_handler.deduct_wager(wager_amount):
             bt.logging.warning(f"Insufficient funds to place wager of {wager_amount}")
@@ -64,10 +64,10 @@ class PredictionsHandler:
             prediction['predictedOutcome'],
             prediction['teamA'],
             prediction['teamB'],
-            float(prediction['wager']),  # Convert to Python float
-            float(prediction['teamAodds']),  # Convert to Python float
-            float(prediction['teamBodds']),  # Convert to Python float
-            float(prediction['tieOdds']) if prediction['tieOdds'] is not None else None,  # Convert to Python float
+            prediction['wager'],
+            prediction['teamAodds'],
+            prediction['teamBodds'],
+            prediction['tieOdds'],
             prediction['outcome']
         )
 
@@ -79,7 +79,7 @@ class PredictionsHandler:
             if result:
                 inserted_row = result[0] if isinstance(result, list) else result
                 self.stats_handler.update_on_prediction({
-                    'wager': float(prediction.get('wager', 0)),  # Convert to Python float
+                    'wager': prediction.get('wager', 0),
                     'predictionDate': prediction.get('predictionDate')
                 })
                 bt.logging.info(f"Prediction {prediction['predictionID']} added successfully: {inserted_row}")

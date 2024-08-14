@@ -7,13 +7,14 @@ import torch.nn as nn
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from huggingface_hub import PyTorchModelHubMixin
+from bettensor.miner.database.database_manager import DatabaseManager
 
 @dataclass
 class MinerConfig:
     model_prediction: bool = False
 
 class SoccerPredictor:
-    def __init__(self, model_name, label_encoder_path=None, team_averages_path=None):
+    def __init__(self, model_name, label_encoder_path=None, team_averages_path=None, id=0, db_manager=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self.get_HFmodel(model_name)
         if label_encoder_path is None:
@@ -23,6 +24,31 @@ class SoccerPredictor:
         if team_averages_path is None:
             team_averages_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'team_averages_last_5_games_aug.csv')
         self.team_averages_path = team_averages_path
+        self.db_manager = db_manager
+        
+        #params
+        self.id : int = id
+        self.model_on : bool = False
+        self.wager_distribution_steepness : int = 10
+        self.fuzzy_match_percentage : int = 80
+        self.minimum_wager_amount : float = 20.0
+        self.maximum_wager_amount : float = 1000
+        self.top_n_games : int = 10
+        self.get_model_params(self.db_manager)
+
+
+    def get_model_params(self,db_manager: DatabaseManager):
+        row = db_manager.get_model_params(self.id)
+        self.model_on = row['model_on']
+        self.wager_distribution_steepness = row['wager_distribution_steepness']
+        self.fuzzy_match_percentage = row['fuzzy_match_percentage']
+        self.minimum_wager_amount = row['minimum_wager_amount']
+        self.maximum_wager_amount = row['maximum_wager_amount']
+        self.top_n_games = row['top_n_games']
+
+
+
+
 
     def load_label_encoder(self, path):
         with open(path, 'rb') as file:
