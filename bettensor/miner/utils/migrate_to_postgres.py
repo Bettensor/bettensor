@@ -49,57 +49,56 @@ def wait_for_postgres(max_retries=5, retry_delay=5):
 
 def create_postgres_tables(pg_cursor):
     tables = [
+        ("predictions", """
+            CREATE TABLE IF NOT EXISTS predictions (
+                predictionID TEXT PRIMARY KEY, 
+                teamGameID TEXT, 
+                minerID TEXT, 
+                predictionDate TEXT, 
+                predictedOutcome TEXT,
+                teamA TEXT,
+                teamB TEXT,
+                wager REAL,
+                teamAodds REAL,
+                teamBodds REAL,
+                tieOdds REAL,
+                outcome TEXT
+            )
+        """),
         ("games", """
             CREATE TABLE IF NOT EXISTS games (
-                gameID UUID PRIMARY KEY,
-                teamA TEXT NOT NULL,
+                gameID TEXT PRIMARY KEY,
+                teamA TEXT,
                 teamAodds REAL,
-                teamB TEXT NOT NULL,
+                teamB TEXT,
                 teamBodds REAL,
-                sport TEXT NOT NULL,
-                league TEXT NOT NULL,
-                externalID TEXT UNIQUE NOT NULL,
-                createDate TIMESTAMP WITH TIME ZONE NOT NULL,
-                lastUpdateDate TIMESTAMP WITH TIME ZONE NOT NULL,
-                eventStartDate TIMESTAMP WITH TIME ZONE NOT NULL,
-                active BOOLEAN NOT NULL,
+                sport TEXT,
+                league TEXT,
+                externalID TEXT UNIQUE,
+                createDate TEXT,
+                lastUpdateDate TEXT,
+                eventStartDate TEXT,
+                active INTEGER,
                 outcome TEXT,
                 tieOdds REAL,
                 canTie BOOLEAN
             )
         """),
-        ("predictions", """
-            CREATE TABLE IF NOT EXISTS predictions (
-                predictionID UUID PRIMARY KEY,
-                gameID UUID NOT NULL,
-                minerID TEXT NOT NULL,
-                prediction TEXT NOT NULL,
-                wager REAL NOT NULL,
-                odds REAL NOT NULL,
-                createDate TIMESTAMP WITH TIME ZONE NOT NULL,
-                lastUpdateDate TIMESTAMP WITH TIME ZONE NOT NULL,
-                outcome TEXT,
-                payout REAL,
-                FOREIGN KEY (gameID) REFERENCES games(gameID)
-            )
-        """),
         ("miner_stats", """
             CREATE TABLE IF NOT EXISTS miner_stats (
                 miner_hotkey TEXT PRIMARY KEY,
-                miner_coldkey TEXT,
                 miner_uid INTEGER,
                 miner_rank INTEGER,
                 miner_cash REAL,
                 miner_current_incentive REAL,
-                miner_last_prediction_date TIMESTAMP WITH TIME ZONE,
+                miner_last_prediction_date TEXT,
                 miner_lifetime_earnings REAL,
                 miner_lifetime_wager REAL,
                 miner_lifetime_predictions INTEGER,
                 miner_lifetime_wins INTEGER,
                 miner_lifetime_losses INTEGER,
                 miner_win_loss_ratio REAL,
-                miner_status TEXT,
-                last_daily_reset TIMESTAMP WITH TIME ZONE
+                last_daily_reset TEXT
             )
         """)
     ]
@@ -115,44 +114,54 @@ def migrate_data(source_conn, dest_conn):
     source_cursor = source_conn.cursor()
     dest_cursor = dest_conn.cursor()
 
-    # Migrate games table
-    source_cursor.execute("SELECT * FROM games")
-    games = source_cursor.fetchall()
-    for game in games:
-        # Convert the last element (canTie) to boolean
-        game = list(game)
-        game[-1] = bool(game[-1])
-        dest_cursor.execute("""
-            INSERT INTO games (gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID,
-                               createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (externalID) DO NOTHING
-        """, tuple(game))
-
     # Migrate predictions table
     source_cursor.execute("SELECT * FROM predictions")
     predictions = source_cursor.fetchall()
     for prediction in predictions:
         dest_cursor.execute("""
-            INSERT INTO predictions (predictionID, gameID, minerID, prediction, wager, odds,
-                                     createDate, lastUpdateDate, outcome, payout)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO predictions (
+                predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
+                teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (predictionID) DO NOTHING
         """, prediction)
+
+    # Migrate games table
+    source_cursor.execute("SELECT * FROM games")
+    games = source_cursor.fetchall()
+    for game in games:
+        dest_cursor.execute("""
+            INSERT INTO games (
+                gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID,
+                createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (gameID) DO NOTHING
+        """, game)
 
     # Migrate miner_stats table
     source_cursor.execute("SELECT * FROM miner_stats")
     miner_stats = source_cursor.fetchall()
     for stat in miner_stats:
         dest_cursor.execute("""
-            INSERT INTO miner_stats (miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_cash,
-                                     miner_current_incentive, miner_last_prediction_date,
-                                     miner_lifetime_earnings, miner_lifetime_wager,
-                                     miner_lifetime_predictions, miner_lifetime_wins,
-                                     miner_lifetime_losses, miner_win_loss_ratio,
-                                     miner_status, last_daily_reset)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (miner_hotkey) DO NOTHING
+            INSERT INTO miner_stats (
+                miner_hotkey, miner_uid, miner_rank, miner_cash, miner_current_incentive,
+                miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager,
+                miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses,
+                miner_win_loss_ratio, last_daily_reset
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (miner_hotkey) DO UPDATE SET
+                miner_uid = EXCLUDED.miner_uid,
+                miner_rank = EXCLUDED.miner_rank,
+                miner_cash = EXCLUDED.miner_cash,
+                miner_current_incentive = EXCLUDED.miner_current_incentive,
+                miner_last_prediction_date = EXCLUDED.miner_last_prediction_date,
+                miner_lifetime_earnings = EXCLUDED.miner_lifetime_earnings,
+                miner_lifetime_wager = EXCLUDED.miner_lifetime_wager,
+                miner_lifetime_predictions = EXCLUDED.miner_lifetime_predictions,
+                miner_lifetime_wins = EXCLUDED.miner_lifetime_wins,
+                miner_lifetime_losses = EXCLUDED.miner_lifetime_losses,
+                miner_win_loss_ratio = EXCLUDED.miner_win_loss_ratio,
+                last_daily_reset = EXCLUDED.last_daily_reset
         """, stat)
 
     dest_conn.commit()
@@ -180,7 +189,10 @@ def create_database_if_not_exists():
         cursor.close()
         conn.close()
     except psycopg2.Error as e:
-        print(f"Error creating database: {e}")
+        if "already exists" in str(e):
+            print(f"Database {os.getenv('DB_NAME', 'bettensor')} already exists")
+        else:
+            raise
 
 def setup_postgres(sqlite_db_path):
     # Backup the SQLite database
@@ -197,7 +209,11 @@ def setup_postgres(sqlite_db_path):
     except Exception as e:
         print(f"Error during backup: {e}. Proceeding with caution.")
 
-    create_database_if_not_exists()
+    try:
+        create_database_if_not_exists()
+    except Exception as e:
+        print(f"Error creating database: {e}. Proceeding with existing database.")
+
     wait_for_postgres()
     pg_conn = get_postgres_connection()
 
