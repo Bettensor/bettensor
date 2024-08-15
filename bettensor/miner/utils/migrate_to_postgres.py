@@ -14,11 +14,7 @@ except ImportError:
     from psycopg2.extras import DictCursor
     from psycopg2.extensions import cursor as psycopg2_cursor
 
-try:
-    import bittensor as bt
-except ImportError:
-    print("bittensor not found. Please install it manually.")
-    bt = None
+
 
 def get_postgres_connection():
     try:
@@ -29,7 +25,7 @@ def get_postgres_connection():
             password=os.getenv('DB_PASSWORD', 'bettensor_password')
         )
     except psycopg2.Error as e:
-        bt.logging.error(f"Failed to connect to PostgreSQL: {e}")
+        print(f"Failed to connect to PostgreSQL: {e}")
         return None
 
 def wait_for_postgres(max_retries=5, retry_delay=5):
@@ -37,14 +33,14 @@ def wait_for_postgres(max_retries=5, retry_delay=5):
         try:
             pg_conn = get_postgres_connection()
             pg_conn.close()
-            bt.logging.info("Successfully connected to PostgreSQL.")
+            print("Successfully connected to PostgreSQL.")
             return
         except psycopg2.OperationalError:
             if attempt < max_retries - 1:
-                bt.logging.warning(f"PostgreSQL not ready (attempt {attempt + 1}/{max_retries}). Retrying in {retry_delay} seconds...")
+                print(f"PostgreSQL not ready (attempt {attempt + 1}/{max_retries}). Retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
             else:
-                bt.logging.error("Failed to connect to PostgreSQL after multiple attempts.")
+                print("Failed to connect to PostgreSQL after multiple attempts.")
                 raise
 
 def create_postgres_tables(pg_cursor):
@@ -106,9 +102,9 @@ def create_postgres_tables(pg_cursor):
     for table_name, create_query in tables:
         try:
             pg_cursor.execute(create_query)
-            bt.logging.info(f"Created table: {table_name}")
+            print(f"Created table: {table_name}")
         except psycopg2.Error as e:
-            bt.logging.error(f"Error creating table {table_name}: {e}")
+            print(f"Error creating table {table_name}: {e}")
 
 def migrate_data(source_conn, dest_conn):
     source_cursor = source_conn.cursor()
@@ -129,14 +125,24 @@ def migrate_data(source_conn, dest_conn):
     # Migrate games table
     source_cursor.execute("SELECT * FROM games")
     games = source_cursor.fetchall()
-    for game in games:
-        dest_cursor.execute("""
-            INSERT INTO games (
-                gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID,
-                createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (gameID) DO NOTHING
-        """, game)
+    insert_query = """
+    INSERT INTO games (
+        gameID, teamA, teamAodds, teamB, teamBodds, sport, league,
+        externalID, createDate, lastUpdateDate, eventStartDate,
+        active, outcome, tieOdds, canTie
+    ) VALUES (
+        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+        CAST(%s AS BOOLEAN)
+    )
+    """
+    dest_cursor.executemany(insert_query, [
+        (
+            game['gameID'], game['teamA'], game['teamAodds'], game['teamB'],
+            game['teamBodds'], game['sport'], game['league'], game['externalID'],
+            game['createDate'], game['lastUpdateDate'], game['eventStartDate'],
+            game['active'], game['outcome'], game['tieOdds'], game['canTie']
+        ) for game in games
+    ])
 
     # Migrate miner_stats table
     source_cursor.execute("SELECT * FROM miner_stats")
