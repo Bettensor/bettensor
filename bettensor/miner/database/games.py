@@ -97,7 +97,7 @@ class GamesHandler:
             raise
 
     def _ensure_timezone_aware(self, dt):
-        bt.logging.trace(f"Ensuring timezone awareness for datetime: {dt}")
+        #bt.logging.trace(f"Ensuring timezone awareness for datetime: {dt}")
         if isinstance(dt, str):
             dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
         if dt.tzinfo is None:

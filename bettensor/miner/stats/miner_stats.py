@@ -74,13 +74,13 @@ class MinerStatsHandler:
             self.stats['miner_cash'] = self.state_manager.DAILY_CASH
             self.stats['last_daily_reset'] = datetime.now(timezone.utc).isoformat()
             self.state_manager.update_state(self.stats)
-            print(f"DEBUG: Reset daily cash to {self.state_manager.DAILY_CASH}")
+            #print(f"DEBUG: Reset daily cash to {self.state_manager.DAILY_CASH}")
 
     def update_stats_from_predictions(self):
-        print("DEBUG: Updating miner stats from all predictions")
+        #print("DEBUG: Updating miner stats from all predictions")
         with self.lock:
             miner_uid = self.state_manager.miner_uid
-            print(f"DEBUG: Miner UID: {miner_uid}")
+            #print(f"DEBUG: Miner UID: {miner_uid}")
             if miner_uid is None:
                 return
 
@@ -98,7 +98,7 @@ class MinerStatsHandler:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
                 cur.execute(query, (miner_uid,))
                 predictions = cur.fetchall()
-                print(f"DEBUG: Fetched {len(predictions)} predictions")
+                #print(f"DEBUG: Fetched {len(predictions)} predictions")
 
                 total_predictions = 0
                 total_wins = 0
@@ -110,10 +110,10 @@ class MinerStatsHandler:
                 today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
                 
                 for pred in predictions:
-                    print(f"DEBUG: Processing prediction: {pred}")
+                    #print(f"DEBUG: Processing prediction: {pred}")
                     total_predictions += 1
                     total_wager += pred['wager']
-                    print(f"DEBUG: Total wager so far: {total_wager}")
+                    #print(f"DEBUG: Total wager so far: {total_wager}")
 
                     pred_date = pred.get('predictiondate')
                     if pred_date:
@@ -123,7 +123,7 @@ class MinerStatsHandler:
                         if last_prediction_date is None or pred_date > last_prediction_date:
                             last_prediction_date = pred_date
 
-                    print(f"DEBUG: Prediction details - Outcome: {pred['outcome']}, Predicted: {pred['predictedoutcome']}, Wager: {pred['wager']}, Odds: {pred['teamaodds']}/{pred['teambodds']}/{pred['tieodds']}, Team A: {pred['teama']}, Team B: {pred['teamb']}")
+                    #print(f"DEBUG: Prediction details - Outcome: {pred['outcome']}, Predicted: {pred['predictedoutcome']}, Wager: {pred['wager']}, Odds: {pred['teamaodds']}/{pred['teambodds']}/{pred['tieodds']}, Team A: {pred['teama']}, Team B: {pred['teamb']}")
                     if 'Wager Won' in pred['outcome']:
                         total_wins += 1
                         if pred['predictedoutcome'] == pred['teama']:
@@ -134,21 +134,18 @@ class MinerStatsHandler:
                             payout = pred['wager'] * pred['tieodds']
                         else:
                             payout = 0
-                        print(f"DEBUG: Wager won. Payout: {payout}")
+                        #print(f"DEBUG: Wager won. Payout: {payout}")
                         total_earnings += payout
                     elif 'Wager Lost' in pred['outcome']:
                         total_losses += 1
-                        print(f"DEBUG: Wager lost. Payout: 0")
-                    else:
-                        print(f"DEBUG: Unfinished wager. Outcome: {pred['outcome']}")
-
-                    print(f"DEBUG: Total earnings so far: {total_earnings}")
+                        #print(f"DEBUG: Wager lost. Payout: 0")
+                    
 
                 # Calculate current cash
                 current_cash = self.state_manager.DAILY_CASH - daily_wager
 
-                print(f"DEBUG: Final stats - Total predictions: {total_predictions}, Total wins: {total_wins}, Total losses: {total_losses}")
-                print(f"DEBUG: Final stats - Total wager: {total_wager}, Total earnings: {total_earnings}")
+                #print(f"DEBUG: Final stats - Total predictions: {total_predictions}, Total wins: {total_wins}, Total losses: {total_losses}")
+                #print(f"DEBUG: Final stats - Total wager: {total_wager}, Total earnings: {total_earnings}")
 
                 self.stats.update({
                     'miner_lifetime_predictions': total_predictions,
@@ -161,7 +158,7 @@ class MinerStatsHandler:
                 })
                 self.update_win_loss_ratio()
                 self.state_manager.update_state(self.stats)
-                print(f"DEBUG: Updated stats: {self.stats}")
+                #print(f"DEBUG: Updated stats: {self.stats}")
 
             except Exception as e:
                 print(f"DEBUG: Error updating stats from predictions: {str(e)}")

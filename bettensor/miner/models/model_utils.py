@@ -8,13 +8,14 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from huggingface_hub import PyTorchModelHubMixin
 from bettensor.miner.database.database_manager import DatabaseManager
+import time
 
 @dataclass
 class MinerConfig:
     model_prediction: bool = False
 
 class SoccerPredictor:
-    def __init__(self, model_name, label_encoder_path=None, team_averages_path=None, id=0, db_manager=None):
+    def __init__(self, model_name, label_encoder_path=None, team_averages_path=None, id=0, db_manager=None, miner_stats_handler=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self.get_HFmodel(model_name)
         if label_encoder_path is None:
@@ -25,6 +26,8 @@ class SoccerPredictor:
             team_averages_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'team_averages_last_5_games_aug.csv')
         self.team_averages_path = team_averages_path
         self.db_manager = db_manager
+        self.miner_stats_handler = miner_stats_handler
+        self.made_daily_predictions = False
 
         #params
         self.id : int = id
@@ -34,27 +37,30 @@ class SoccerPredictor:
         self.minimum_wager_amount : float = 20.0
         self.maximum_wager_amount : float = 1000
         self.top_n_games : int = 10
+        self.last_param_update = 0
+        self.param_refresh_interval = 300  # 5 minutes in seconds
         self.get_model_params(self.db_manager)
 
 
     def get_model_params(self,db_manager: DatabaseManager):
-        row = db_manager.get_model_params(self.id)
-        self.model_on = row['model_on']
-        self.wager_distribution_steepness = row['wager_distribution_steepness']
-        self.fuzzy_match_percentage = row['fuzzy_match_percentage']
-        self.minimum_wager_amount = row['minimum_wager_amount']
-        self.maximum_wager_amount = row['max_wager_amount']
-        self.top_n_games = row['top_n_games']
+        current_time = time.time()
+        if current_time - self.last_param_update >= self.param_refresh_interval:
+            row = db_manager.get_model_params(self.id)
+            self.model_on = row['model_on']
+            self.wager_distribution_steepness = row['wager_distribution_steepness']
+            self.fuzzy_match_percentage = row['fuzzy_match_percentage']
+            self.minimum_wager_amount = row['minimum_wager_amount']
+            self.maximum_wager_amount = row['max_wager_amount']
+            self.top_n_games = row['top_n_games']
+            self.last_param_update = current_time
 
-
-
-
+ 
     def check_max_wager_vs_miner_cash(self, max_wager):
         '''
         Return the lesser of the max_wager and the miner's cash for model wager distribution.
 
         '''
-        miner_cash = self.db_manager.get_miner_cash(self.id)
+        miner_cash = self.miner_stats_handler.get_miner_cash()
         return min(max_wager, miner_cash)
 
     def load_label_encoder(self, path):

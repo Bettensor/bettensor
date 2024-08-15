@@ -21,7 +21,7 @@ class PredictionsHandler:
         self.miner_uid = state_manager.miner_uid
         self.new_prediction_window = timedelta(hours=24)
         self.stats_handler = MinerStatsHandler(state_manager)
-        self.models = {'soccer': SoccerPredictor(model_name='podos_soccer_model', id=self.miner_uid, db_manager=self.db_manager)}
+        self.models = {'soccer': SoccerPredictor(model_name='podos_soccer_model', id=self.miner_uid, db_manager=self.db_manager, miner_stats_handler=self.stats_handler)}
         self.update_predictions_with_minerid()
         bt.logging.trace("PredictionsHandler initialization complete")
 
@@ -40,7 +40,7 @@ class PredictionsHandler:
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
     def add_prediction(self, prediction: Dict[str, Any]):
-        print(f"DEBUG: Adding prediction: {prediction}")
+        #print(f"DEBUG: Adding prediction: {prediction}")
         # Deduct wager before adding prediction
         wager_amount = prediction.get('wager', 0)
         bt.logging.debug(f"Attempting to deduct wager: {wager_amount}")
@@ -75,7 +75,7 @@ class PredictionsHandler:
             bt.logging.debug(f"Executing query: {query}")
             bt.logging.debug(f"Query parameters: {params}")
             result = self.db_manager.execute_query(query, params)
-            print(f"DEBUG: Prediction added, result: {result}")
+            #print(f"DEBUG: Prediction added, result: {result}")
             if result:
                 inserted_row = result[0] if isinstance(result, list) else result
                 self.stats_handler.update_on_prediction({
@@ -89,7 +89,7 @@ class PredictionsHandler:
                 bt.logging.error(f"Database result: {result}")
                 return {'status': 'error', 'message': "No row returned after insertion"}
         except Exception as e:
-            print(f"DEBUG: Error adding prediction: {str(e)}")
+            #print(f"DEBUG: Error adding prediction: {str(e)}")
             bt.logging.error(f"Error adding prediction: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
             return {'status': 'error', 'message': f"Error adding prediction: {str(e)}"}
@@ -153,7 +153,6 @@ class PredictionsHandler:
             away_teams = [game['away_team'] for game in matched_games]
             odds = [game['odds'] for game in matched_games]
 
-            # Now you can proceed with your model predictions using these matched games
             model_predictions = model.predict_games(home_teams, away_teams, odds)
             
             for game_data, prediction in zip(matched_games, model_predictions):
@@ -225,6 +224,11 @@ class PredictionsHandler:
     def process_game_outcome(self, prediction: TeamGamePrediction, game_data: TeamGame) -> Optional[TeamGamePrediction]:
         bt.logging.trace(f"Processing game outcome for prediction: {prediction.predictionID}, game: {game_data.id}")
         
+        # Check if the prediction already has a non-"Unfinished" outcome
+        if prediction.outcome != "Unfinished":
+            bt.logging.debug(f"Prediction {prediction.predictionID} already processed. Skipping.")
+            return prediction
+
         actual_outcome = self._map_game_outcome(game_data.outcome)
         predicted_outcome = self._map_predicted_outcome(prediction.predictedOutcome, game_data)
 
@@ -237,21 +241,22 @@ class PredictionsHandler:
         else:
             new_outcome = "Wager Lost"
 
-        query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
-        self.db_manager.execute_query(query, (new_outcome, prediction.predictionID))
-        prediction.outcome = new_outcome
-        bt.logging.info(f"Updated prediction {prediction.predictionID} outcome to {new_outcome}")
+        if new_outcome != prediction.outcome:
+            query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
+            self.db_manager.execute_query(query, (new_outcome, prediction.predictionID))
+            prediction.outcome = new_outcome
+            bt.logging.info(f"Updated prediction {prediction.predictionID} outcome to {new_outcome}")
 
-        if new_outcome != "Unfinished":
-            # Calculate earnings
-            earnings = self.calculate_earnings(prediction.wager, prediction, game_data.outcome)
+            if new_outcome != "Unfinished":
+                # Calculate earnings
+                earnings = self.calculate_earnings(prediction.wager, prediction, game_data.outcome)
 
-            # Update stats
-            self.stats_handler.update_on_game_result({
-                'outcome': new_outcome,
-                'earnings': earnings,
-                'wager': prediction.wager
-            })
+                # Update stats
+                self.stats_handler.update_on_game_result({
+                    'outcome': new_outcome,
+                    'earnings': earnings,
+                    'wager': prediction.wager
+                })
 
         return prediction
 
@@ -350,7 +355,7 @@ class PredictionsHandler:
         return predictions
 
     def get_predictions_for_game(self, external_id: str) -> List[TeamGamePrediction]:
-        bt.logging.trace(f"Getting predictions for game: {external_id}")
+        #bt.logging.trace(f"Getting predictions for game: {external_id}")
         query = """
         SELECT predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
                teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
