@@ -9,11 +9,12 @@ This guide provides detailed information for setting up and running a Bettensor 
 3. [Choosing Your Interface](#choosing-your-interface)
 4. [Running Your Miner](#running-your-miner)
 5. [Submitting Predictions](#submitting-predictions)
-6. [Managing Multiple Miners](#managing-multiple-miners)
-7. [Security Considerations](#security-considerations)
-8. [Troubleshooting](#troubleshooting)
-9. [Frequently Asked Questions](#frequently-asked-questions)
-10. [Database Setup](#database-setup)
+6. [Model Predictions](#model-predictions)
+7. [Managing Multiple Miners](#managing-multiple-miners)
+8. [Security Considerations](#security-considerations)
+9. [Troubleshooting](#troubleshooting)
+10. [Frequently Asked Questions](#frequently-asked-questions)
+11. [Database Setup](#database-setup)
 
 ## Getting Started
 
@@ -175,6 +176,34 @@ Coming Soon... New Interfaces
 
 If you chose the Central Server option, log in to our [web dashboard](https://bettensor.com/dashboard) to connect your miner and submit predictions.
 </details>
+
+
+
+## Model Predictions
+
+**DISCLAIMER**: This is the first iteration of the model, you may be at risk of deregulation if you have the model predict for every soccer game, and its bets happen to turn out poor.
+
+**Version 1.0** introduces the first PyTorch model for automatic game predictions and wager betting. Podos is a small baseline transformer model trained on 100,000 soccer games and 569 teams. Some teams and leagues are not available yet, but will be coming soon.
+
+Details about the model can be found at our [HuggingFace](https://huggingface.co/Bettensor/podos_soccer_model) repository. We encourage you to download the model, train, modify, or improve it.
+Feel free to tag us if you make an improvement or change to Podos you're excited about!
+
+1. To use this model for soccer predictions, and set parameters:
+```bash
+python bettensor/miner/menu.py
+```
+- Podos by default bets with the maximum daily wager amount of 1000. If you want to leave yourself room to manually bet on certain soccer games, consider lowering the max wager amount.
+- The model will predict on up to the top n number of games it is confident on. The amount it bets will sum to the maximum daily wager amount. Namely, if the model predicts on 5 games, the individual bets will sum to the total $1000.
+- The model uses a sigmoid curve to allocate larger bets to games it is more confident on, the slope of this curve can be tuned with wager distribution steepness. Higher values will result in larger bets on confident games.
+
+**Parameters available to tweak**:
+- Model predictions - toggle model predictions on or off
+- Wager distribution steepness - determines the steepness of the sigmoid curve
+- Fuzzy match percentage - determines strength of matching similar team names (used to fix non-standardized team names, recommended to stay at 80)
+- Minimum wager amount - minimum amount that the model will bet with
+- Maximum wager amount - max amount model will bet with in total
+
+
 
 ## Managing Multiple Miners
 
