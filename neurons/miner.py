@@ -129,7 +129,7 @@ def main(miner: BettensorMiner):
                         miner.stats_handler.update_current_incentive(current_incentive)
 
 
-            if miner.step % 2400 == 0:
+            if miner.step % 10800 == 0:
                 bt.logging.info("Checking and resetting daily cash if necessary")
                 miner.stats_handler.check_and_reset_daily_cash()
                 bt.logging.info(f"Miner UID: {miner.miner_uid}")
@@ -150,16 +150,7 @@ def main(miner: BettensorMiner):
                             bt.logging.info("No soccer games to process")
 
                     
-                """ if miner.step %2400 == 300:
-                    soccer_games = miner.games_handler.get_games_by_sport("soccer")
-                    bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
-
-                    if soccer_games:
-                        processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
-                        bt.logging.info(f"Processed {len(processed_games)} soccer games")
-                    else:
-                        bt.logging.info("No soccer games to process") """
-
+        
                 
 
             miner.step += 1
