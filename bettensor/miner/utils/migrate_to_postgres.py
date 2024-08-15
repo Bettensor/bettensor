@@ -214,29 +214,31 @@ def setup_postgres(sqlite_db_path):
     except Exception as e:
         print(f"Error creating database: {e}. Proceeding with existing database.")
 
-    wait_for_postgres()
-    pg_conn = get_postgres_connection()
-
-    if not pg_conn:
-        print("Failed to connect to PostgreSQL. Please set up PostgreSQL manually.")
-        return
-
-    if not os.path.exists(sqlite_db_path):
-        print(f"SQLite database file not found: {sqlite_db_path}")
-        return
-
     try:
+        wait_for_postgres()
+        pg_conn = get_postgres_connection()
+
+        if not pg_conn:
+            print("Failed to connect to PostgreSQL. Please set up PostgreSQL manually.")
+            return
+
+        if not os.path.exists(sqlite_db_path):
+            print(f"SQLite database file not found: {sqlite_db_path}")
+            return
+
         sqlite_conn = sqlite3.connect(sqlite_db_path)
-        with pg_conn.cursor(cursor_factory=DictCursor) as pg_cursor:
+        with pg_conn.cursor() as pg_cursor:
             create_postgres_tables(pg_cursor)
             migrate_data(sqlite_conn, pg_conn)
         pg_conn.commit()
         print("PostgreSQL setup completed successfully")
     except Exception as e:
         print(f"Error during PostgreSQL setup: {e}")
-        pg_conn.rollback()
+        if 'pg_conn' in locals():
+            pg_conn.rollback()
     finally:
-        pg_conn.close()
+        if 'pg_conn' in locals():
+            pg_conn.close()
         if 'sqlite_conn' in locals():
             sqlite_conn.close()
 
