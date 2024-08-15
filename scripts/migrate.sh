@@ -25,6 +25,12 @@ install_dependencies() {
 # Function to install and configure Redis
 setup_redis() {
     echo "Setting up Redis..."
+    if ! command -v redis-server &> /dev/null; then
+        echo "Redis is not installed. Installing Redis..."
+        sudo apt-get update
+        sudo apt-get install -y redis-server
+    fi
+
     if systemctl is-active --quiet redis-server; then
         echo "Redis is already running"
     else
@@ -37,17 +43,21 @@ setup_redis() {
 
     sudo systemctl enable redis-server || echo "Warning: Failed to enable Redis server. Continuing with migration..."
 
-    if ! grep -q "bind 0.0.0.0" /etc/redis/redis.conf; then
-        echo "Modifying Redis configuration to allow connections from anywhere"
-        if sudo sed -i 's/bind 127.0.0.1/bind 0.0.0.0/' /etc/redis/redis.conf; then
-            if ! sudo systemctl restart redis-server; then
-                echo "Warning: Failed to restart Redis server after configuration change. Continuing with migration..."
+    if [ -f /etc/redis/redis.conf ]; then
+        if ! grep -q "bind 0.0.0.0" /etc/redis/redis.conf; then
+            echo "Modifying Redis configuration to allow connections from anywhere"
+            if sudo sed -i 's/bind 127.0.0.1/bind 0.0.0.0/' /etc/redis/redis.conf; then
+                if ! sudo systemctl restart redis-server; then
+                    echo "Warning: Failed to restart Redis server after configuration change. Continuing with migration..."
+                fi
+            else
+                echo "Warning: Failed to modify Redis configuration. Continuing with migration..."
             fi
         else
-            echo "Warning: Failed to modify Redis configuration. Continuing with migration..."
+            echo "Redis configuration already allows connections from anywhere"
         fi
     else
-        echo "Redis configuration already allows connections from anywhere"
+        echo "Warning: Redis configuration file not found. Continuing with migration..."
     fi
 
     if systemctl is-active --quiet redis-server; then

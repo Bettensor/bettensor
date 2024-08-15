@@ -23,7 +23,7 @@ def get_postgres_connection():
         )
     except psycopg2.Error as e:
         bt.logging.error(f"Failed to connect to PostgreSQL: {e}")
-        raise
+        return None
 
 def wait_for_postgres(max_retries=5, retry_delay=5):
     for attempt in range(max_retries):
@@ -112,21 +112,24 @@ def migrate_data(source_conn, dest_conn):
     source_cursor.execute("SELECT * FROM games")
     games = source_cursor.fetchall()
     for game in games:
+        # Convert the last element (canTie) to boolean
+        game = list(game)
+        game[-1] = bool(game[-1])
         dest_cursor.execute("""
             INSERT INTO games (gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID,
                                createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (externalID) DO NOTHING
-        """, game)
+        """, tuple(game))
 
     # Migrate predictions table
     source_cursor.execute("SELECT * FROM predictions")
     predictions = source_cursor.fetchall()
     for prediction in predictions:
         dest_cursor.execute("""
-            INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-                                     teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO predictions (predictionID, gameID, minerID, prediction, wager, odds,
+                                     createDate, lastUpdateDate, outcome, payout)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (predictionID) DO NOTHING
         """, prediction)
 
@@ -135,19 +138,51 @@ def migrate_data(source_conn, dest_conn):
     miner_stats = source_cursor.fetchall()
     for stat in miner_stats:
         dest_cursor.execute("""
-            INSERT INTO miner_stats (miner_hotkey, miner_uid, miner_cash, miner_current_incentive,
-                                     miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager,
-                                     miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses,
-                                     miner_win_loss_ratio, last_daily_reset)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO miner_stats (miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_cash,
+                                     miner_current_incentive, miner_last_prediction_date,
+                                     miner_lifetime_earnings, miner_lifetime_wager,
+                                     miner_lifetime_predictions, miner_lifetime_wins,
+                                     miner_lifetime_losses, miner_win_loss_ratio,
+                                     miner_status, last_daily_reset)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (miner_hotkey) DO NOTHING
         """, stat)
 
     dest_conn.commit()
 
+def database_exists(cursor, db_name):
+    cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+    return cursor.fetchone() is not None
+
+def create_database_if_not_exists():
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv('DB_HOST', 'localhost'),
+            user=os.getenv('DB_USER', 'root'),
+            password=os.getenv('DB_PASSWORD', 'bettensor_password')
+        )
+        conn.autocommit = True
+        cursor = conn.cursor()
+        
+        if not database_exists(cursor, os.getenv('DB_NAME', 'bettensor')):
+            cursor.execute(f"CREATE DATABASE {os.getenv('DB_NAME', 'bettensor')}")
+            bt.logging.info(f"Database {os.getenv('DB_NAME', 'bettensor')} created successfully")
+        else:
+            bt.logging.info(f"Database {os.getenv('DB_NAME', 'bettensor')} already exists")
+        
+        cursor.close()
+        conn.close()
+    except psycopg2.Error as e:
+        bt.logging.error(f"Error creating database: {e}")
+
 def setup_postgres(sqlite_db_path):
+    create_database_if_not_exists()
     wait_for_postgres()
     pg_conn = get_postgres_connection()
+
+    if not pg_conn:
+        bt.logging.error("Failed to connect to PostgreSQL")
+        return
 
     if not os.path.exists(sqlite_db_path):
         bt.logging.error(f"SQLite database file not found: {sqlite_db_path}")
