@@ -38,6 +38,25 @@ def table_exists(cursor, table_name):
     cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
     return cursor.fetchone() is not None
 
+def verify_migration(cursor, target_version):
+    tables = ['predictions', 'games', 'miner_stats']
+    for table in tables:
+        cursor.execute(f"SELECT COUNT(*) FROM {table}")
+        count = cursor.fetchone()[0]
+        if count == 0:
+            bt.logging.error(f"Migration verification failed: {table} is empty")
+            return False
+    
+    # Check if database_version was updated
+    cursor.execute("SELECT version FROM database_version ORDER BY timestamp DESC LIMIT 1")
+    current_version = cursor.fetchone()[0]
+    if current_version != target_version:
+        bt.logging.error(f"Migration verification failed: version mismatch. Expected {target_version}, got {current_version}")
+        return False
+
+    bt.logging.info("Migration verification passed")
+    return True
+
 def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1):
     bt.logging.info(f"Starting database migration to version {target_version}")
     
@@ -114,6 +133,7 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
                 """)
                 execute_with_retry(cursor, "DROP TABLE games")
                 execute_with_retry(cursor, "ALTER TABLE games_new RENAME TO games")
+                execute_with_retry(cursor, "CREATE UNIQUE INDEX IF NOT EXISTS idx_games_external_id ON games(externalID)")
             
             # Migrate miner_stats table
             if table_exists(cursor, 'miner_stats'):
@@ -158,6 +178,15 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
             bt.logging.error(f"Unknown version {current_version}")
             return False
         
+    # Add miner_active table
+    bt.logging.info("Creating miner_active table")
+    execute_with_retry(cursor, """
+        CREATE TABLE IF NOT EXISTS miner_active (
+            miner_uid TEXT PRIMARY KEY,
+            last_active_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     # Update the database version after all migration steps
     bt.logging.info(f"Updating database version to {target_version}")
     execute_with_retry(cursor, """
@@ -166,6 +195,14 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
     """, (target_version,))
     
     conn.commit()
+    
+    # Call verify_migration function
+    if verify_migration(cursor, target_version):
+        bt.logging.info("Migration verification successful")
+    else:
+        bt.logging.error("Migration verification failed")
+        return False
+    
     bt.logging.info(f"Database migration to version {target_version} completed successfully")
     return True
 

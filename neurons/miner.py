@@ -4,14 +4,14 @@
 # Copyright © 2023 <your name>
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
+# documentation files (the "Software"), to deal in the Software without restriction, including without limitation
 # the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
 # and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
 # The above copyright notice and this permission notice shall be included in all copies or substantial portions of
 # the Software.
 
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
 # THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
@@ -25,7 +25,9 @@ import time
 import bittensor as bt
 from bettensor import __version__ as version
 from bettensor.miner.bettensor_miner import BettensorMiner
-
+import redis
+import json
+import threading
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -89,36 +91,67 @@ def main(miner: BettensorMiner):
         try:
             # Below: Periodically update our knowledge of the network graph.
             if miner.step % 20 == 0:
-                # if miner.step % 300 == 0:
-                # Check if the miners hotkey is on the remote blacklist
-                # miner.check_remote_blacklist()
-
-                if miner.step % 600 == 0:
-                    bt.logging.debug(
-                        f"Syncing metagraph: {miner.metagraph} with subtensor: {miner.subtensor}"
-                    )
-                    miner.state_manager.update_current_incentive(miner.get_current_incentive())
-
-                    miner.metagraph.sync(subtensor=miner.subtensor)
-
+                miner.db_manager.update_miner_activity(miner.miner_uid)
+                
+                miner.metagraph.sync(subtensor=miner.subtensor)
                 miner.metagraph = miner.subtensor.metagraph(miner.neuron_config.netuid)
+                miner_uid_int = int(miner.miner_uid)
+                stake = miner.metagraph.S[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.S) else 0
+                rank = miner.metagraph.R[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.R) else 0
+                trust = miner.metagraph.T[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.T) else 0
+                consensus = miner.metagraph.C[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.C) else 0
+                incentive = miner.metagraph.I[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.I) else 0
+                emission = miner.metagraph.E[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.E) else 0
+
                 log = (
                     f"Version:{version} | "
                     f"Blacklist:{miner.hotkey_blacklisted} | "
                     f"Step:{miner.step} | "
                     f"Block:{miner.metagraph.block.item()} | "
-                    f"Stake:{miner.metagraph.S[miner.miner_uid]} | "
-                    f"Rank:{miner.metagraph.R[miner.miner_uid]} | "
-                    f"Trust:{miner.metagraph.T[miner.miner_uid]} | "
-                    f"Consensus:{miner.metagraph.C[miner.miner_uid] } | "
-                    f"Incentive:{miner.metagraph.I[miner.miner_uid]} | "
-                    f"Emission:{miner.metagraph.E[miner.miner_uid]}"
+                    f"Stake:{stake} | "
+                    f"Rank:{rank} | "
+                    f"Trust:{trust} | "
+                    f"Consensus:{consensus} | "
+                    f"Incentive:{incentive} | "
+                    f"Emission:{emission}"
                 )
 
                 bt.logging.info(log)
                 bt.logging.info(f"Miner UID: {miner.miner_uid}")
 
-                #bt.logging.warning(f"TESTING AUTO UPDATE!!")
+            if miner.step % 600 == 0:
+                    bt.logging.debug(
+                        f"Syncing metagraph: {miner.metagraph} with subtensor: {miner.subtensor}"
+                    )
+                # Update the current incentive
+                    current_incentive = miner.metagraph.I[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.I) else 0
+                    if current_incentive is not None:
+                        miner.stats_handler.update_current_incentive(current_incentive)
+
+
+            if miner.step % 10800 == 0:
+                bt.logging.info("Checking and resetting daily cash if necessary")
+                miner.stats_handler.check_and_reset_daily_cash()
+                bt.logging.info(f"Miner UID: {miner.miner_uid}")
+                bt.logging.info(f"Model on: {miner.predictions_handler.models['soccer'].model_on}")
+                if miner.predictions_handler.models['soccer'].model_on:
+                    soccer_games = miner.games_handler.get_games_by_sport("soccer")
+                    bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
+                    miner_cash = miner.stats_handler.get_miner_cash()
+                    bt.logging.info(f"Miner cash: {miner_cash}")
+                    bt.logging.info(f"Made daily predictions: {miner.predictions_handler.models['soccer'].made_daily_predictions}")
+                    if miner_cash < miner.predictions_handler.models['soccer'].minimum_wager_amount or miner_cash/len(soccer_games) < miner.predictions_handler.models['soccer'].minimum_wager_amount and not miner.predictions_handler.models['soccer'].made_daily_predictions:
+                        bt.logging.warn(f"Miner cash is insufficient for model predictions. Skipping this step.")
+                    else:
+                        if soccer_games:
+                            processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
+                            bt.logging.info(f"Processed {len(processed_games)} soccer games")
+                        else:
+                            bt.logging.info("No soccer games to process")
+
+                    
+        
+                
 
             miner.step += 1
             time.sleep(1)
@@ -145,20 +178,20 @@ if __name__ == "__main__":
         default="/var/log/bittensor",
         help="Provide the log directory",
     )
-
     parser.add_argument(
         "--miner_set_weights",
         type=str,
         default="False",
         help="Determines if miner should set weights or not",
     )
-
     parser.add_argument(
         "--validator_min_stake",
         type=float,
         default=10000.0,
         help="Determine the minimum stake the validator should have to accept requests",
     )
+    parser.add_argument("--REDIS_HOST", type=str, default="localhost", help="Redis host")
+    parser.add_argument("--REDIS_PORT", type=int, default=6379, help="Redis port")
 
     # Create a miner based on the Class definitions
     subnet_miner = BettensorMiner(parser=parser)

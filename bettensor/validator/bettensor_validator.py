@@ -392,45 +392,53 @@ class BettensorValidator(BaseNeuron):
                     )
                     continue
 
-                # Calculate total wager for the date
-                cursor.execute(
-                    """
-                    SELECT SUM(wager) FROM predictions
-                    WHERE minerID = ? AND DATE(predictionDate) = DATE(?)
-                """,
-                    (minerId, predictionDate),
-                )
-                total_wager = cursor.fetchone()[0] or 0
-                total_wager += wager
-
-                if total_wager > 1000:
-                    bt.logging.debug(
-                        f"Total wager for the date exceeds $1000. Skipping this prediction."
+                conn.execute("BEGIN TRANSACTION")
+                try:
+                    # Calculate total wager for the date, excluding the current prediction
+                    cursor.execute(
+                        """
+                        SELECT SUM(wager) FROM predictions
+                        WHERE minerID = ? AND DATE(predictionDate) = DATE(?)
+                    """,
+                        (minerId, predictionDate),
                     )
-                    continue
+                    current_total_wager = cursor.fetchone()[0] or 0
+                    new_total_wager = current_total_wager + wager
 
-                # Insert new prediction
-                cursor.execute(
-                    """
-                    INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, predictedOutcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, canOverwrite, outcome)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        predictionID,
-                        teamGameID,
-                        minerId,
-                        predictionDate,
-                        predictedOutcome,
-                        teamA,
-                        teamB,
-                        wager,
-                        teamAodds,
-                        teamBodds,
-                        tieOdds,
-                        False,
-                        outcome,
-                    ),
-                )
+                    if new_total_wager > 1000:
+                        bt.logging.debug(
+                            f"Prediction for miner {minerId} would exceed daily limit. Current total: ${current_total_wager}, Attempted wager: ${wager}"
+                        )
+                        conn.execute("ROLLBACK")
+                        continue  # Skip this prediction but continue processing others
+
+                    # Insert new prediction
+                    cursor.execute(
+                        """
+                        INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, predictedOutcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, canOverwrite, outcome)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            predictionID,
+                            teamGameID,
+                            minerId,
+                            predictionDate,
+                            predictedOutcome,
+                            teamA,
+                            teamB,
+                            wager,
+                            teamAodds,
+                            teamBodds,
+                            tieOdds,
+                            False,
+                            outcome, 
+                        ),
+                    )
+                    conn.execute("COMMIT")
+                    bt.logging.debug(f"Inserted prediction for miner {minerId}. New total wager: ${new_total_wager}")
+                except sqlite3.Error as e:
+                    conn.execute("ROLLBACK")
+                    bt.logging.error(f"An error occurred: {e}")
 
         # Commit changes and close the connection
         conn.commit()

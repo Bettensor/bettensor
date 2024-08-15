@@ -1,103 +1,107 @@
-import queue
-import sqlite3
-import os
-import threading
-import time
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from psycopg2.pool import SimpleConnectionPool
 import bittensor as bt
-from contextlib import asynccontextmanager, contextmanager
-from queue import Queue
-from bettensor.miner.utils.migrate import migrate_database
-from bettensor import __database_version__
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from packaging import version
+import traceback
+import os
+import time
 
 class DatabaseManager:
-    _instance = None
-    _lock = threading.Lock()
-
-    def __init__(self, db_path=None, max_connections=10):
-        if db_path is None:
-            # Use a relative path to ./data directory
-            db_path = os.path.join(os.getcwd(), 'data', 'miner.db')
-        self.db_path = db_path
-        self.target_version = __database_version__
-        bt.logging.info(f"Initializing DatabaseManager with target version: {self.target_version}")
+    def __init__(self, db_name, db_user, db_password, db_host='localhost', db_port=5432, max_connections=10):
+        self.db_name = db_name
+        self.db_user = db_user
+        self.db_password = db_password
+        self.db_host = db_host
+        self.db_port = db_port
+        self.max_connections = max_connections
         
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        
+        bt.logging.info("Initializing DatabaseManager")
+        bt.logging.info(f"Checking root user")
+        self.is_root = self.check_root_user()
+        bt.logging.info(f"Ensuring database exists")
+        self.ensure_database_exists()
+        bt.logging.info(f"Waiting for database")
+        self.wait_for_database()
+        bt.logging.info(f"Creating connection pool")
+        self.connection_pool = self.create_connection_pool()
+        bt.logging.info(f"Creating tables")
+        self.create_tables()
+        bt.logging.info("DatabaseManager initialization complete")
 
-        self._initialize_database()
-        self.connection_pool = Queue(maxsize=max_connections)
-        for _ in range(max_connections):
-            self.connection_pool.put(self._create_connection())
+    def check_root_user(self):
+        return self.db_user == 'root'
 
-    def _create_connection(self):
-        max_retries = 5
-        retry_delay = 1
-        for attempt in range(max_retries):
-            try:
-                conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
-                conn.execute("PRAGMA busy_timeout = 30000;")
-                return conn
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e) and attempt < max_retries - 1:
-                    bt.logging.warning(f"Database is locked. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
-                    time.sleep(retry_delay)
-                else:
-                    raise
-        raise sqlite3.OperationalError("Failed to create database connection after multiple attempts")
-
-    def _initialize_database(self):
-        bt.logging.info("Initializing database")
-        conn = self._create_connection()
+    def ensure_database_exists(self):
+        conn = None
         try:
-            with conn:
-                cursor = conn.cursor()
+            # Connect to the default 'postgres' database
+            conn = psycopg2.connect(
+                dbname='postgres',
+                user=self.db_user,
+                password=self.db_password,
+                host=self.db_host,
+                port=self.db_port
+            )
+            conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+            
+            with conn.cursor() as cur:
+                # Check if the database exists
+                cur.execute(f"SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (self.db_name,))
+                exists = cur.fetchone()
                 
-                # Create database_version table if it doesn't exist
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS database_version (
-                        version TEXT PRIMARY KEY,
-                        timestamp TEXT
-                    )
-                """)
-                
-                # Check current version
-                cursor.execute("SELECT version FROM database_version ORDER BY timestamp DESC LIMIT 1")
-                result = cursor.fetchone()
-                current_version = result[0] if result else '0.0.0'
-                
-                bt.logging.info(f"Current database version: {current_version}")
-                
-                if current_version != __database_version__:
-                    bt.logging.info(f"Migrating database from {current_version} to {__database_version__}")
-                    if not migrate_database(conn, self.db_path, __database_version__):
-                        raise Exception("Database migration failed")
-                    
-                    bt.logging.info("Updating database_version table")
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO database_version (version, timestamp)
-                        VALUES (?, datetime('now'))
-                    """, (__database_version__,))
-                    conn.commit()
-                    bt.logging.info(f"Database version updated to {__database_version__}")
+                if not exists:
+                    bt.logging.info(f"Creating database {self.db_name}")
+                    # Create the database
+                    cur.execute(f"CREATE DATABASE {self.db_name}")
+                    bt.logging.info(f"Database {self.db_name} created successfully")
                 else:
-                    bt.logging.info("Database is already at the latest version")
-                
-                # Ensure all necessary tables exist
-                self._create_tables(cursor)
-                
-        except Exception as e:
-            bt.logging.error(f"Failed to initialize database: {e}")
+                    bt.logging.info(f"Database {self.db_name} already exists")
+        
+        except psycopg2.Error as e:
+            bt.logging.error(f"Error ensuring database exists: {e}")
             raise
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
-    def _create_tables(self, cursor):
-        bt.logging.info("Creating predictions table")
-        cursor.execute("""
+    def wait_for_database(self):
+        max_retries = 5
+        retry_delay = 5  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                with psycopg2.connect(
+                    host=self.db_host,
+                    port=self.db_port,
+                    user=self.db_user,
+                    password=self.db_password,
+                    database=self.db_name
+                ) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+                bt.logging.info("Successfully connected to the database.")
+                return
+            except psycopg2.OperationalError:
+                if attempt < max_retries - 1:
+                    bt.logging.warning(f"Database not ready (attempt {attempt + 1}/{max_retries}). Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    bt.logging.error("Failed to connect to the database after multiple attempts.")
+                    raise
+
+    def create_connection_pool(self):
+        return SimpleConnectionPool(
+            1, self.max_connections,
+            host=self.db_host,
+            port=self.db_port,
+            database=self.db_name,
+            user=self.db_user,
+            password=self.db_password
+        )
+
+    def create_tables(self):
+        tables = [
+            ("predictions", """
             CREATE TABLE IF NOT EXISTS predictions (
                 predictionID TEXT PRIMARY KEY, 
                 teamGameID TEXT, 
@@ -112,10 +116,8 @@ class DatabaseManager:
                 tieOdds REAL,
                 outcome TEXT
             )
-        """)
-        
-        bt.logging.info("Creating games table")
-        cursor.execute("""
+            """),
+            ("games", """
             CREATE TABLE IF NOT EXISTS games (
                 gameID TEXT PRIMARY KEY,
                 teamA TEXT,
@@ -124,7 +126,7 @@ class DatabaseManager:
                 teamBodds REAL,
                 sport TEXT,
                 league TEXT,
-                externalID TEXT,
+                externalID TEXT UNIQUE,
                 createDate TEXT,
                 lastUpdateDate TEXT,
                 eventStartDate TEXT,
@@ -133,10 +135,8 @@ class DatabaseManager:
                 tieOdds REAL,
                 canTie BOOLEAN
             )
-        """)
-        
-        bt.logging.info("Creating miner_stats table")
-        cursor.execute("""
+            """),
+            ("miner_stats", """
             CREATE TABLE IF NOT EXISTS miner_stats (
                 miner_hotkey TEXT PRIMARY KEY,
                 miner_uid INTEGER,
@@ -152,69 +152,155 @@ class DatabaseManager:
                 miner_win_loss_ratio REAL,
                 last_daily_reset TEXT
             )
-        """)
-
-    def get_table_info(self, table_name):
-        with self.get_cursor() as cursor:
-            cursor.execute(f"PRAGMA table_info({table_name})")
-            return cursor.fetchall()
-
-    @classmethod
-    def get_instance(cls, db_path, max_connections=10):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls(db_path, max_connections)
-        return cls._instance
-
-    @contextmanager
-    def get_cursor(self):
-        max_retries = 5
-        retry_delay = 1
-        for attempt in range(max_retries):
+            """),
+            ("model_params", """
+            CREATE TABLE IF NOT EXISTS model_params (
+                id SERIAL PRIMARY KEY,
+                model_on BOOLEAN,
+                wager_distribution_steepness INTEGER,
+                fuzzy_match_percentage INTEGER,
+                minimum_wager_amount FLOAT,
+                max_wager_amount FLOAT,
+                top_n_games INTEGER
+            )
+            """),
+            ("miner_active", """
+            CREATE TABLE IF NOT EXISTS miner_active (
+                miner_uid TEXT PRIMARY KEY,
+                last_active_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+        ]
+        
+        for table_name, create_query in tables:
             try:
-                connection = self.connection_pool.get(timeout=30)
-                try:
-                    cursor = connection.cursor()
-                    yield cursor
-                    connection.commit()
-                    bt.logging.debug("Database transaction committed successfully")
-                    return
-                except sqlite3.OperationalError as e:
-                    if "database is locked" in str(e) and attempt < max_retries - 1:
-                        bt.logging.warning(f"Database is locked. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
-                        time.sleep(retry_delay)
+                self.execute_query(create_query)
+                bt.logging.info(f"Created table: {table_name}")
+            except Exception as e:
+                bt.logging.error(f"Error creating table {table_name}: {e}")
+
+    def initialize_default_model_params(self, miner_uid):
+        bt.logging.info(f"Initializing default model params for miner: {miner_uid}")
+        self.ensure_model_params_table_exists()
+        self.ensure_miner_params_exist(miner_uid)
+
+    def ensure_model_params_table_exists(self):
+        query = """
+        CREATE TABLE IF NOT EXISTS model_params (
+            id SERIAL PRIMARY KEY,
+            model_on BOOLEAN,
+            wager_distribution_steepness INTEGER,
+            fuzzy_match_percentage INTEGER,
+            minimum_wager_amount FLOAT,
+            max_wager_amount FLOAT,
+            top_n_games INTEGER
+        )
+        """
+        self.execute_query(query)
+
+    def ensure_miner_params_exist(self, miner_uid):
+        default_params = {
+            'model_on': False,
+            'wager_distribution_steepness': 1,
+            'fuzzy_match_percentage': 80,
+            'minimum_wager_amount': 1.0,
+            'max_wager_amount': 100.0,
+            'top_n_games': 10
+        }
+        
+        query = "SELECT * FROM model_params WHERE id = %s"
+        result = self.execute_query(query, (miner_uid,))
+        
+        if not result:
+            insert_query = """
+            INSERT INTO model_params (
+                id, model_on, wager_distribution_steepness, fuzzy_match_percentage,
+                minimum_wager_amount, max_wager_amount, top_n_games
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            self.execute_query(insert_query, (miner_uid, *default_params.values()))
+
+    def get_model_params(self, miner_uid):
+        query = "SELECT * FROM model_params WHERE id = %s"
+        result = self.execute_query(query, (miner_uid,))
+        return result[0] if result else None
+
+    def update_model_params(self, miner_uid, params):
+        query = """
+        UPDATE model_params SET
+            model_on = %s,
+            wager_distribution_steepness = %s,
+            fuzzy_match_percentage = %s,
+            minimum_wager_amount = %s,
+            max_wager_amount = %s,
+            top_n_games = %s
+        WHERE id = %s
+        """
+        self.execute_query(query, (*params.values(), miner_uid))
+
+    def execute_query(self, query, params=None):
+        # print(f"DatabaseManager: Executing query: {query}")
+        # print(f"DatabaseManager: Query parameters: {params}")
+        try:
+            with self.connection_pool.getconn() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, params)
+                    if query.strip().upper().startswith("SELECT"):
+                        result = cur.fetchall()
                     else:
-                        bt.logging.error(f"Database operation failed: {e}")
-                        raise
-                finally:
-                    self.connection_pool.put(connection)
-            except queue.Empty:
-                if attempt < max_retries - 1:
-                    bt.logging.warning(f"Connection pool is empty. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
-                    time.sleep(retry_delay)
-                else:
-                    bt.logging.error("Failed to get a database connection from the pool after multiple attempts")
-                    raise sqlite3.OperationalError("Failed to get a database connection from the pool after multiple attempts")
-        bt.logging.error("Failed to execute database operation after multiple attempts")
-        raise sqlite3.OperationalError("Failed to execute database operation after multiple attempts")
+                        result = cur.rowcount
+                        conn.commit()
+                    # print(f"DatabaseManager: Query result: {result}")
+                    return result
+        except Exception as e:
+            # print(f"DatabaseManager: Error executing query: {str(e)}")
+            # print(f"DatabaseManager: Traceback: {traceback.format_exc()}")
+            raise
+        finally:
+            self.connection_pool.putconn(conn)
 
-    def close_all(self):
-        while not self.connection_pool.empty():
-            conn = self.connection_pool.get()
-            conn.close()
+    def execute_batch(self, query, params_list):
+        conn, cur = None, None
+        try:
+            conn = self.connection_pool.getconn()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            bt.logging.debug(f"Executing batch query: {query}")
+            bt.logging.debug(f"Number of parameter sets: {len(params_list)}")
+            
+            cur.executemany(query, params_list)
+            conn.commit()
+            bt.logging.debug("Batch query executed successfully")
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            bt.logging.error(f"Error in execute_batch: {str(e)}")
+            bt.logging.error(f"Query: {query}")
+            bt.logging.error(f"Params: {params_list}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            raise
+        finally:
+            if cur:
+                cur.close()
+            if conn:
+                self.connection_pool.putconn(conn)
 
-def get_db_manager(max_connections=10, state_manager=None, miner_uid=None):
-    config = bt.config()
-    db_path = getattr(config, 'db_path', None)
-    
-    if db_path is None:
-        bt.logging.warning("db_path not found in config. Using default path.")
-        db_path = os.path.join(os.getcwd(), 'data', 'miner.db')
-    
-    bt.logging.info(f"Using database path: {db_path}")
-    
-    # Ensure the directory exists
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    
-    return DatabaseManager.get_instance(db_path, max_connections)
+    def close(self):
+        self.connection_pool.closeall()
+
+    def ensure_miner_active_table_exists(self):
+        query = """
+        CREATE TABLE IF NOT EXISTS miner_active (
+            miner_uid TEXT PRIMARY KEY,
+            last_active_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        self.execute_query(query)
+
+    def update_miner_activity(self, miner_uid):
+        query = """
+        INSERT INTO miner_active (miner_uid, last_active_timestamp)
+        VALUES (%s, CURRENT_TIMESTAMP)
+        ON CONFLICT (miner_uid) DO UPDATE
+        SET last_active_timestamp = CURRENT_TIMESTAMP
+        """
+        self.execute_query(query, (miner_uid,))

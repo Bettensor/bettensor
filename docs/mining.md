@@ -9,10 +9,12 @@ This guide provides detailed information for setting up and running a Bettensor 
 3. [Choosing Your Interface](#choosing-your-interface)
 4. [Running Your Miner](#running-your-miner)
 5. [Submitting Predictions](#submitting-predictions)
-6. [Managing Multiple Miners](#managing-multiple-miners)
-7. [Security Considerations](#security-considerations)
-8. [Troubleshooting](#troubleshooting)
-9. [Frequently Asked Questions](#frequently-asked-questions)
+6. [Model Predictions](#model-predictions)
+7. [Managing Multiple Miners](#managing-multiple-miners)
+8. [Security Considerations](#security-considerations)
+9. [Troubleshooting](#troubleshooting)
+10. [Frequently Asked Questions](#frequently-asked-questions)
+11. [Database Setup](#database-setup)
 
 ## Getting Started
 
@@ -58,10 +60,7 @@ pip install -e .
 
 
 
-<details>
-<summary>
-Coming Soon... New Interfaces
-</summary>
+
 ## Choosing Your Interface
 
 When setting up your miner, you'll be prompted to choose between two interface options:
@@ -89,7 +88,7 @@ The Central Server option connects your miner to our web dashboard, allowing for
 > The Central Server option provides a more streamlined experience and shows more comprehensive data than the local interface. However, it does require your miner to accept connections from our server.
 
 
-</details>
+
 
 
 ## Running Your Miner
@@ -106,12 +105,65 @@ Wait for some game data to be received before proceeding to submit predictions.
 
 ### Local Interface
 
-If you chose the Local Interface, use the CLI to submit predictions:
+If you chose the Local Interface, you have two options for interacting with your miner:
 
-```bash
-python bettensor/miner/cli.py
-```
+#### 1. Web Interface via SSH Tunnel
 
+To access the web interface securely:
+
+1. On your local machine, open a terminal and create an SSH tunnel:
+
+   ```
+   ssh -L 5000:localhost:5000 username@your_vps_ip
+   ```
+
+   Replace `username` with your VPS username and `your_vps_ip` with your VPS's IP address.
+
+2. Enter your VPS password when prompted.
+
+3. Keep this terminal window open to maintain the tunnel.
+
+4. Open a web browser on your local machine and navigate to:
+
+   ```
+   http://localhost:5000
+   ```
+
+5. You should now see the Bettensor Miner Interface.
+
+To close the tunnel when you're done, return to the terminal and press `Ctrl+C`.
+
+Troubleshooting:
+- Ensure the Flask server is running on your VPS.
+- If port 5000 is in use, try a different port, e.g., `ssh -L 8080:localhost:5000 username@your_vps_ip`, then access `http://localhost:8080`.
+
+#### 2. Command-Line Interface (CLI)
+
+For direct CLI access:
+
+1. SSH into your VPS.
+
+2. Navigate to the Bettensor directory:
+
+   ```bash
+   cd path/to/bettensor
+   ```
+
+3. Activate the virtual environment:
+
+   ```bash
+   source .venv/bin/activate
+   ```
+
+4. Run the CLI:
+
+   ```bash
+   python bettensor/miner/cli.py
+   ```
+
+5. Follow the prompts to submit predictions or perform other actions.
+
+Choose the method that best suits your needs and comfort level. The web interface provides a more user-friendly experience, while the CLI offers direct control.
 
 <details>
 <summary>
@@ -122,11 +174,61 @@ Coming Soon... New Interfaces
 If you chose the Central Server option, log in to our [web dashboard](https://bettensor.com/dashboard) to connect your miner and submit predictions.
 </details>
 
+
+
+## Model Predictions
+
+**DISCLAIMER**: This is the first iteration of the model, you may be at risk of deregulation if you have the model predict using your entire wager limit of $1000, and its bets happen to turn out poor.
+
+**You need to restart your miner after toggling model predictions on/off or after changing the model parameters**
+
+**Version 1.0** introduces the first PyTorch model for automatic soccer game predictions and wager betting, this an optional setting of course. Podos is a small baseline transformer model trained on 100,000 UEFA games and 569 teams, which covers most UEFA teams. Some teams and leagues are not available yet, but will be coming soon.
+
+- Podos will only make bets on soccer games, MLB and more sports will be implemented in the future.
+- Model predictions, if toggled on will run once every three hours. 
+
+We have set up a toggle to pick between model and manual predictions, with the toggle set to "on", Podos will be automatically loaded from HuggingFace, predict the game outcome based on average team stats combined with its own historical understanding of game outcomes, and place bets based on its confidence of the outcome. 
+
+Details about the model can be found at our [HuggingFace](https://huggingface.co/Bettensor/podos_soccer_model) repository. We encourage you to download the model, train, modify, or improve it.
+Feel free to tag us if you make an improvement or change to Podos you're excited about!
+
+1. To use this model for soccer predictions, and set parameters, you have two options:
+```bash
+python bettensor/miner/menu.py
+```
+or direct access:
+```bash
+python bettensor/miner/interfaces/miner_parameter_tui.py
+```
+Then restart your miner
+
+**Parameters available to tweak (restart your miner after changing)**:
+- Model predictions - toggle model predictions on or off
+- Wager distribution steepness - determines the steepness of the sigmoid curve
+- Fuzzy match percentage - determines strength of matching similar team names (used to fix non-standardized team names, recommended to stay at 80)
+- Minimum wager amount - minimum amount that the model will bet with
+- Maximum wager amount - max amount model will bet with in total
+- Top N games - maximum number of games the model will bet on with its maximum amount, model may bet on less depending on number of games occuring, how many teams playing it has trained on.
+
+**Tips for Usage**
+- The settings can, and should be tweaked to match your desired automation and wager risk. 
+- This is the first version of the model, some bias towards specific outcomes might present itself. 
+- Start with a smaller maximum wager limit to leave youself room to place your own bets, and increase from there if you find the model to be performing to your liking.
+- Podos by default bets with a maximum daily wager amount of $100. This will leave you with $900 available to manually bet with. Increase this value if you would like the model to control more of your daily wager limit.
+- Podos will predict on up to the top N number of games it is confident on, the value of N can be tweaked. The amount it bets will sum to the maximum daily wager amount. Namely, if the model predicts on N=5 games and has a max wager limit of $100, the individual bets will sum to the total $100.
+- Podos uses a sigmoid curve to allocate larger bets to games it is more confident on, the slope of this curve can be tuned with wager distribution steepness. Higher values will result in larger bets on confident games.
+- Model predictions will be skipped for any team the model has not been trained on, and if your current wager allowance is less than the minimum wager amount setting. For any game the model skipped, you can still manually place bets assuming you have enough to place those bets.
+- Use a smaller wager distribution steepness value to tame how big the bets are for very confident games, use a larger value if you want a bigger difference between games the model is confident on, and ones that the model is unsure about. Typical ranges for this parameter are between 1 and 20.
+- Change the minimum wager amount to set the absolute smallest bet that the model could make. More often than not it will make bets larger than this value. This behavior depends on the number of games to bet on, maximum wager size, and the steepness parameter. Ensure that you are not setting this value larger than the maximum wager amount.
+- Tweak the N number of games to control how many games the model will distribute its total maximum wager amount to. A smaller number of games will increase the size of the individual bets. If the number of upcoming games is less than the number of games N, the model will predict on all of the upcoming games, or less.
+- We strongly recommend leaving the fuzzy match percentage at the default 80, this parameter is there to resolve any differences in the team names from the data the model was trained on, and team names from the API.
+
+
+
+
 ## Managing Multiple Miners
 
 ### Local Interface
-
-
 
 When running multiple miners locally, you can switch between them in the CLI, there will be a slight delay as the application restarts.
 
@@ -135,6 +237,8 @@ When running multiple miners locally, you can switch between them in the CLI, th
 ### Central Server
 
 When using the Central Server option, you can manage multiple miners directly from the web dashboard without needing to specify UIDs manually.
+- In order to connect your miners to the central server, you'll need to ensure that the `flask-server` pm2 process is running. This can be selected in the `start_neuron.sh` script: choose the `Central Server` option when starting your miner.
+- Next, you'll need to sign a token generated from the website to connect your miner to the central server. You can access the signing utility from `python bettensor/miner/menu.py` -> option 3 (Sign Token). or directly "
 
 ## Security Considerations
 
@@ -177,3 +281,171 @@ A: The frequency of predictions can vary based on network activity and your stra
 A: Yes, you can run miners on different machines. Each miner will need its own wallet and hotkey.
 
 For more questions or support, please visit our [community forum](https://community.bettensor.com) or [Discord channel](https://discord.gg/bettensor).
+
+# Miner Interface
+
+## Local Server Setup with SSH Tunnel
+
+If you've chosen to run the miner interface as a local server, you'll need to set up an SSH tunnel to access it from your local machine. This ensures that only you can access the interface, providing an additional layer of security.
+
+### Setting up the SSH Tunnel
+
+1. On your local machine, open a terminal or command prompt.
+
+2. Use the following command to create an SSH tunnel:
+
+   ```
+   ssh -L 5000:localhost:5000 username@your_vps_ip
+   ```
+
+   Replace `username` with your VPS username and `your_vps_ip` with the IP address of your VPS.
+
+3. Enter your VPS password when prompted.
+
+4. Keep this terminal window open to maintain the SSH tunnel.
+
+### Accessing the Miner Interface
+
+Once the SSH tunnel is established:
+
+1. Open a web browser on your local machine.
+
+2. Navigate to `http://localhost:5000`
+
+You should now see the Bettensor Miner Interface.
+
+### Closing the SSH Tunnel
+
+When you're done using the interface:
+
+1. Return to the terminal window where you set up the SSH tunnel.
+
+2. Press `Ctrl+C` to close the SSH connection and terminate the tunnel.
+
+### Troubleshooting
+
+- If you can't connect, ensure that the Flask server is running on your VPS and that you've selected the "local" server option when starting the neuron.
+- Check that port 5000 isn't being used by another application on your local machine. If it is, you can use a different local port in the SSH command, e.g., `ssh -L 8080:localhost:5000 username@your_vps_ip`, and then access the interface at `http://localhost:8080`.
+
+Remember, while using the local server option, the interface is only accessible through this SSH tunnel, providing an extra layer of security for your miner operations.
+
+
+## Troubleshooting
+
+Here are some common issues miners might encounter and how to resolve them:
+
+1. **Port not open on machine**
+   - Ensure the required ports are open on your machine.
+   - If using UFW (Uncomplicated Firewall), open the necessary port:
+     ```
+     sudo ufw allow <port_number>
+     ```
+   - Check if your VPS provider has an external firewall. You may need to configure it in your provider's dashboard.
+
+2. **Checking logs**
+   - To view logs for all processes:
+     ```
+     pm2 log
+     ```
+   - To view logs for a specific process:
+     ```
+     pm2 log <process_id>
+     ```
+
+3. **Restarting processes**
+   - To restart all processes:
+     ```
+     pm2 restart all
+     ```
+   - To restart a specific process:
+     ```
+     pm2 restart <process_id>
+     ```
+
+4. **Connection issues**
+   - Ensure your internet connection is stable.
+   - Check if the subtensor endpoint is accessible.
+
+5. **API key issues**
+   - Verify that your API key is correctly set in the `.env` file.
+   - Ensure you have sufficient credits on your RapidAPI account.
+
+6. **Unexpected behavior**
+   - Try stopping all processes:
+     ```
+     pm2 stop all
+     ```
+   - Then start them again:
+     ```
+     pm2 start all
+     ```
+
+If you continue to experience issues, please reach out to the community support channels for further assistance.
+
+## Database Setup
+
+Bettensor uses PostgreSQL as its database. The system is designed to work with both root and non-root users, but using the root user provides full functionality, especially during initial setup.
+
+### Database Configuration
+
+By default, the system attempts to connect to the database using the following configuration:
+
+- Host: localhost
+- Port: 5432
+- Database Name: bettensor
+- User: root
+- Password: bettensor_password
+
+You can override these settings using environment variables:
+
+- DB_HOST
+- DB_PORT
+- DB_NAME
+- DB_USER
+- DB_PASSWORD
+
+### Root User Privileges
+
+While the system can operate with non-root users, using the root user ensures that all operations, including database and table creation, can be performed without issues.
+
+If you're using a non-root user:
+1. Ensure the database exists before running the miner.
+2. Grant necessary permissions to the user for the bettensor database.
+
+### Setting Up PostgreSQL Root User
+
+If you haven't set up a root user in PostgreSQL, follow these steps:
+
+1. Switch to the postgres system user:
+   ```
+   sudo -i -u postgres
+   ```
+
+2. Access the PostgreSQL prompt:
+   ```
+   psql
+   ```
+
+3. Create a new superuser named 'root':
+   ```sql
+   CREATE USER root WITH SUPERUSER PASSWORD 'your_secure_password';
+   ```
+
+4. Exit the PostgreSQL prompt:
+   ```
+   \q
+   ```
+
+5. Update your .env file or environment variables with the new root user credentials.
+
+>[!IMPORTANT]
+> Always use a strong, unique password for your database root user. Never share this password or commit it to version control systems.
+
+### Database Initialization
+
+The DatabaseManager class handles database initialization:
+- It checks if the specified database exists.
+- If the database doesn't exist and the user has root privileges, it creates the database.
+- It creates necessary tables if they don't exist.
+
+If you encounter any database-related issues during setup or operation, check the logs for specific error messages and ensure your database configuration is correct.
