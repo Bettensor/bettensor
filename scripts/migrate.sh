@@ -46,13 +46,8 @@ setup_redis() {
     if [ -f /etc/redis/redis.conf ]; then
         if ! grep -q "bind 0.0.0.0" /etc/redis/redis.conf; then
             echo "Modifying Redis configuration to allow connections from anywhere"
-            if sudo sed -i 's/bind 127.0.0.1/bind 0.0.0.0/' /etc/redis/redis.conf; then
-                if ! sudo systemctl restart redis-server; then
-                    echo "Warning: Failed to restart Redis server after configuration change. Continuing with migration..."
-                fi
-            else
-                echo "Warning: Failed to modify Redis configuration. Continuing with migration..."
-            fi
+            sudo sed -i 's/bind 127.0.0.1/bind 0.0.0.0/' /etc/redis/redis.conf
+            sudo systemctl restart redis-server
         else
             echo "Redis configuration already allows connections from anywhere"
         fi

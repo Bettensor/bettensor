@@ -1,17 +1,24 @@
+import os
+import time
+import sqlite3
+import subprocess
+
 try:
     import psycopg2
     from psycopg2.extras import DictCursor
+    from psycopg2.extensions import cursor as psycopg2_cursor
 except ImportError:
     print("psycopg2 not found. Installing...")
-    import subprocess
     subprocess.check_call(["pip", "install", "--no-cache-dir", "psycopg2-binary"])
     import psycopg2
     from psycopg2.extras import DictCursor
-import os
-import bittensor as bt
-import time
-import sqlite3
-from psycopg2.extensions import cursor as psycopg2_cursor
+    from psycopg2.extensions import cursor as psycopg2_cursor
+
+try:
+    import bittensor as bt
+except ImportError:
+    print("bittensor not found. Please install it manually.")
+    bt = None
 
 def get_postgres_connection():
     try:
@@ -166,14 +173,14 @@ def create_database_if_not_exists():
         
         if not database_exists(cursor, os.getenv('DB_NAME', 'bettensor')):
             cursor.execute(f"CREATE DATABASE {os.getenv('DB_NAME', 'bettensor')}")
-            bt.logging.info(f"Database {os.getenv('DB_NAME', 'bettensor')} created successfully")
+            print(f"Database {os.getenv('DB_NAME', 'bettensor')} created successfully")
         else:
-            bt.logging.info(f"Database {os.getenv('DB_NAME', 'bettensor')} already exists")
+            print(f"Database {os.getenv('DB_NAME', 'bettensor')} already exists")
         
         cursor.close()
         conn.close()
     except psycopg2.Error as e:
-        bt.logging.error(f"Error creating database: {e}")
+        print(f"Error creating database: {e}")
 
 def setup_postgres(sqlite_db_path):
     create_database_if_not_exists()
@@ -181,11 +188,11 @@ def setup_postgres(sqlite_db_path):
     pg_conn = get_postgres_connection()
 
     if not pg_conn:
-        bt.logging.error("Failed to connect to PostgreSQL")
+        print("Failed to connect to PostgreSQL")
         return
 
     if not os.path.exists(sqlite_db_path):
-        bt.logging.error(f"SQLite database file not found: {sqlite_db_path}")
+        print(f"SQLite database file not found: {sqlite_db_path}")
         return
 
     try:
@@ -194,9 +201,9 @@ def setup_postgres(sqlite_db_path):
             create_postgres_tables(pg_cursor)
             migrate_data(sqlite_conn, pg_conn)
         pg_conn.commit()
-        bt.logging.info("PostgreSQL setup completed successfully")
+        print("PostgreSQL setup completed successfully")
     except Exception as e:
-        bt.logging.error(f"Error during PostgreSQL setup: {e}")
+        print(f"Error during PostgreSQL setup: {e}")
         pg_conn.rollback()
     finally:
         pg_conn.close()
