@@ -186,4 +186,7 @@ bettensor_backup*
 =======
 interfaces/cert.pem
 interfaces/key.pem
->>>>>>> e1c978fc791a971a5e201536a012583d3e2a7210
+>>>>>>> e1c978fc791a971a5e201536a012583d3e2a7210token_store.json
+bettensor_backup*
+interfaces/cert.pem
+interfaces/key.pem
