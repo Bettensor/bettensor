@@ -183,12 +183,26 @@ def create_database_if_not_exists():
         print(f"Error creating database: {e}")
 
 def setup_postgres(sqlite_db_path):
+    # Backup the SQLite database
+    backup_dir = os.path.join(os.path.dirname(sqlite_db_path), 'backups')
+    try:
+        from bettensor.miner.utils.database_backup import backup_database
+        backup_file = backup_database(sqlite_db_path, backup_dir)
+        if backup_file:
+            print(f"SQLite database backed up to {backup_file}")
+        else:
+            print("Failed to backup SQLite database. Proceeding with caution.")
+    except ImportError:
+        print("Warning: Could not import backup function. Skipping backup.")
+    except Exception as e:
+        print(f"Error during backup: {e}. Proceeding with caution.")
+
     create_database_if_not_exists()
     wait_for_postgres()
     pg_conn = get_postgres_connection()
 
     if not pg_conn:
-        print("Failed to connect to PostgreSQL")
+        print("Failed to connect to PostgreSQL. Please set up PostgreSQL manually.")
         return
 
     if not os.path.exists(sqlite_db_path):
@@ -209,6 +223,9 @@ def setup_postgres(sqlite_db_path):
         pg_conn.close()
         if 'sqlite_conn' in locals():
             sqlite_conn.close()
+
+    print("Migration process completed. Please check the logs for any errors.")
+    print("If you encountered any issues, please set up PostgreSQL manually and rerun the migration.")
 
 if __name__ == "__main__":
     sqlite_db_path = "./data/miner.db"
