@@ -181,27 +181,51 @@ If you chose the Central Server option, log in to our [web dashboard](https://be
 
 ## Model Predictions
 
-**DISCLAIMER**: This is the first iteration of the model, you may be at risk of deregulation if you have the model predict for every soccer game, and its bets happen to turn out poor.
+**DISCLAIMER**: This is the first iteration of the model, you may be at risk of deregulation if you have the model predict using your entire wager limit of $1000, and its bets happen to turn out poor.
 
-**Version 1.0** introduces the first PyTorch model for automatic game predictions and wager betting. Podos is a small baseline transformer model trained on 100,000 soccer games and 569 teams. Some teams and leagues are not available yet, but will be coming soon.
+**You need to restart your miner after toggling model predictions on/off or after changing the model parameters**
+
+**Version 1.0** introduces the first PyTorch model for automatic soccer game predictions and wager betting, this an optional setting of course. Podos is a small baseline transformer model trained on 100,000 UEFA games and 569 teams, which covers most UEFA teams. Some teams and leagues are not available yet, but will be coming soon.
+
+- Podos will only make bets on soccer games, MLB and more sports will be implemented in the future.
+- Model predictions, if toggled on will run once every three hours. 
+
+We have set up a toggle to pick between model and manual predictions, with the toggle set to "on", Podos will be automatically loaded from HuggingFace, predict the game outcome based on average team stats combined with its own historical understanding of game outcomes, and place bets based on its confidence of the outcome. 
 
 Details about the model can be found at our [HuggingFace](https://huggingface.co/Bettensor/podos_soccer_model) repository. We encourage you to download the model, train, modify, or improve it.
 Feel free to tag us if you make an improvement or change to Podos you're excited about!
 
-1. To use this model for soccer predictions, and set parameters:
+1. To use this model for soccer predictions, and set parameters, you have two options:
 ```bash
 python bettensor/miner/menu.py
 ```
-- Podos by default bets with the maximum daily wager amount of 1000. If you want to leave yourself room to manually bet on certain soccer games, consider lowering the max wager amount.
-- The model will predict on up to the top n number of games it is confident on. The amount it bets will sum to the maximum daily wager amount. Namely, if the model predicts on 5 games, the individual bets will sum to the total $1000.
-- The model uses a sigmoid curve to allocate larger bets to games it is more confident on, the slope of this curve can be tuned with wager distribution steepness. Higher values will result in larger bets on confident games.
+or direct access:
+```bash
+python bettensor/miner/interfaces/miner_parameter_tui.py
+```
+Then restart your miner
 
-**Parameters available to tweak**:
+**Parameters available to tweak (restart your miner after changing)**:
 - Model predictions - toggle model predictions on or off
 - Wager distribution steepness - determines the steepness of the sigmoid curve
 - Fuzzy match percentage - determines strength of matching similar team names (used to fix non-standardized team names, recommended to stay at 80)
 - Minimum wager amount - minimum amount that the model will bet with
-- Maximum wager amount - max amount model will bet with in total, on each run
+- Maximum wager amount - max amount model will bet with in total
+- Top N games - maximum number of games the model will bet on with its maximum amount, model may bet on less depending on number of games occuring, how many teams playing it has trained on.
+
+**Tips for Usage**
+- The settings can, and should be tweaked to match your desired automation and wager risk. 
+- This is the first version of the model, some bias towards specific outcomes might present itself. 
+- Start with a smaller maximum wager limit to leave youself room to place your own bets, and increase from there if you find the model to be performing to your liking.
+- Podos by default bets with a maximum daily wager amount of $100. This will leave you with $900 available to manually bet with. Increase this value if you would like the model to control more of your daily wager limit.
+- Podos will predict on up to the top N number of games it is confident on, the value of N can be tweaked. The amount it bets will sum to the maximum daily wager amount. Namely, if the model predicts on N=5 games and has a max wager limit of $100, the individual bets will sum to the total $100.
+- Podos uses a sigmoid curve to allocate larger bets to games it is more confident on, the slope of this curve can be tuned with wager distribution steepness. Higher values will result in larger bets on confident games.
+- Model predictions will be skipped for any team the model has not been trained on, and if your current wager allowance is less than the minimum wager amount setting. For any game the model skipped, you can still manually place bets assuming you have enough to place those bets.
+- Use a smaller wager distribution steepness value to tame how big the bets are for very confident games, use a larger value if you want a bigger difference between games the model is confident on, and ones that the model is unsure about. Typical ranges for this parameter are between 1 and 20.
+- Change the minimum wager amount to set the absolute smallest bet that the model could make. More often than not it will make bets larger than this value. This behavior depends on the number of games to bet on, maximum wager size, and the steepness parameter. Ensure that you are not setting this value larger than the maximum wager amount.
+- Tweak the N number of games to control how many games the model will distribute its total maximum wager amount to. A smaller number of games will increase the size of the individual bets. If the number of upcoming games is less than the number of games N, the model will predict on all of the upcoming games, or less.
+- We strongly recommend leaving the fuzzy match percentage at the default 80, this parameter is there to resolve any differences in the team names from the data the model was trained on, and team names from the API.
+
 
 
 
