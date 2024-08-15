@@ -163,6 +163,12 @@ class DatabaseManager:
                 max_wager_amount FLOAT,
                 top_n_games INTEGER
             )
+            """),
+            ("miner_active", """
+            CREATE TABLE IF NOT EXISTS miner_active (
+                miner_uid TEXT PRIMARY KEY,
+                last_active_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
             """)
         ]
         
@@ -280,3 +286,21 @@ class DatabaseManager:
 
     def close(self):
         self.connection_pool.closeall()
+
+    def ensure_miner_active_table_exists(self):
+        query = """
+        CREATE TABLE IF NOT EXISTS miner_active (
+            miner_uid TEXT PRIMARY KEY,
+            last_active_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        self.execute_query(query)
+
+    def update_miner_activity(self, miner_uid):
+        query = """
+        INSERT INTO miner_active (miner_uid, last_active_timestamp)
+        VALUES (%s, CURRENT_TIMESTAMP)
+        ON CONFLICT (miner_uid) DO UPDATE
+        SET last_active_timestamp = CURRENT_TIMESTAMP
+        """
+        self.execute_query(query, (miner_uid,))

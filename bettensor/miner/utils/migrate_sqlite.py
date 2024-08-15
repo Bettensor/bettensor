@@ -178,6 +178,15 @@ def migrate_database(conn, db_path, target_version, max_retries=5, retry_delay=1
             bt.logging.error(f"Unknown version {current_version}")
             return False
         
+    # Add miner_active table
+    bt.logging.info("Creating miner_active table")
+    execute_with_retry(cursor, """
+        CREATE TABLE IF NOT EXISTS miner_active (
+            miner_uid TEXT PRIMARY KEY,
+            last_active_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     # Update the database version after all migration steps
     bt.logging.info(f"Updating database version to {target_version}")
     execute_with_retry(cursor, """

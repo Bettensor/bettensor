@@ -11,8 +11,9 @@ import os
 import bittensor as bt
 import time
 import sqlite3
+from psycopg2.extensions import cursor as psycopg2_cursor
 
-def get_postgres_connection() -> psycopg2.connection:
+def get_postgres_connection():
     try:
         return psycopg2.connect(
             host=os.getenv('DB_HOST', 'localhost'),
@@ -39,7 +40,7 @@ def wait_for_postgres(max_retries=5, retry_delay=5):
                 bt.logging.error("Failed to connect to PostgreSQL after multiple attempts.")
                 raise
 
-def create_postgres_tables(pg_cursor: psycopg2.cursor):
+def create_postgres_tables(pg_cursor):
     tables = [
         ("games", """
             CREATE TABLE IF NOT EXISTS games (
@@ -147,9 +148,13 @@ def migrate_data(source_conn, dest_conn):
 def setup_postgres(sqlite_db_path):
     wait_for_postgres()
     pg_conn = get_postgres_connection()
-    sqlite_conn = sqlite3.connect(sqlite_db_path)
+
+    if not os.path.exists(sqlite_db_path):
+        bt.logging.error(f"SQLite database file not found: {sqlite_db_path}")
+        return
 
     try:
+        sqlite_conn = sqlite3.connect(sqlite_db_path)
         with pg_conn.cursor(cursor_factory=DictCursor) as pg_cursor:
             create_postgres_tables(pg_cursor)
             migrate_data(sqlite_conn, pg_conn)
@@ -160,8 +165,9 @@ def setup_postgres(sqlite_db_path):
         pg_conn.rollback()
     finally:
         pg_conn.close()
-        sqlite_conn.close()
+        if 'sqlite_conn' in locals():
+            sqlite_conn.close()
 
 if __name__ == "__main__":
-    sqlite_db_path = "./bettensor/miner/data/miner.db"
+    sqlite_db_path = "./data/miner.db"
     setup_postgres(sqlite_db_path)

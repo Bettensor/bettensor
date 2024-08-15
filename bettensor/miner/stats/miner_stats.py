@@ -25,6 +25,7 @@ class MinerStatsHandler:
         with self.lock:
             self.stats.update(new_stats)
             self.state_manager.update_state(new_stats)
+            self.db_manager.update_miner_activity(self.state_manager.miner_uid)
 
     def get_stats(self) -> Dict[str, Any]:
         with self.lock:
@@ -39,6 +40,19 @@ class MinerStatsHandler:
 
     def update_on_game_result(self, result_data: Dict[str, Any]):
         with self.lock:
+            prediction_id = result_data.get('prediction_id')
+            if prediction_id is None:
+                bt.logging.warning("No prediction_id provided in result_data")
+                return
+
+            # Check if this prediction has already been processed
+            query = "SELECT processed FROM predictions WHERE predictionID = %s"
+            result = self.db_manager.execute_query(query, (prediction_id,))
+            
+            if not result or result[0]['processed']:
+                bt.logging.debug(f"Prediction {prediction_id} already processed or not found")
+                return
+
             if result_data['outcome'] == 'Wager Won':
                 self.stats['miner_lifetime_wins'] = self.stats.get('miner_lifetime_wins', 0) + 1
                 self.stats['miner_lifetime_earnings'] = self.stats.get('miner_lifetime_earnings', 0) + result_data['earnings']
@@ -48,6 +62,10 @@ class MinerStatsHandler:
             self.stats['miner_lifetime_wager'] = self.stats.get('miner_lifetime_wager', 0) + result_data['wager']
             self.update_win_loss_ratio()
             self.state_manager.update_state(self.stats)
+
+            # Mark the prediction as processed
+            update_query = "UPDATE predictions SET processed = TRUE WHERE predictionID = %s"
+            self.db_manager.execute_query(update_query, (prediction_id,))
 
     def update_win_loss_ratio(self):
         total_games = self.stats['miner_lifetime_wins'] + self.stats['miner_lifetime_losses']
