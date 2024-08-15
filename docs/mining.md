@@ -201,7 +201,7 @@ python bettensor/miner/menu.py
 - Wager distribution steepness - determines the steepness of the sigmoid curve
 - Fuzzy match percentage - determines strength of matching similar team names (used to fix non-standardized team names, recommended to stay at 80)
 - Minimum wager amount - minimum amount that the model will bet with
-- Maximum wager amount - max amount model will bet with in total
+- Maximum wager amount - max amount model will bet with in total, on each run
 
 
 
@@ -216,6 +216,8 @@ When running multiple miners locally, you can switch between them in the CLI, th
 ### Central Server
 
 When using the Central Server option, you can manage multiple miners directly from the web dashboard without needing to specify UIDs manually.
+- In order to connect your miners to the central server, you'll need to ensure that the `flask-server` pm2 process is running. This can be selected in the `start_neuron.sh` script: choose the `Central Server` option when starting your miner.
+- Next, you'll need to sign a token generated from the website to connect your miner to the central server. You can access the signing utility from `python bettensor/miner/menu.py` -> option 3 (Sign Token). or directly "
 
 ## Security Considerations
 

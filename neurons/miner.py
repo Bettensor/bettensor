@@ -91,50 +91,9 @@ def main(miner: BettensorMiner):
         try:
             # Below: Periodically update our knowledge of the network graph.
             if miner.step % 20 == 0:
-
-                if miner.step % 600 == 0:
-                    bt.logging.debug(
-                        f"Syncing metagraph: {miner.metagraph} with subtensor: {miner.subtensor}"
-                    )
-                    
-                    # Update the current incentive
-                    current_incentive = miner.get_current_incentive()
-                    if current_incentive is not None:
-                        miner.stats_handler.update_current_incentive(current_incentive)
-
-                    miner.metagraph.sync(subtensor=miner.subtensor)
-
-                if miner.step % 2400 == 0:
-                    bt.logging.info("Checking and resetting daily cash if necessary")
-                    miner.stats_handler.check_and_reset_daily_cash()
-                    bt.logging.info(f"Miner UID: {miner.miner_uid}")
-                    bt.logging.info(f"Model on: {miner.predictions_handler.models['soccer'].model_on}")
-                    if miner.predictions_handler.models['soccer'].model_on:
-                        soccer_games = miner.games_handler.get_games_by_sport("soccer")
-                        bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
-                        miner_cash = miner.stats_handler.get_miner_cash()
-                        bt.logging.info(f"Miner cash: {miner_cash}")
-                        bt.logging.info(f"Made daily predictions: {miner.predictions_handler.models['soccer'].made_daily_predictions}")
-                        if miner_cash < miner.predictions_handler.models['soccer'].minimum_wager_amount or miner_cash/len(soccer_games) < miner.predictions_handler.models['soccer'].minimum_wager_amount and not miner.predictions_handler.models['soccer'].made_daily_predictions:
-                            bt.logging.warn(f"Miner cash is insufficient for model predictions. Skipping this step.")
-                        else:
-                            if soccer_games:
-                                processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
-                                bt.logging.info(f"Processed {len(processed_games)} soccer games")
-                            else:
-                                bt.logging.info("No soccer games to process")
-
-                    
-                """ if miner.step %2400 == 300:
-                    soccer_games = miner.games_handler.get_games_by_sport("soccer")
-                    bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
-
-                    if soccer_games:
-                        processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
-                        bt.logging.info(f"Processed {len(processed_games)} soccer games")
-                    else:
-                        bt.logging.info("No soccer games to process") """
-
+                miner.db_manager.update_miner_activity(miner.miner_uid)
+                
+                miner.metagraph.sync(subtensor=miner.subtensor)
                 miner.metagraph = miner.subtensor.metagraph(miner.neuron_config.netuid)
                 miner_uid_int = int(miner.miner_uid)
                 stake = miner.metagraph.S[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.S) else 0
@@ -160,7 +119,48 @@ def main(miner: BettensorMiner):
                 bt.logging.info(log)
                 bt.logging.info(f"Miner UID: {miner.miner_uid}")
 
-                #bt.logging.warning(f"TESTING AUTO UPDATE!!")
+            if miner.step % 600 == 0:
+                    bt.logging.debug(
+                        f"Syncing metagraph: {miner.metagraph} with subtensor: {miner.subtensor}"
+                    )
+                # Update the current incentive
+                    current_incentive = miner.metagraph.I[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.I) else 0
+                    if current_incentive is not None:
+                        miner.stats_handler.update_current_incentive(current_incentive)
+
+
+            if miner.step % 2400 == 0:
+                bt.logging.info("Checking and resetting daily cash if necessary")
+                miner.stats_handler.check_and_reset_daily_cash()
+                bt.logging.info(f"Miner UID: {miner.miner_uid}")
+                bt.logging.info(f"Model on: {miner.predictions_handler.models['soccer'].model_on}")
+                if miner.predictions_handler.models['soccer'].model_on:
+                    soccer_games = miner.games_handler.get_games_by_sport("soccer")
+                    bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
+                    miner_cash = miner.stats_handler.get_miner_cash()
+                    bt.logging.info(f"Miner cash: {miner_cash}")
+                    bt.logging.info(f"Made daily predictions: {miner.predictions_handler.models['soccer'].made_daily_predictions}")
+                    if miner_cash < miner.predictions_handler.models['soccer'].minimum_wager_amount or miner_cash/len(soccer_games) < miner.predictions_handler.models['soccer'].minimum_wager_amount and not miner.predictions_handler.models['soccer'].made_daily_predictions:
+                        bt.logging.warn(f"Miner cash is insufficient for model predictions. Skipping this step.")
+                    else:
+                        if soccer_games:
+                            processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
+                            bt.logging.info(f"Processed {len(processed_games)} soccer games")
+                        else:
+                            bt.logging.info("No soccer games to process")
+
+                    
+                """ if miner.step %2400 == 300:
+                    soccer_games = miner.games_handler.get_games_by_sport("soccer")
+                    bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
+
+                    if soccer_games:
+                        processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
+                        bt.logging.info(f"Processed {len(processed_games)} soccer games")
+                    else:
+                        bt.logging.info("No soccer games to process") """
+
+                
 
             miner.step += 1
             time.sleep(1)

@@ -25,6 +25,7 @@ import logging
 import traceback
 from bettensor.miner.database.games import GamesHandler
 import socket
+from datetime import datetime, timedelta
 
 # Set up logging
 bt.logging.set_trace(True)
@@ -330,6 +331,29 @@ def get_miner_uid(hotkey: str):
             miner = cur.fetchone()
         return miner['miner_uid']
 
+def get_active_miners():
+    print("Fetching active miners")
+    try:
+        with psycopg2.connect(
+            dbname="bettensor",
+            user="root",
+            password="bettensor_password",
+            host="localhost"
+        ) as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT miner_uid
+                    FROM miner_active
+                    WHERE last_active_timestamp > %s
+                """, (datetime.now() - timedelta(minutes=20),))
+                active_miners = [row['miner_uid'] for row in cur.fetchall()]
+        print(f"Found {len(active_miners)} active miners")
+        return active_miners
+    except Exception as e:
+        print(f"Error fetching active miners: {str(e)}")
+        print(traceback.format_exc())
+        return []
+
 @app.route('/heartbeat', methods=['GET'])
 @limiter.exempt
 @token_required
@@ -385,13 +409,17 @@ def heartbeat():
     miners = get_miners()
     print(f"Retrieved {len(miners)} miners")
     
+    active_miner_uids = get_active_miners()
+    active_miners = [miner for miner in miners if str(miner['miner_uid']) in active_miner_uids]
+    print(f"Filtered to {len(active_miners)} active miners")
+    
     # Fetch miner games
     miner_games = get_miner_games()
     print(f"Retrieved {len(miner_games)} miner game IDs")
     
     response_data = {
         "tokenStatus": token_status,
-        "miners": miners,
+        "miners": active_miners,
         "minerGames": miner_games
     }
     

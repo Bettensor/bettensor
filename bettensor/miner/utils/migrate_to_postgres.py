@@ -106,71 +106,28 @@ def create_postgres_tables(pg_cursor):
         except psycopg2.Error as e:
             print(f"Error creating table {table_name}: {e}")
 
-def migrate_data(source_conn, dest_conn):
-    source_cursor = source_conn.cursor()
-    dest_cursor = dest_conn.cursor()
+def migrate_data(sqlite_conn, pg_cursor):
+    tables = ['predictions', 'games', 'miner_stats']
+    for table in tables:
+        sqlite_cursor = sqlite_conn.cursor()
+        sqlite_cursor.execute(f"SELECT * FROM {table}")
+        rows = sqlite_cursor.fetchall()
+        columns = [description[0] for description in sqlite_cursor.description]
+        
+        if rows:
+            placeholders = ','.join(['%s'] * len(columns))
+            insert_query = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})"
+            
+            for row in rows:
+                # Convert canTie to boolean for the games table
+                if table == 'games':
+                    row = list(row)
+                    can_tie_index = columns.index('canTie')
+                    row[can_tie_index] = bool(row[can_tie_index])
+                
+                pg_cursor.execute(insert_query, row)
 
-    # Migrate predictions table
-    source_cursor.execute("SELECT * FROM predictions")
-    predictions = source_cursor.fetchall()
-    for prediction in predictions:
-        dest_cursor.execute("""
-            INSERT INTO predictions (
-                predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-                teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (predictionID) DO NOTHING
-        """, prediction)
-
-    # Migrate games table
-    source_cursor.execute("SELECT * FROM games")
-    games = source_cursor.fetchall()
-    insert_query = """
-    INSERT INTO games (
-        gameID, teamA, teamAodds, teamB, teamBodds, sport, league,
-        externalID, createDate, lastUpdateDate, eventStartDate,
-        active, outcome, tieOdds, canTie
-    ) VALUES (
-        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
-        CAST(%s AS BOOLEAN)
-    )
-    """
-    dest_cursor.executemany(insert_query, [
-        (
-            game['gameID'], game['teamA'], game['teamAodds'], game['teamB'],
-            game['teamBodds'], game['sport'], game['league'], game['externalID'],
-            game['createDate'], game['lastUpdateDate'], game['eventStartDate'],
-            game['active'], game['outcome'], game['tieOdds'], game['canTie']
-        ) for game in games
-    ])
-
-    # Migrate miner_stats table
-    source_cursor.execute("SELECT * FROM miner_stats")
-    miner_stats = source_cursor.fetchall()
-    for stat in miner_stats:
-        dest_cursor.execute("""
-            INSERT INTO miner_stats (
-                miner_hotkey, miner_uid, miner_rank, miner_cash, miner_current_incentive,
-                miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager,
-                miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses,
-                miner_win_loss_ratio, last_daily_reset
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (miner_hotkey) DO UPDATE SET
-                miner_uid = EXCLUDED.miner_uid,
-                miner_rank = EXCLUDED.miner_rank,
-                miner_cash = EXCLUDED.miner_cash,
-                miner_current_incentive = EXCLUDED.miner_current_incentive,
-                miner_last_prediction_date = EXCLUDED.miner_last_prediction_date,
-                miner_lifetime_earnings = EXCLUDED.miner_lifetime_earnings,
-                miner_lifetime_wager = EXCLUDED.miner_lifetime_wager,
-                miner_lifetime_predictions = EXCLUDED.miner_lifetime_predictions,
-                miner_lifetime_wins = EXCLUDED.miner_lifetime_wins,
-                miner_lifetime_losses = EXCLUDED.miner_lifetime_losses,
-                miner_win_loss_ratio = EXCLUDED.miner_win_loss_ratio,
-                last_daily_reset = EXCLUDED.last_daily_reset
-        """, stat)
-
-    dest_conn.commit()
+    print(f"Data migration completed for tables: {', '.join(tables)}")
 
 def database_exists(cursor, db_name):
     cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
@@ -233,9 +190,9 @@ def setup_postgres(sqlite_db_path):
             return
 
         sqlite_conn = sqlite3.connect(sqlite_db_path)
-        with pg_conn.cursor() as pg_cursor:
+        with pg_conn.cursor(cursor_factory=DictCursor) as pg_cursor:
             create_postgres_tables(pg_cursor)
-            migrate_data(sqlite_conn, pg_conn)
+            migrate_data(sqlite_conn, pg_cursor)
         pg_conn.commit()
         print("PostgreSQL setup completed successfully")
     except Exception as e:
