@@ -60,10 +60,7 @@ pip install -e .
 
 
 
-<details>
-<summary>
-Coming Soon... New Interfaces
-</summary>
+
 ## Choosing Your Interface
 
 When setting up your miner, you'll be prompted to choose between two interface options:
@@ -91,7 +88,7 @@ The Central Server option connects your miner to our web dashboard, allowing for
 > The Central Server option provides a more streamlined experience and shows more comprehensive data than the local interface. However, it does require your miner to accept connections from our server.
 
 
-</details>
+
 
 
 ## Running Your Miner
