@@ -293,9 +293,11 @@ async def main(validator: BettensorValidator):
                 except Exception as e:
                     bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
-            if current_block - validator.last_updated_block > 299:
+            current_time = time.time()
+            if current_time - validator.last_api_call >= timedelta(minutes=30):
                 # Update results before setting weights next block
                 await validator.run_sync_in_async(validator.update_recent_games)
+                validator.last_api_call = current_time
                 
             if current_block - validator.last_updated_block > 300:
 

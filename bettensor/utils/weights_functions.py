@@ -452,7 +452,7 @@ class WeightSetter:
         stake = float(self.metagraph.S[uid])
         if stake < 1000.0:
             bt.logging.error("Insufficient stake. Failed in setting weights.")
-            return
+            return False
 
         NUM_RETRIES = 3 
         for i in range(NUM_RETRIES):
@@ -487,3 +487,4 @@ class WeightSetter:
                 await asyncio.sleep(10)
         
         bt.logging.error("Failed to set weights after all attempts.")
+        return False
