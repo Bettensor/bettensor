@@ -106,7 +106,7 @@ class BettensorValidator(BaseNeuron):
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
         self.api_client = APIClient(self.rapid_api_key)
 
-        
+        self.last_api_call = datetime.now() - timedelta(hours=2)  # Initialize to ensure first call happens immediately
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -640,12 +640,13 @@ class BettensorValidator(BaseNeuron):
                 "hotkeys": self.hotkeys,
                 "last_updated_block": self.last_updated_block,
                 "blacklisted_miner_hotkeys": self.blacklisted_miner_hotkeys,
+                "last_api_call": self.last_api_call,
             },
             self.base_path + "/state.pt",
         )
 
         bt.logging.debug(
-            f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}"
+            f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {self.last_api_call}"
         )
 
     def reset_validator_state(self, state_path):
@@ -680,6 +681,7 @@ class BettensorValidator(BaseNeuron):
                 self.last_updated_block = state["last_updated_block"]
                 if "blacklisted_miner_hotkeys" in state.keys():
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
+                self.last_api_call = state.get("last_api_call", datetime.now() - timedelta(hours=2))
 
                 bt.logging.info(f"scores loaded from saved file: {self.scores}")
             except Exception as e:
