@@ -495,7 +495,7 @@ class BettensorValidator(BaseNeuron):
         for synapse in predictions:
             # ensure synapse has at least 3 elements
             if len(synapse) >= 3:
-                prediction_data = synapse[0]
+                game_data_dict = synapse[0]
                 prediction_dict: TeamGamePrediction = synapse[1]
                 metadata = synapse[2]
 
@@ -510,7 +510,7 @@ class BettensorValidator(BaseNeuron):
                             f"prediction from miner {uid} is none and will be skipped."
                         )
                         bt.logging.debug(f"""Synapse Details:
-                                            gamedata_dict_len: {len(synapse.gamedata_dict)}
+                                            game_data_dict_len: {len(game_data_dict)}
                                             prediction_dict: {prediction_dict}
                                             metadata: {metadata}
                                             """)
