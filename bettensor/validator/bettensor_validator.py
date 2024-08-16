@@ -1029,10 +1029,21 @@ class BettensorValidator(BaseNeuron):
         bt.logging.info("Recent games and predictions update process completed")
 
     async def run_sync_in_async(self, fn):
-        return await self.loop.run_in_executor(self.thread_executor, fn)
+        try:
+            return await self.loop.run_in_executor(self.thread_executor, fn)
+        except StopIteration:
+            bt.logging.warning("StopIteration encountered in run_sync_in_async. Handling gracefully.")
+            return None
+        except Exception as e:
+            bt.logging.error(f"Error in run_sync_in_async: {e}")
+            return None
     
     def recalculate_all_profits(self):
         self.weight_setter.recalculate_daily_profits()
 
     async def set_weights(self):
-        return await self.weight_setter.set_weights(self.db_path)
+        try:
+            return await self.weight_setter.set_weights(self.db_path)
+        except StopIteration:
+            bt.logging.warning("StopIteration encountered in set_weights. Handling gracefully.")
+            return None

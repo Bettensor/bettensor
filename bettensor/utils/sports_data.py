@@ -104,8 +104,13 @@ class SportsData:
             for league_info in leagues:
                 league = league_info['id']
                 season = league_info.get('season', '2024')
-                games = self.get_game_data(sport=sport, league=league, season=season)
-                all_games.extend(games)
+                try:
+                    games = self.get_game_data(sport=sport, league=league, season=season)
+                    all_games.extend(games)
+                except StopIteration:
+                    bt.logging.warning(f"StopIteration encountered while fetching data for {sport}, league {league}. Skipping.")
+                except Exception as e:
+                    bt.logging.error(f"Error fetching data for {sport}, league {league}: {e}")
         return all_games
 
     def get_game_data(self, sport, league="1", season="2024"):

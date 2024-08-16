@@ -114,8 +114,15 @@ async def main(validator: BettensorValidator):
         ]
     }
 
-    all_games =  await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
-    last_api_call = datetime.now()
+    try:
+        all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
+        if all_games is None:
+            bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
+        else:
+            last_api_call = datetime.now()
+    except Exception as e:
+        bt.logging.error(f"Error fetching game data: {e}")
+        # Continue with the previous data
 
     validator.serve_axon()
     await validator.initialize_connection()
@@ -132,8 +139,15 @@ async def main(validator: BettensorValidator):
             current_time = datetime.now()
             if current_time - last_api_call >= timedelta(hours=1):
                 # Update games every hour
-                all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
-                last_api_call = current_time
+                try:
+                    all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
+                    if all_games is None:
+                        bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
+                    else:
+                        last_api_call = current_time
+                except Exception as e:
+                    bt.logging.error(f"Error fetching game data: {e}")
+                    # Continue with the previous data
 
             # Periodically sync subtensor status and save the state file
             if validator.step % 5 == 0:
