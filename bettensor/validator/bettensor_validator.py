@@ -510,9 +510,9 @@ class BettensorValidator(BaseNeuron):
                             f"prediction from miner {uid} is none and will be skipped."
                         )
                         bt.logging.debug(f"""Synapse Details:
-                                            game_data_dict_len: {len(game_data_dict)}
-                                            prediction_dict: {prediction_dict}
-                                            metadata: {metadata}
+                                            game_data_dict_len: {len(game_data_dict) if game_data_dict else 0}
+                                            prediction_dict: {prediction_dict if prediction_dict else 0}
+                                            metadata: {metadata if metadata else 0}
                                             """)
                 else:
                     bt.logging.warning(
