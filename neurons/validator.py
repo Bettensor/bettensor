@@ -4,14 +4,14 @@
 # Copyright © 2023 geardici
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
+# documentation files (the "Software"), to deal in the Software without restriction, including without limitation
 # the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
 # and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
 # The above copyright notice and this permission notice shall be included in all copies or substantial portions of
 # the Software.
 
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
 # THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
@@ -287,23 +287,25 @@ async def main(validator: BettensorValidator):
                     
                     if validator.subtensor is not None:
                         success = await validator.set_weights()
-                        if success:
-                            validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
-                            bt.logging.info("Successfully updated weights and last updated block")
-                        else:
-                            validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
-                            bt.logging.warning("Failed to set weights, continuing with next iteration.")
+                        bt.logging.info("Weight update attempt completed")
                     else:
-                        validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                         bt.logging.error("Failed to reinitialize subtensor. Skipping weight update.")
+                        success = False
                 except Exception as e:
-                    validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                     bt.logging.error(f"Error during weight update process: {str(e)}")
-                    bt.logging.warning("Continuing with next iteration despite weight update failure.")
+                    success = False
 
-            # need to update the last_updated_block here regardless of success or failure on weight update, otherwise api will be called too often
-            
-            
+                # Update last_updated_block regardless of the outcome
+                try:
+                    validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
+                    bt.logging.info(f"Updated last_updated_block to {validator.last_updated_block}")
+                except Exception as e:
+                    bt.logging.error(f"Error updating last_updated_block: {str(e)}")
+
+                if success:
+                    bt.logging.info("Successfully updated weights")
+                else:
+                    bt.logging.warning("Failed to set weights or encountered an error, continuing with next iteration.")
 
             # End the current step and prepare for the next iteration.
             validator.step += 1

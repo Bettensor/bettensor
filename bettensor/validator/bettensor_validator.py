@@ -509,6 +509,8 @@ class BettensorValidator(BaseNeuron):
                         bt.logging.trace(
                             f"prediction from miner {uid} is none and will be skipped."
                         )
+                        bt.logging.debug(f"synapse: {synapse}")
+                        bt.logging.debug(f"prediction_dict: {prediction_dict}")
                 else:
                     bt.logging.warning(
                         "metadata is missing or does not contain neuron_uid."
