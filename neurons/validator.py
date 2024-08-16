@@ -312,7 +312,7 @@ async def main(validator: BettensorValidator):
                 except Exception as e:
                     bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
-            current_time = time.time()
+            current_time = datetime.now(timezone.utc)
             if current_time - validator.last_api_call >= timedelta(minutes=30):  # 30 minutes in seconds
                 # Update results before setting weights next block
                 await validator.run_sync_in_async(validator.update_recent_games)

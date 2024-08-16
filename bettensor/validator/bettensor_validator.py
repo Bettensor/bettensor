@@ -106,7 +106,7 @@ class BettensorValidator(BaseNeuron):
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
         self.api_client = APIClient(self.rapid_api_key)
 
-        self.last_api_call = datetime.now(timezone.utc) - timedelta(hours=1)
+        self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
         self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
 
     def apply_config(self, bt_classes) -> bool:
@@ -689,8 +689,8 @@ class BettensorValidator(BaseNeuron):
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
                 
                 # Convert timestamps back to datetime
-                self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", time.time() - 3600), tz=timezone.utc)
-                self.last_update_recent_games = datetime.fromtimestamp(state.get("last_update_recent_games", time.time() - 1800), tz=timezone.utc)
+                self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
+                self.last_update_recent_games = datetime.fromtimestamp(state.get("last_update_recent_games", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
 
                 bt.logging.info(f"scores loaded from saved file: {self.scores}")
             except Exception as e:
