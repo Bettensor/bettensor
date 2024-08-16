@@ -619,14 +619,12 @@ class BettensorMiner(BaseNeuron):
                         # Delete the old entry
                         cur.execute("DELETE FROM miner_stats WHERE miner_uid = %s", (old_miner_uid,))
                         
-                        # Create a new entry with the current miner_uid
-                        cur.execute("""
-                            INSERT INTO miner_stats (miner_uid, miner_hotkey, miner_cash, daily_cash)
-                            VALUES (%s, %s, 1000, 1000)
-                        """, (self.miner_uid, self.miner_hotkey))
+
+                        self.state_manager.initialize_state()
+                        self.stats_handler.load_stats_from_state()
                         
                         # Delete all predictions for the old miner_uid
-                        cur.execute("DELETE FROM predictions WHERE miner_id = %s", (old_miner_uid,))
+                        cur.execute("DELETE FROM predictions WHERE minerid = %s", (old_miner_uid,))
                         
                         conn.commit()
                         
