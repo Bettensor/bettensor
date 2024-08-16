@@ -289,7 +289,7 @@ async def main(validator: BettensorValidator):
                     if result:
                         bt.logging.info("Predictions fetched and sent successfully")
                     else:
-                        bt.logging.warning("No predictions were sent or an error occurred")
+                        bt.logging.warning("No new predictions were sent this round")
                 except Exception as e:
                     bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
