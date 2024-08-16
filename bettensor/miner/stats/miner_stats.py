@@ -194,6 +194,7 @@ class MinerStatsHandler:
                 bt.logging.warning("last_daily_reset is None, initializing to current time")
                 last_reset = datetime.now(timezone.utc)
                 self.stats['last_daily_reset'] = last_reset.isoformat()
+                self.state_manager.update_state(self.stats)
             else:
                 last_reset = datetime.fromisoformat(last_reset_str)
             now = datetime.now(timezone.utc)
