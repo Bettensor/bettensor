@@ -98,14 +98,19 @@ class SportsData:
         return exists
 
     def get_multiple_game_data(self, sports_config):
-        bt.logging.info("Fetching games frmo RapidAPI")
+        bt.logging.info("Fetching games from RapidAPI")
         all_games = []
         for sport, leagues in sports_config.items():
             for league_info in leagues:
                 league = league_info['id']
                 season = league_info.get('season', '2024')
-                games = self.get_game_data(sport=sport, league=league, season=season)
-                all_games.extend(games)
+                try:
+                    games = self.get_game_data(sport=sport, league=league, season=season)
+                    all_games.extend(games)
+                except StopIteration:
+                    bt.logging.warning(f"StopIteration encountered while fetching data for {sport}, league {league}. Skipping.")
+                except Exception as e:
+                    bt.logging.error(f"Error fetching data for {sport}, league {league}: {e}")
         return all_games
 
     def get_game_data(self, sport, league="1", season="2024"):
@@ -134,7 +139,7 @@ class SportsData:
                 }
                 all_games.extend(self._fetch_games(url, querystring, sport))
 
-        bt.logging.debug(f"Initially fetched {len(all_games)} games")
+        bt.logging.debug(f"Initially fetched {len(all_games)} games for {sport}, league {league}")
 
         # Filter games with odds less than 1.05; ensure odds are not None; exclude false odds of 1.5/3.0/1.5
         filtered_games = []
@@ -199,7 +204,15 @@ class SportsData:
         }
 
         try:
+            bt.logging.debug(f"Sending request to {url} with params: {querystring}")
             response = requests.get(url, headers=headers, params=querystring)
+            bt.logging.debug(f"Response status code: {response.status_code}")
+            
+            if response.status_code == 429:
+                bt.logging.warning("Rate limit exceeded. Waiting for 60 seconds before retrying.")
+                time.sleep(60)
+                return self._fetch_games(url, querystring, sport)  # Retry after waiting
+            
             response.raise_for_status()
             games = response.json()
             
@@ -214,6 +227,7 @@ class SportsData:
                     }
                     for i in games["response"]
                 ]
+                bt.logging.debug(f"Fetched {len(games_list)} games for {sport}")
                 return games_list
             else:
                 bt.logging.warning(f"Unexpected response format: {games}")
@@ -238,61 +252,77 @@ class SportsData:
             "X-RapidAPI-Host": self.api_hosts[sport],
         }
 
-        response = requests.get(url, headers=headers, params=querystring)
-        response.raise_for_status()  # Ensure we handle HTTP errors properly
+        try:
+            bt.logging.debug(f"Fetching odds for game {game_id} in {sport}")
+            response = requests.get(url, headers=headers, params=querystring)
+            bt.logging.debug(f"Odds response status code: {response.status_code}")
+            
+            if response.status_code == 429:
+                bt.logging.warning("Rate limit exceeded while fetching odds. Waiting for 60 seconds before retrying.")
+                time.sleep(60)
+                return self.get_game_odds(game_id, sport)  # Retry after waiting
+            
+            response.raise_for_status()  # Ensure we handle HTTP errors properly
 
-        odds_data = response.json()
+            odds_data = response.json()
 
-        # Initialize totals and count
-        total_home_odds = 0
-        total_away_odds = 0
-        total_tie_odds = 0
-        count = 0
+            # Initialize totals and count
+            total_home_odds = 0
+            total_away_odds = 0
+            total_tie_odds = 0
+            count = 0
 
-        # Ensure response is not empty and contains the necessary data
-        if odds_data.get("response") and odds_data["response"][0].get("bookmakers"):
-            bookmakers = odds_data["response"][0]["bookmakers"]
-            for bookmaker in bookmakers:
-                for bet in bookmaker.get("bets", []):
-                    if (
-                        sport == "soccer"
-                        and bet["name"] == "Match Winner"
-                        and len(bet["values"]) >= 3
-                    ):
-                        # Use next() to find the correct odds regardless of order
-                        home_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Home"))
-                        away_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Away"))
-                        tie_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Tie"))
-                        
-                        total_home_odds += home_odds
-                        total_away_odds += away_odds
-                        total_tie_odds += tie_odds
-                        count += 1
-                    elif (
-                        sport == "baseball"
-                        and bet["name"] == "Home/Away"
-                        and len(bet["values"]) >= 2
-                    ):
-                        home_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Home"))
-                        away_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Away"))
-                        total_home_odds += home_odds
-                        total_away_odds += away_odds
-                        count += 1
-            # Calculate average odds if count is greater than 0
-            if count > 0:
-                avg_home_odds = round(total_home_odds / count, 2) if total_home_odds else None
-                avg_away_odds = round(total_away_odds / count, 2) if total_away_odds else None
-                avg_tie_odds = round(total_tie_odds / count, 2) if sport == "soccer" and total_tie_odds else None
-                
-                return {
-                    "average_home_odds": avg_home_odds,
-                    "average_away_odds": avg_away_odds,
-                    "average_tie_odds": avg_tie_odds if sport == "soccer" else None,
-                }
+            # Ensure response is not empty and contains the necessary data
+            if odds_data.get("response") and odds_data["response"][0].get("bookmakers"):
+                bookmakers = odds_data["response"][0]["bookmakers"]
+                for bookmaker in bookmakers:
+                    for bet in bookmaker.get("bets", []):
+                        if (
+                            sport == "soccer"
+                            and bet["name"] == "Match Winner"
+                            and len(bet["values"]) >= 3
+                        ):
+                            # Use next() to find the correct odds regardless of order
+                            home_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Home"))
+                            away_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Away"))
+                            tie_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Tie"))
+                            
+                            total_home_odds += home_odds
+                            total_away_odds += away_odds
+                            total_tie_odds += tie_odds
+                            count += 1
+                        elif (
+                            sport == "baseball"
+                            and bet["name"] == "Home/Away"
+                            and len(bet["values"]) >= 2
+                        ):
+                            home_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Home"))
+                            away_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Away"))
+                            total_home_odds += home_odds
+                            total_away_odds += away_odds
+                            count += 1
+                # Calculate average odds if count is greater than 0
+                if count > 0:
+                    avg_home_odds = round(total_home_odds / count, 2) if total_home_odds else None
+                    avg_away_odds = round(total_away_odds / count, 2) if total_away_odds else None
+                    avg_tie_odds = round(total_tie_odds / count, 2) if sport == "soccer" and total_tie_odds else None
+                    
+                    return {
+                        "average_home_odds": avg_home_odds,
+                        "average_away_odds": avg_away_odds,
+                        "average_tie_odds": avg_tie_odds if sport == "soccer" else None,
+                    }
 
-        # Return None values if no data is available
-        return {
-            "average_home_odds": None,
-            "average_away_odds": None,
-            "average_tie_odds": None,
-        }
+            # Return None values if no data is available
+            return {
+                "average_home_odds": None,
+                "average_away_odds": None,
+                "average_tie_odds": None,
+            }
+        except requests.exceptions.RequestException as e:
+            bt.logging.error(f"Error fetching odds for game {game_id} in {sport}: {e}")
+            return {
+                "average_home_odds": None,
+                "average_away_odds": None,
+                "average_tie_odds": None,
+            }

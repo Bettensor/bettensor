@@ -189,7 +189,14 @@ class MinerStatsHandler:
 
     def check_and_reset_daily_cash(self):
         with self.lock:
-            last_reset = datetime.fromisoformat(self.stats.get('last_daily_reset', '2000-01-01T00:00:00+00:00'))
+            last_reset_str = self.stats.get('last_daily_reset')
+            if last_reset_str is None:
+                bt.logging.warning("last_daily_reset is None, initializing to current time")
+                last_reset = datetime.now(timezone.utc)
+                self.stats['last_daily_reset'] = last_reset.isoformat()
+                self.state_manager.update_state(self.stats)
+            else:
+                last_reset = datetime.fromisoformat(last_reset_str)
             now = datetime.now(timezone.utc)
             if now.date() > last_reset.date():
                 self.reset_daily_cash()
@@ -210,7 +217,8 @@ class MinerStatsHandler:
             'miner_lifetime_wager': 0.0,
             'miner_lifetime_earnings': 0.0,
             'miner_win_loss_ratio': 0.0,
-            'miner_last_prediction_date': None
+            'miner_last_prediction_date': None,
+            'last_daily_reset': datetime.now(timezone.utc).isoformat()
         }
         self.stats.update(default_stats)
         self.state_manager.update_state(default_stats)
@@ -249,7 +257,7 @@ class MinerStateManager:
                 self.db_manager.connection_pool.putconn(conn)
 
     def initialize_state(self) -> Dict[str, Any]:
-        # bt.logging.trace("Initializing new miner state in database")
+        bt.logging.info("Initializing new miner state in database")
         initial_state = {
             'miner_hotkey': self.miner_hotkey,
             'miner_uid': self.miner_uid,

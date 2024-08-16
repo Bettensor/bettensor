@@ -106,7 +106,8 @@ class BettensorValidator(BaseNeuron):
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
         self.api_client = APIClient(self.rapid_api_key)
 
-        
+        self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
+        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -495,9 +496,10 @@ class BettensorValidator(BaseNeuron):
         for synapse in predictions:
             # ensure synapse has at least 3 elements
             if len(synapse) >= 3:
-                prediction_data = synapse[0]
+                game_data_dict = synapse[0]
                 prediction_dict: TeamGamePrediction = synapse[1]
                 metadata = synapse[2]
+                error = synapse[3] if len(synapse) > 3 else None
 
                 if metadata and hasattr(metadata, "neuron_uid"):
                     uid = metadata.neuron_uid
@@ -509,6 +511,12 @@ class BettensorValidator(BaseNeuron):
                         bt.logging.trace(
                             f"prediction from miner {uid} is none and will be skipped."
                         )
+                        bt.logging.debug(f"""Synapse Details:
+                                            game_data_dict_len: {len(game_data_dict) if game_data_dict else 0}
+                                            prediction_dict: {prediction_dict if prediction_dict else 0}
+                                            metadata: {metadata if metadata else 0}
+                                            error: {error if error else 0}
+                                            """)
                 else:
                     bt.logging.warning(
                         "metadata is missing or does not contain neuron_uid."
@@ -627,6 +635,10 @@ class BettensorValidator(BaseNeuron):
         """saves the state of the validator to a file"""
         bt.logging.info("saving validator state")
 
+        # Convert datetime to timestamp before saving
+        last_api_call_timestamp = self.last_api_call.timestamp()
+        last_update_recent_games_timestamp = self.last_update_recent_games.timestamp()
+
         # save the state of the validator to file
         torch.save(
             {
@@ -635,12 +647,14 @@ class BettensorValidator(BaseNeuron):
                 "hotkeys": self.hotkeys,
                 "last_updated_block": self.last_updated_block,
                 "blacklisted_miner_hotkeys": self.blacklisted_miner_hotkeys,
+                "last_api_call": last_api_call_timestamp,
+                "last_update_recent_games": last_update_recent_games_timestamp,
             },
             self.base_path + "/state.pt",
         )
 
         bt.logging.debug(
-            f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}"
+            f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {last_api_call_timestamp}, last_update_recent_games: {last_update_recent_games_timestamp}"
         )
 
     def reset_validator_state(self, state_path):
@@ -661,8 +675,6 @@ class BettensorValidator(BaseNeuron):
 
     def load_state(self):
         """loads the state of the validator from a file"""
-
-        # load the state of the validator from file
         state_path = self.base_path + "/state.pt"
         if path.exists(state_path):
             try:
@@ -675,6 +687,10 @@ class BettensorValidator(BaseNeuron):
                 self.last_updated_block = state["last_updated_block"]
                 if "blacklisted_miner_hotkeys" in state.keys():
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
+                
+                # Convert timestamps back to datetime
+                self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
+                self.last_update_recent_games = datetime.fromtimestamp(state.get("last_update_recent_games", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
 
                 bt.logging.info(f"scores loaded from saved file: {self.scores}")
             except Exception as e:
@@ -682,7 +698,6 @@ class BettensorValidator(BaseNeuron):
                     f"validator state reset because an exception occurred: {e}"
                 )
                 self.reset_validator_state(state_path=state_path)
-
         else:
             self.init_default_scores()
 
@@ -1027,10 +1042,21 @@ class BettensorValidator(BaseNeuron):
         bt.logging.info("Recent games and predictions update process completed")
 
     async def run_sync_in_async(self, fn):
-        return await self.loop.run_in_executor(self.thread_executor, fn)
+        try:
+            return await self.loop.run_in_executor(self.thread_executor, fn)
+        except StopIteration:
+            bt.logging.warning("StopIteration encountered in run_sync_in_async. Handling gracefully.")
+            return None
+        except Exception as e:
+            bt.logging.error(f"Error in run_sync_in_async: {e}")
+            return None
     
     def recalculate_all_profits(self):
         self.weight_setter.recalculate_daily_profits()
 
     async def set_weights(self):
-        return await self.weight_setter.set_weights(self.db_path)
+        try:
+            return await self.weight_setter.set_weights(self.db_path)
+        except StopIteration:
+            bt.logging.warning("StopIteration encountered in set_weights. Handling gracefully.")
+            return None

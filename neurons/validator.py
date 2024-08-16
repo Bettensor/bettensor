@@ -4,14 +4,14 @@
 # Copyright © 2023 geardici
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
+# documentation files (the "Software"), to deal in the Software without restriction, including without limitation
 # the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
 # and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
 # The above copyright notice and this permission notice shall be included in all copies or substantial portions of
 # the Software.
 
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
 # THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
@@ -113,10 +113,17 @@ async def main(validator: BettensorValidator):
             {"id": "812", "season": 2024},  # Super Cup, Belarus
         ]
     }
-
-    all_games =  await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
-    last_api_call = datetime.now()
-
+    # commenting this out to prevent excessive api calls if validator crashes - strictly once/hour now
+    """ try:
+        all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
+        if all_games is None:
+            bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
+        else:
+            validator.last_api_call = datetime.now()
+    except Exception as e:
+        bt.logging.error(f"Error fetching game data: {e}")
+        # Continue with the previous data
+ """
     validator.serve_axon()
     await validator.initialize_connection()
 
@@ -129,11 +136,37 @@ async def main(validator: BettensorValidator):
 
         try:
             watchdog.reset()
-            current_time = datetime.now()
-            if current_time - last_api_call >= timedelta(hours=1):
-                # Update games every hour
-                all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
-                last_api_call = current_time
+            current_time = datetime.now(timezone.utc)
+            
+            # Ensure last_api_call is a datetime object
+            if not isinstance(validator.last_api_call, datetime):
+                validator.last_api_call = datetime.fromtimestamp(validator.last_api_call, tz=timezone.utc)
+            
+            # Update games every hour
+            if current_time - validator.last_api_call >= timedelta(hours=1):
+                try:
+                    all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
+                    if all_games is None:
+                        bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
+                    else:
+                        validator.last_api_call = current_time
+                        validator.save_state()  # Save state after updating last_api_call
+                except Exception as e:
+                    bt.logging.error(f"Error fetching game data: {e}")
+                    # Continue with the previous data
+
+            # Ensure last_update_recent_games is a datetime object
+            if not isinstance(validator.last_update_recent_games, datetime):
+                validator.last_update_recent_games = datetime.fromtimestamp(validator.last_update_recent_games, tz=timezone.utc)
+
+            # Update recent games every 30 minutes
+            if current_time - validator.last_update_recent_games >= timedelta(minutes=30):
+                try:
+                    await validator.run_sync_in_async(validator.update_recent_games)
+                    validator.last_update_recent_games = current_time
+                    validator.save_state()  # Save state after updating last_update_recent_games
+                except Exception as e:
+                    bt.logging.error(f"Error updating recent games: {str(e)}")
 
             # Periodically sync subtensor status and save the state file
             if validator.step % 5 == 0:
@@ -202,12 +235,18 @@ async def main(validator: BettensorValidator):
             bt.logging.debug(
                 f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}"
             )
-            responses = validator.dendrite.query(
-                axons=uids_to_query,
-                synapse=synapse,
-                timeout=validator.timeout,
-                deserialize=True,
-            )
+
+
+            # Batch query the neurons to avoid timeout errors, 20 at a time
+            responses = []
+
+            for i in range(0, len(uids_to_query), 20):
+                responses += validator.dendrite.query(
+                    axons=uids_to_query[i:i+20],
+                    synapse=synapse,
+                    timeout=validator.timeout,
+                    deserialize=True,
+                )
 
             # Process blacklisted UIDs (set scores to 0)
             bt.logging.debug(f"blacklisted_uids: {blacklisted_uids}")
@@ -261,7 +300,7 @@ async def main(validator: BettensorValidator):
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
 
-            if current_block - validator.last_updated_block > 299:
+            if current_block - validator.last_updated_block > 30:
                 # Sends data to the website
                 try:
                     result = fetch_and_send_predictions("data/validator.db")
@@ -269,14 +308,17 @@ async def main(validator: BettensorValidator):
                     if result:
                         bt.logging.info("Predictions fetched and sent successfully")
                     else:
-                        bt.logging.warning("No predictions were sent or an error occurred")
+                        bt.logging.warning("No new predictions were sent this round")
                 except Exception as e:
                     bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
-            if current_block - validator.last_updated_block > 299:
+            current_time = datetime.now(timezone.utc)
+            if current_time - validator.last_api_call >= timedelta(minutes=30):  # 30 minutes in seconds
                 # Update results before setting weights next block
                 await validator.run_sync_in_async(validator.update_recent_games)
-                
+                validator.last_api_call = current_time
+                validator.save_state()  # Save state after updating last_api_call
+            
             if current_block - validator.last_updated_block > 300:
 
                 try:
@@ -287,23 +329,25 @@ async def main(validator: BettensorValidator):
                     
                     if validator.subtensor is not None:
                         success = await validator.set_weights()
-                        if success:
-                            validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
-                            bt.logging.info("Successfully updated weights and last updated block")
-                        else:
-                            validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
-                            bt.logging.warning("Failed to set weights, continuing with next iteration.")
+                        bt.logging.info("Weight update attempt completed")
                     else:
-                        validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                         bt.logging.error("Failed to reinitialize subtensor. Skipping weight update.")
+                        success = False
                 except Exception as e:
-                    validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
                     bt.logging.error(f"Error during weight update process: {str(e)}")
-                    bt.logging.warning("Continuing with next iteration despite weight update failure.")
+                    success = False
 
-            # need to update the last_updated_block here regardless of success or failure on weight update, otherwise api will be called too often
-            
-            
+                # Update last_updated_block regardless of the outcome
+                try:
+                    validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
+                    bt.logging.info(f"Updated last_updated_block to {validator.last_updated_block}")
+                except Exception as e:
+                    bt.logging.error(f"Error updating last_updated_block: {str(e)}")
+
+                if success:
+                    bt.logging.info("Successfully updated weights")
+                else:
+                    bt.logging.warning("Failed to set weights or encountered an error, continuing with next iteration.")
 
             # End the current step and prepare for the next iteration.
             validator.step += 1
@@ -317,7 +361,7 @@ async def main(validator: BettensorValidator):
         except TimeoutError as e:
             bt.logging.error(f"Error in main loop: {str(e)}")
             # Attempt to reconnect if necessary
-            await self.initialize_connection()
+            await validator.initialize_connection()
 
 
 # The main function parses the configuration and runs the validator.

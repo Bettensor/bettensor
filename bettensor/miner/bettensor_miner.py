@@ -136,9 +136,9 @@ class BettensorMiner(BaseNeuron):
         # Initialize MinerConfig
         self.miner_config = MinerConfig()
 
-        # Initialize SoccerPredictor
-        #self.soccer_predictor = SoccerPredictor(model_name="your_model_name_here")
-
+        #check if miner_uid in miner_stats table is the same as the current miner_uid 
+        self.update_miner_uid_in_stats_db()
+        
     def forward(self, synapse: GameData) -> GameData:
         bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
 
@@ -185,7 +185,13 @@ class BettensorMiner(BaseNeuron):
             
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")
-            return self._clean_synapse(synapse)
+            return self._clean_synapse(synapse, f"Error in forward method: {e}")
+        
+        #ensure synapse is correctly structured one last time , otherwise return error type
+        if synapse.metadata.synapse_type != "prediction":
+            bt.logging.error(f"Synapse is not of type prediction: {type(synapse)}")
+            return self._clean_synapse(synapse, f"Synapse is not of type prediction: {type(synapse)}")
+
 
         return synapse
 
@@ -207,11 +213,11 @@ class BettensorMiner(BaseNeuron):
             synapse_type=synapse_type,
         )
 
-    def _clean_synapse(self, synapse: GameData) -> GameData:
+    def _clean_synapse(self, synapse: GameData, error: str) -> GameData:
         if not synapse.prediction_dict:
-            bt.logging.debug("Cleaning synapse due to no predictions available")
+            bt.logging.warning("Cleaning synapse due to no predictions available")
         else:
-            bt.logging.debug("Cleaning synapse due to error")
+            bt.logging.error(f"Cleaning synapse due to error: {error}")
         
         synapse.gamedata_dict = None
         synapse.prediction_dict = None
@@ -221,6 +227,7 @@ class BettensorMiner(BaseNeuron):
             neuron_uid=self.miner_uid,
             synapse_type="error",
         )
+        synapse.error = error
         bt.logging.debug("Synapse cleaned")
         return synapse
 
@@ -589,3 +596,55 @@ class BettensorMiner(BaseNeuron):
         while True:
             bt.logging.info("Miner health check: Still listening for Redis messages")
             time.sleep(300)  # Check every 5 minutes
+
+
+    def update_miner_uid_in_stats_db(self):
+        bt.logging.info("Updating miner_uid in stats database if necessary")
+        
+        try:
+            with self.db_manager.connection_pool.getconn() as conn:
+                with conn.cursor() as cur:
+                    # Check for existing entry with matching hotkey but different miner_uid
+                    cur.execute("""
+                        SELECT miner_uid FROM miner_stats 
+                        WHERE miner_hotkey = %s AND miner_uid != %s
+                    """, (self.miner_hotkey, self.miner_uid))
+                    
+                    result = cur.fetchone()
+                    
+                    if result:
+                        old_miner_uid = result[0]
+                        bt.logging.warning(f"Found mismatch: Hotkey {self.miner_hotkey} associated with miner_uid {old_miner_uid}")
+                        
+                        # Delete the old entry
+                        cur.execute("DELETE FROM miner_stats WHERE miner_uid = %s", (old_miner_uid,))
+                        
+                        # Create a new entry with the current miner_uid
+                        cur.execute("""
+                            INSERT INTO miner_stats (miner_uid, miner_hotkey, miner_cash, daily_cash)
+                            VALUES (%s, %s, 1000, 1000)
+                        """, (self.miner_uid, self.miner_hotkey))
+                        
+                        # Delete all predictions for the old miner_uid
+                        cur.execute("DELETE FROM predictions WHERE miner_id = %s", (old_miner_uid,))
+                        
+                        conn.commit()
+                        
+                        bt.logging.warning(f"Updated miner_uid from {old_miner_uid} to {self.miner_uid}")
+                        bt.logging.warning("Deleted all predictions associated with the old miner_uid")
+                    else:
+                        bt.logging.info("No miner_uid mismatch found. No updates necessary.")
+        
+        except Exception as e:
+            bt.logging.error(f"Error updating miner_uid in stats database: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+        finally:
+            if conn:
+                self.db_manager.connection_pool.putconn(conn)
+
+        
+       
+
+
+
+
