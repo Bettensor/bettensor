@@ -106,7 +106,7 @@ class BettensorValidator(BaseNeuron):
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
         self.api_client = APIClient(self.rapid_api_key)
 
-        self.last_api_call = datetime.now(timezone.utc) - timedelta(hours=1)  # Initialize to 1 hour ago
+        self.last_api_call = time.time() - 3600  # Initialize to 1 hour ago
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -635,7 +635,7 @@ class BettensorValidator(BaseNeuron):
         bt.logging.info("saving validator state")
 
         # Convert datetime to timestamp before saving
-        last_api_call_timestamp = self.last_api_call.replace(tzinfo=timezone.utc).timestamp()
+        last_api_call_timestamp = self.last_api_call.timestamp()
 
         # save the state of the validator to file
         torch.save(
@@ -686,7 +686,7 @@ class BettensorValidator(BaseNeuron):
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
                 
                 # Convert timestamp back to datetime
-                last_api_call_timestamp = state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp())
+                last_api_call_timestamp = state.get("last_api_call", time.time() - 3600)  # Default to 1 hour ago if not present
                 self.last_api_call = datetime.fromtimestamp(last_api_call_timestamp, tz=timezone.utc)
 
                 bt.logging.info(f"scores loaded from saved file: {self.scores}")
