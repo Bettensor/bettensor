@@ -137,8 +137,13 @@ async def main(validator: BettensorValidator):
         try:
             watchdog.reset()
             current_time = datetime.now(timezone.utc)
+            
+            # Ensure last_api_call is a datetime object
+            if not isinstance(validator.last_api_call, datetime):
+                validator.last_api_call = datetime.fromtimestamp(validator.last_api_call, tz=timezone.utc)
+            
+            # Update games every hour
             if current_time - validator.last_api_call >= timedelta(hours=1):
-                # Update games every hour
                 try:
                     all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
                     if all_games is None:
@@ -149,6 +154,19 @@ async def main(validator: BettensorValidator):
                 except Exception as e:
                     bt.logging.error(f"Error fetching game data: {e}")
                     # Continue with the previous data
+
+            # Ensure last_update_recent_games is a datetime object
+            if not isinstance(validator.last_update_recent_games, datetime):
+                validator.last_update_recent_games = datetime.fromtimestamp(validator.last_update_recent_games, tz=timezone.utc)
+
+            # Update recent games every 30 minutes
+            if current_time - validator.last_update_recent_games >= timedelta(minutes=30):
+                try:
+                    await validator.run_sync_in_async(validator.update_recent_games)
+                    validator.last_update_recent_games = current_time
+                    validator.save_state()  # Save state after updating last_update_recent_games
+                except Exception as e:
+                    bt.logging.error(f"Error updating recent games: {str(e)}")
 
             # Periodically sync subtensor status and save the state file
             if validator.step % 5 == 0:
