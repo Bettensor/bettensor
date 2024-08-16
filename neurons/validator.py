@@ -113,8 +113,8 @@ async def main(validator: BettensorValidator):
             {"id": "812", "season": 2024},  # Super Cup, Belarus
         ]
     }
-
-    try:
+    # commenting this out to prevent excessive api calls if validator crashes - strictly once/hour now
+    """ try:
         all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
         if all_games is None:
             bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
@@ -123,7 +123,7 @@ async def main(validator: BettensorValidator):
     except Exception as e:
         bt.logging.error(f"Error fetching game data: {e}")
         # Continue with the previous data
-
+ """
     validator.serve_axon()
     await validator.initialize_connection()
 
@@ -281,7 +281,7 @@ async def main(validator: BettensorValidator):
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
 
-            if current_block - validator.last_updated_block > 299:
+            if current_block - validator.last_updated_block > 30:
                 # Sends data to the website
                 try:
                     result = fetch_and_send_predictions("data/validator.db")

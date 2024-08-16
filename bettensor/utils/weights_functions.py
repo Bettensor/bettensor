@@ -484,6 +484,6 @@ class WeightSetter:
                 bt.logging.error(f"Error setting weights: {str(e)}")
             
             if i < NUM_RETRIES - 1:
-                await asyncio.sleep(1)
+                await asyncio.sleep(10)
         
         bt.logging.error("Failed to set weights after all attempts.")

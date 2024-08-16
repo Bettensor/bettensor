@@ -210,7 +210,8 @@ class MinerStatsHandler:
             'miner_lifetime_wager': 0.0,
             'miner_lifetime_earnings': 0.0,
             'miner_win_loss_ratio': 0.0,
-            'miner_last_prediction_date': None
+            'miner_last_prediction_date': None,
+            'last_daily_reset': datetime.now(timezone.utc).isoformat()
         }
         self.stats.update(default_stats)
         self.state_manager.update_state(default_stats)

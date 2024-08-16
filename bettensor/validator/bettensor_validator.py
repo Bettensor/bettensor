@@ -498,6 +498,7 @@ class BettensorValidator(BaseNeuron):
                 game_data_dict = synapse[0]
                 prediction_dict: TeamGamePrediction = synapse[1]
                 metadata = synapse[2]
+                error = synapse[3] if len(synapse) > 3 else None
 
                 if metadata and hasattr(metadata, "neuron_uid"):
                     uid = metadata.neuron_uid
@@ -513,6 +514,7 @@ class BettensorValidator(BaseNeuron):
                                             game_data_dict_len: {len(game_data_dict) if game_data_dict else 0}
                                             prediction_dict: {prediction_dict if prediction_dict else 0}
                                             metadata: {metadata if metadata else 0}
+                                            error: {error if error else 0}
                                             """)
                 else:
                     bt.logging.warning(

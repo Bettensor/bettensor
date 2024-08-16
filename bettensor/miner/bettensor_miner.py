@@ -185,7 +185,13 @@ class BettensorMiner(BaseNeuron):
             
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")
-            return self._clean_synapse(synapse)
+            return self._clean_synapse(synapse, f"Error in forward method: {e}")
+        
+        #ensure synapse is correctly structured one last time , otherwise return error type
+        if synapse.metadata.synapse_type != "prediction":
+            bt.logging.error(f"Synapse is not of type prediction: {type(synapse)}")
+            return self._clean_synapse(synapse, f"Synapse is not of type prediction: {type(synapse)}")
+
 
         return synapse
 
@@ -207,11 +213,11 @@ class BettensorMiner(BaseNeuron):
             synapse_type=synapse_type,
         )
 
-    def _clean_synapse(self, synapse: GameData) -> GameData:
+    def _clean_synapse(self, synapse: GameData, error: str) -> GameData:
         if not synapse.prediction_dict:
-            bt.logging.debug("Cleaning synapse due to no predictions available")
+            bt.logging.warning("Cleaning synapse due to no predictions available")
         else:
-            bt.logging.debug("Cleaning synapse due to error")
+            bt.logging.error(f"Cleaning synapse due to error: {error}")
         
         synapse.gamedata_dict = None
         synapse.prediction_dict = None
@@ -221,6 +227,7 @@ class BettensorMiner(BaseNeuron):
             neuron_uid=self.miner_uid,
             synapse_type="error",
         )
+        synapse.error = error
         bt.logging.debug("Synapse cleaned")
         return synapse
 
@@ -589,3 +596,16 @@ class BettensorMiner(BaseNeuron):
         while True:
             bt.logging.info("Miner health check: Still listening for Redis messages")
             time.sleep(300)  # Check every 5 minutes
+
+            
+    def update_miner_uid_in_stats_db(self):
+        # looks for matching hotkey in miner_stats table and updates miner_uid if it's different. Reset
+        query = "UPDATE miner_stats SET miner_uid = %s WHERE hotkey = %s"
+        try:
+            conn, cur = self.db_manager.connection_pool.getconn(), None
+            cur = conn.cursor()
+            cur.execute(query, (self.miner_uid, self.wallet.hotkey.ss58_address))
+            conn.commit()
+            bt.logging.info(f"Updated miner_uid in stats database to: {self.miner_uid}")
+        except Exception as e:
+            bt.logging.error(f"Error updating miner_uid in stats database: {str(e)}")

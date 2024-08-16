@@ -180,6 +180,7 @@ class GameData(bt.Synapse):
     metadata: Optional[Metadata]
     gamedata_dict: Optional[Dict[str, TeamGame]]
     prediction_dict: Optional[Dict[str, TeamGamePrediction]]
+    error: Optional[str]
 
     @classmethod
     def create(
