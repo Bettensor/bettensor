@@ -136,8 +136,8 @@ async def main(validator: BettensorValidator):
 
         try:
             watchdog.reset()
-            current_time = datetime.now()
-            if current_time - validator.last_api_call >= 3600:
+            current_time = datetime.now(timezone.utc)
+            if current_time - validator.last_api_call >= timedelta(hours=1):
                 # Update games every hour
                 try:
                     all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
@@ -145,6 +145,7 @@ async def main(validator: BettensorValidator):
                         bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
                     else:
                         validator.last_api_call = current_time
+                        validator.save_state()  # Save state after updating last_api_call
                 except Exception as e:
                     bt.logging.error(f"Error fetching game data: {e}")
                     # Continue with the previous data
