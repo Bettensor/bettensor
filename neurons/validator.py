@@ -216,12 +216,18 @@ async def main(validator: BettensorValidator):
             bt.logging.debug(
                 f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}"
             )
-            responses = validator.dendrite.query(
-                axons=uids_to_query,
-                synapse=synapse,
-                timeout=validator.timeout,
-                deserialize=True,
-            )
+
+
+            # Batch query the neurons to avoid timeout errors, 20 at a time
+            responses = []
+
+            for i in range(0, len(uids_to_query), 20):
+                responses += validator.dendrite.query(
+                    axons=uids_to_query[i:i+20],
+                    synapse=synapse,
+                    timeout=validator.timeout,
+                    deserialize=True,
+                )
 
             # Process blacklisted UIDs (set scores to 0)
             bt.logging.debug(f"blacklisted_uids: {blacklisted_uids}")
