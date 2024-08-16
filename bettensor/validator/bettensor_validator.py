@@ -106,7 +106,7 @@ class BettensorValidator(BaseNeuron):
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
         self.api_client = APIClient(self.rapid_api_key)
 
-        self.last_api_call = datetime.now() - timedelta(hours=2)  # Initialize to ensure first call happens immediately
+        self.last_api_call = time.time() - 3600  # Initialize to 1 hour ago
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -683,7 +683,7 @@ class BettensorValidator(BaseNeuron):
                 self.last_updated_block = state["last_updated_block"]
                 if "blacklisted_miner_hotkeys" in state.keys():
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
-                self.last_api_call = state.get("last_api_call", datetime.now() - timedelta(hours=2))
+                self.last_api_call = state.get("last_api_call", time.time() - 3600)  # Default to 1 hour ago if not present
 
                 bt.logging.info(f"scores loaded from saved file: {self.scores}")
             except Exception as e:
