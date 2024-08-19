@@ -387,7 +387,7 @@ class BettensorValidator(BaseNeuron):
                     continue
 
                 # Check if the game has already started
-                if current_time >= event_start_date:
+                if current_time >= event_start_date + timedelta(minutes=5):
                     bt.logging.debug(
                         f"Prediction not inserted: game {teamGameID} has already started."
                     )
@@ -504,14 +504,8 @@ class BettensorValidator(BaseNeuron):
                     uid = metadata.neuron_uid
 
                     # Ensure prediction_dict is not None before processing
-                    if prediction_dict is not None and prediction_dict:
-                        predictions_dict[uid] = {}
-                        for game_id, prediction in prediction_dict.items():
-                            # Process each prediction
-                            if self.is_valid_prediction(prediction):
-                                predictions_dict[uid][game_id] = prediction
-                            else:
-                                bt.logging.warning(f"Invalid prediction for game {game_id} from miner {uid}")
+                    if prediction_dict is not None:
+                        predictions_dict[uid] = prediction_dict
                     else:
                         bt.logging.trace(f"prediction from miner {uid} is empty and will be skipped.")
                 else:
