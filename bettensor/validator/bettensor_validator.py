@@ -508,6 +508,12 @@ class BettensorValidator(BaseNeuron):
                         predictions_dict[uid] = prediction_dict
                     else:
                         bt.logging.trace(f"prediction from miner {uid} is empty and will be skipped.")
+                        bt.logging.trace(f"""Synapse Details:
+                                            game_data_dict_len: {len(game_data_dict) if game_data_dict else 0}
+                                            prediction_dict: {prediction_dict if prediction_dict else 0}
+                                            metadata: {metadata if metadata else 0}
+                                            error: {error if error else 0}
+                                            """)
                 else:
                     bt.logging.warning("metadata is missing or does not contain neuron_uid.")
             else:

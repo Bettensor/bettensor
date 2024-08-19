@@ -127,7 +127,7 @@ async def main(validator: BettensorValidator):
     validator.serve_axon()
     await validator.initialize_connection()
 
-    watchdog = Watchdog(timeout=300)  # 5 minutes timeout
+    watchdog = Watchdog(timeout=600)  # 10 minutes timeout
 
     bt.logging.info("Recalculating daily profits...")
     validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
