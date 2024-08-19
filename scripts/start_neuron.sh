@@ -137,7 +137,7 @@ else
 fi
 
 echo "Starting $NEURON_TYPE with arguments: $DEFAULT_NEURON_ARGS"
-pm2 start --name "$NEURON_NAME" python -- ./neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
+pm2 start --name "$NEURON_NAME" python -- ./neurons/$NEURON_TYPE.py -i 1 $DEFAULT_NEURON_ARGS
 
 # Check if the neuron started successfully
 if pm2 list | grep -q "$NEURON_NAME"; then
