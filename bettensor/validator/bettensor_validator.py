@@ -1,7 +1,7 @@
 from argparse import ArgumentParser
 import bittensor as bt
 import json
-from typing import Tuple
+from typing import Dict, Tuple
 import sqlite3
 import os
 import sys
@@ -494,37 +494,30 @@ class BettensorValidator(BaseNeuron):
         predictions_dict = {}
 
         for synapse in predictions:
-            # ensure synapse has at least 3 elements
             if len(synapse) >= 3:
                 game_data_dict = synapse[0]
-                prediction_dict: TeamGamePrediction = synapse[1]
+                prediction_dict: Dict[str, TeamGamePrediction] = synapse[1]
                 metadata = synapse[2]
                 error = synapse[3] if len(synapse) > 3 else None
 
                 if metadata and hasattr(metadata, "neuron_uid"):
                     uid = metadata.neuron_uid
 
-                    # ensure prediction_dict is not none before adding it to predictions_dict
-                    if prediction_dict is not None and any(prediction_dict.values()):
-                        predictions_dict[uid] = prediction_dict
+                    # Ensure prediction_dict is not None before processing
+                    if prediction_dict is not None and prediction_dict:
+                        predictions_dict[uid] = {}
+                        for game_id, prediction in prediction_dict.items():
+                            # Process each prediction
+                            if self.is_valid_prediction(prediction):
+                                predictions_dict[uid][game_id] = prediction
+                            else:
+                                bt.logging.warning(f"Invalid prediction for game {game_id} from miner {uid}")
                     else:
-                        bt.logging.trace(
-                            f"prediction from miner {uid} is none and will be skipped."
-                        )
-                        bt.logging.debug(f"""Synapse Details:
-                                            game_data_dict_len: {len(game_data_dict) if game_data_dict else 0}
-                                            prediction_dict: {prediction_dict if prediction_dict else 0}
-                                            metadata: {metadata if metadata else 0}
-                                            error: {error if error else 0}
-                                            """)
+                        bt.logging.trace(f"prediction from miner {uid} is empty and will be skipped.")
                 else:
-                    bt.logging.warning(
-                        "metadata is missing or does not contain neuron_uid."
-                    )
+                    bt.logging.warning("metadata is missing or does not contain neuron_uid.")
             else:
-                bt.logging.warning(
-                    "synapse data is incomplete or not in the expected format."
-                )
+                bt.logging.warning("synapse data is incomplete or not in the expected format.")
 
         self.create_table()
         self.insert_predictions(processed_uids, predictions_dict)
@@ -961,7 +954,7 @@ class BettensorValidator(BaseNeuron):
 
             self.update_game_outcome(externalId, numeric_outcome)
         else:
-            bt.logging.error(f"Failed to fetch game data for {externalId}. Status code: {response.status_code}")
+            bt.logging.error(f"Failed to fetch game data for {externalId}. Status code: {game_response.status_code}")
 
     def update_recent_games(self):
         """Updates the outcomes of recent games and corresponding predictions"""
