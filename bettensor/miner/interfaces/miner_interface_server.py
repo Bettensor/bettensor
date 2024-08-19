@@ -10,7 +10,7 @@ from flask_cors import CORS
 import redis
 import requests
 from werkzeug.serving import run_simple
-import jwt as pyjwt
+import jwt 
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError, DecodeError
 from bettensor.protocol import TeamGamePrediction
 from functools import wraps
@@ -133,16 +133,16 @@ def token_required(f):
 
         try:
             # Decode the token without verifying the signature
-            decoded = pyjwt.decode(token, options={"verify_signature": False})
+            decoded = jwt.decode(token, options={"verify_signature": False})
             print(f"Decoded token: {decoded}")
             
             # Now verify the signature separately
-            pyjwt.decode(token, config.JWT_SECRET, algorithms=["HS256"], options={"verify_aud": False})
+            jwt.decode(token, config.JWT_SECRET, algorithms=["HS256"], options={"verify_aud": False})
             print("Token signature successfully verified")
         except ExpiredSignatureError:
             print("Token has expired")
             return jsonify({'message': 'Token has expired!'}), 401
-        except (InvalidTokenError, pyjwt.DecodeError) as e:
+        except (InvalidTokenError, jwt.DecodeError) as e:
             print(f"Invalid token: {str(e)}")
             print(f"JWT_SECRET used: {config.JWT_SECRET}")
             return jsonify({'message': 'Token is invalid!'}), 401
