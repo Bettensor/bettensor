@@ -208,7 +208,7 @@ class WeightSetter:
             return math.log10(count + 1) / math.log10(min_count)
     
     def compute_decay_factors(self):
-        decay_rate = 0.30
+        decay_rate = 0.46
         max_age_days = 365
         return {
             age: math.exp(-decay_rate * min(age, max_age_days))
