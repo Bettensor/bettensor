@@ -150,6 +150,9 @@ class BettensorMiner(BaseNeuron):
         #check if miner_uid in miner_stats table is the same as the current miner_uid 
         self.update_miner_uid_in_stats_db()
         
+        #check if miner_uid in miner_stats table is the same as the current miner_uid 
+        self.update_miner_uid_in_stats_db()
+        
     def forward(self, synapse: GameData) -> GameData:
         bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
 
