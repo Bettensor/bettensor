@@ -387,7 +387,7 @@ class BettensorValidator(BaseNeuron):
                     continue
 
                 # Check if the game has already started
-                if current_time >= event_start_date + timedelta(minutes=5):
+                if current_time >= event_start_date:
                     bt.logging.debug(
                         f"Prediction not inserted: game {teamGameID} has already started."
                     )
