@@ -373,6 +373,7 @@ if __name__ == "__main__":
     parser.add_argument('--wallet.name', type=str, help="The name of the wallet to use")
     parser.add_argument('--wallet.hotkey', type=str, help="The hotkey of the wallet to use")
     parser.add_argument('--logging.trace', action='store_true', help="Enable trace logging")
+    parser.add_argument('--logging.debug', action='store_true', help="Enable debug logging")
     parser.add_argument(
         "--alpha", type=float, default=0.9, help="The alpha value for the validator."
     )
