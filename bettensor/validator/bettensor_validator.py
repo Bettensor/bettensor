@@ -108,6 +108,8 @@ class BettensorValidator(BaseNeuron):
 
         self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
         self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
+        self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
+        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -499,6 +501,7 @@ class BettensorValidator(BaseNeuron):
                 prediction_dict: Dict[str, TeamGamePrediction] = synapse[1]
                 metadata = synapse[2]
                 error = synapse[3] if len(synapse) > 3 else None
+                error = synapse[3] if len(synapse) > 3 else None
 
                 if metadata and hasattr(metadata, "neuron_uid"):
                     uid = metadata.neuron_uid
@@ -632,6 +635,10 @@ class BettensorValidator(BaseNeuron):
         last_api_call_timestamp = self.last_api_call.timestamp()
         last_update_recent_games_timestamp = self.last_update_recent_games.timestamp()
 
+        # Convert datetime to timestamp before saving
+        last_api_call_timestamp = self.last_api_call.timestamp()
+        last_update_recent_games_timestamp = self.last_update_recent_games.timestamp()
+
         # save the state of the validator to file
         torch.save(
             {
@@ -642,11 +649,14 @@ class BettensorValidator(BaseNeuron):
                 "blacklisted_miner_hotkeys": self.blacklisted_miner_hotkeys,
                 "last_api_call": last_api_call_timestamp,
                 "last_update_recent_games": last_update_recent_games_timestamp,
+                "last_api_call": last_api_call_timestamp,
+                "last_update_recent_games": last_update_recent_games_timestamp,
             },
             self.base_path + "/state.pt",
         )
 
         bt.logging.debug(
+            f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {last_api_call_timestamp}, last_update_recent_games: {last_update_recent_games_timestamp}"
             f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {last_api_call_timestamp}, last_update_recent_games: {last_update_recent_games_timestamp}"
         )
 
@@ -680,6 +690,10 @@ class BettensorValidator(BaseNeuron):
                 self.last_updated_block = state["last_updated_block"]
                 if "blacklisted_miner_hotkeys" in state.keys():
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
+                
+                # Convert timestamps back to datetime
+                self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
+                self.last_update_recent_games = datetime.fromtimestamp(state.get("last_update_recent_games", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
                 
                 # Convert timestamps back to datetime
                 self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
@@ -1035,6 +1049,14 @@ class BettensorValidator(BaseNeuron):
         bt.logging.info("Recent games and predictions update process completed")
 
     async def run_sync_in_async(self, fn):
+        try:
+            return await self.loop.run_in_executor(self.thread_executor, fn)
+        except StopIteration:
+            bt.logging.warning("StopIteration encountered in run_sync_in_async. Handling gracefully.")
+            return None
+        except Exception as e:
+            bt.logging.error(f"Error in run_sync_in_async: {e}")
+            return None
         try:
             return await self.loop.run_in_executor(self.thread_executor, fn)
         except StopIteration:
