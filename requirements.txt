@@ -15,7 +15,6 @@ backcall==0.2.0
 backoff==2.2.1
 base58==2.1.1
 beautifulsoup4==4.12.3
--e git+https://github.com/Bettensor/bettensor.git@81a9dd44d1dcd703ed92f5bf9fc619edb393a929#egg=bettensor
 bittensor==6.9.3
 black==23.7.0
 bleach==6.1.0

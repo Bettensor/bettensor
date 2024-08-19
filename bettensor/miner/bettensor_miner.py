@@ -22,6 +22,7 @@ from bettensor.miner.interfaces.redis_interface import RedisInterface
 from bettensor.miner.models.model_utils import SoccerPredictor, MinerConfig
 import uuid
 from datetime import datetime, timezone
+from bettensor.miner.utils.health_check import run_health_check
 
 class BettensorMiner(BaseNeuron):
     def __init__(self, parser: ArgumentParser):
@@ -68,6 +69,16 @@ class BettensorMiner(BaseNeuron):
         except Exception as e:
             bt.logging.error(f"Error in self.setup(): {e}")
             raise
+
+        # Run health check
+        db_params = {
+            "db_name": self.args.db_name,
+            "db_user": self.args.db_user,
+            "db_password": self.args.db_password,
+            "db_host": self.args.db_host,
+            "db_port": self.args.db_port,
+        }
+        run_health_check(db_params, self.args.axon.port)
 
         # Initialize Redis interface
         self.redis_interface = RedisInterface(host=self.args.redis_host, port=self.args.redis_port)
@@ -139,6 +150,9 @@ class BettensorMiner(BaseNeuron):
         #check if miner_uid in miner_stats table is the same as the current miner_uid 
         self.update_miner_uid_in_stats_db()
         
+        #check if miner_uid in miner_stats table is the same as the current miner_uid 
+        self.update_miner_uid_in_stats_db()
+        
     def forward(self, synapse: GameData) -> GameData:
         bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
 
@@ -165,7 +179,7 @@ class BettensorMiner(BaseNeuron):
 
             if not recent_predictions:
                 bt.logging.warning("No predictions available")
-                return self._clean_synapse(synapse)
+                return self._clean_synapse(synapse, "No predictions available")
 
             # Filter out predictions with finished outcomes
             unfinished_predictions = {
@@ -175,7 +189,7 @@ class BettensorMiner(BaseNeuron):
 
             if not unfinished_predictions:
                 bt.logging.warning("No unfinished predictions available")
-                return self._clean_synapse(synapse)
+                return self._clean_synapse(synapse, "No unfinished predictions available")
 
             synapse.prediction_dict = unfinished_predictions
             synapse.gamedata_dict = None
@@ -619,14 +633,12 @@ class BettensorMiner(BaseNeuron):
                         # Delete the old entry
                         cur.execute("DELETE FROM miner_stats WHERE miner_uid = %s", (old_miner_uid,))
                         
-                        # Create a new entry with the current miner_uid
-                        cur.execute("""
-                            INSERT INTO miner_stats (miner_uid, miner_hotkey, miner_cash, daily_cash)
-                            VALUES (%s, %s, 1000, 1000)
-                        """, (self.miner_uid, self.miner_hotkey))
+
+                        self.state_manager.initialize_state()
+                        self.stats_handler.load_stats_from_state()
                         
                         # Delete all predictions for the old miner_uid
-                        cur.execute("DELETE FROM predictions WHERE miner_id = %s", (old_miner_uid,))
+                        cur.execute("DELETE FROM predictions WHERE minerid = %s", (old_miner_uid,))
                         
                         conn.commit()
                         

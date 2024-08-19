@@ -20,17 +20,6 @@ FIRST_RUN_FLAG="/tmp/bettensor_first_run_after_update"
 if [ ! -f "$FIRST_RUN_FLAG" ]; then
     echo "First run after update. Executing migration and setup processes..."
     
-    if [ -f ./scripts/backup_and_migrate.sh ]; then
-    chmod +x ./scripts/backup_and_migrate.sh
-    echo "Running backup_and_migrate.sh..."
-    if ! ./scripts/backup_and_migrate.sh; then
-        echo "backup_and_migrate.sh failed. Exiting."
-        exit 1
-    fi
-    else
-        echo "backup_and_migrate.sh not found. Skipping backup and migration."
-    fi
-
     if [ -f ./scripts/migrate.sh ]; then
         chmod +x ./scripts/migrate.sh
         echo "Running migrate.sh..."
@@ -49,8 +38,6 @@ if [ ! -f "$FIRST_RUN_FLAG" ]; then
     exec "$0" "$@"
 fi
 
-
-
 update_and_restart() {
     echo "New updates detected. Stashing local changes..."
     git stash
@@ -63,20 +50,12 @@ update_and_restart() {
         echo "Making post-merge hook executable..."
         if [ ! -f .git/hooks/post-merge ]; then
             echo "#!/bin/bash" > .git/hooks/post-merge
-            echo "./scripts/backup_and_migrate.sh" >> .git/hooks/post-merge
             echo "./scripts/migrate.sh" >> .git/hooks/post-merge
             echo "pip install -e ." >> .git/hooks/post-merge
             echo "./scripts/restart_pm2_processes.sh" >> .git/hooks/post-merge
         fi
         chmod +x .git/hooks/post-merge
-        echo "Triggering backup, migration, and setup process..."
-        if [ -f ./scripts/backup_and_migrate.sh ]; then
-            chmod +x ./scripts/backup_and_migrate.sh
-            ./scripts/backup_and_migrate.sh
-        else
-            echo "backup_and_migrate.sh not found. Skipping backup and migration."
-        fi
-
+        echo "Triggering migration and setup process..."
         if [ -f ./scripts/migrate.sh ]; then
             chmod +x ./scripts/migrate.sh
             bash ./scripts/migrate.sh
@@ -100,6 +79,7 @@ update_and_restart() {
         return 1
     fi
 }
+
 while true; do
     echo "Fetching updates..."
     git fetch
