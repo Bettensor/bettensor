@@ -22,6 +22,7 @@ from bettensor.miner.interfaces.redis_interface import RedisInterface
 from bettensor.miner.models.model_utils import SoccerPredictor, MinerConfig
 import uuid
 from datetime import datetime, timezone
+from bettensor.miner.utils.health_check import run_health_check
 
 class BettensorMiner(BaseNeuron):
     def __init__(self, parser: ArgumentParser):
@@ -68,6 +69,16 @@ class BettensorMiner(BaseNeuron):
         except Exception as e:
             bt.logging.error(f"Error in self.setup(): {e}")
             raise
+
+        # Run health check
+        db_params = {
+            "db_name": self.args.db_name,
+            "db_user": self.args.db_user,
+            "db_password": self.args.db_password,
+            "db_host": self.args.db_host,
+            "db_port": self.args.db_port,
+        }
+        run_health_check(db_params, self.args.axon.port)
 
         # Initialize Redis interface
         self.redis_interface = RedisInterface(host=self.args.redis_host, port=self.args.redis_port)
@@ -139,6 +150,9 @@ class BettensorMiner(BaseNeuron):
         #check if miner_uid in miner_stats table is the same as the current miner_uid 
         self.update_miner_uid_in_stats_db()
         
+        #check if miner_uid in miner_stats table is the same as the current miner_uid 
+        self.update_miner_uid_in_stats_db()
+        
     def forward(self, synapse: GameData) -> GameData:
         bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
 
@@ -165,7 +179,7 @@ class BettensorMiner(BaseNeuron):
 
             if not recent_predictions:
                 bt.logging.warning("No predictions available")
-                return self._clean_synapse(synapse)
+                return self._clean_synapse(synapse, "No predictions available")
 
             # Filter out predictions with finished outcomes
             unfinished_predictions = {
@@ -175,7 +189,7 @@ class BettensorMiner(BaseNeuron):
 
             if not unfinished_predictions:
                 bt.logging.warning("No unfinished predictions available")
-                return self._clean_synapse(synapse)
+                return self._clean_synapse(synapse, "No unfinished predictions available")
 
             synapse.prediction_dict = unfinished_predictions
             synapse.gamedata_dict = None
@@ -185,6 +199,13 @@ class BettensorMiner(BaseNeuron):
             
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")
+            return self._clean_synapse(synapse, f"Error in forward method: {e}")
+        
+        #ensure synapse is correctly structured one last time , otherwise return error type
+        if synapse.metadata.synapse_type != "prediction":
+            bt.logging.error(f"Synapse is not of type prediction: {type(synapse)}")
+            return self._clean_synapse(synapse, f"Synapse is not of type prediction: {type(synapse)}")
+
             return self._clean_synapse(synapse, f"Error in forward method: {e}")
         
         #ensure synapse is correctly structured one last time , otherwise return error type
@@ -213,10 +234,13 @@ class BettensorMiner(BaseNeuron):
             synapse_type=synapse_type,
         )
 
+    
     def _clean_synapse(self, synapse: GameData, error: str) -> GameData:
         if not synapse.prediction_dict:
             bt.logging.warning("Cleaning synapse due to no predictions available")
+            bt.logging.warning("Cleaning synapse due to no predictions available")
         else:
+            bt.logging.error(f"Cleaning synapse due to error: {error}")
             bt.logging.error(f"Cleaning synapse due to error: {error}")
         
         synapse.gamedata_dict = None
@@ -227,6 +251,7 @@ class BettensorMiner(BaseNeuron):
             neuron_uid=self.miner_uid,
             synapse_type="error",
         )
+        synapse.error = error
         synapse.error = error
         bt.logging.debug("Synapse cleaned")
         return synapse
@@ -596,6 +621,57 @@ class BettensorMiner(BaseNeuron):
         while True:
             bt.logging.info("Miner health check: Still listening for Redis messages")
             time.sleep(300)  # Check every 5 minutes
+
+
+    def update_miner_uid_in_stats_db(self):
+        bt.logging.info("Updating miner_uid in stats database if necessary")
+        
+        try:
+            with self.db_manager.connection_pool.getconn() as conn:
+                with conn.cursor() as cur:
+                    # Check for existing entry with matching hotkey but different miner_uid
+                    cur.execute("""
+                        SELECT miner_uid FROM miner_stats 
+                        WHERE miner_hotkey = %s AND miner_uid != %s
+                    """, (self.miner_hotkey, self.miner_uid))
+                    
+                    result = cur.fetchone()
+                    
+                    if result:
+                        old_miner_uid = result[0]
+                        bt.logging.warning(f"Found mismatch: Hotkey {self.miner_hotkey} associated with miner_uid {old_miner_uid}")
+                        
+                        # Delete the old entry
+                        cur.execute("DELETE FROM miner_stats WHERE miner_uid = %s", (old_miner_uid,))
+                        
+
+                        self.state_manager.initialize_state()
+                        self.stats_handler.load_stats_from_state()
+                        
+                        # Delete all predictions for the old miner_uid
+                        cur.execute("DELETE FROM predictions WHERE minerid = %s", (old_miner_uid,))
+                        
+                        conn.commit()
+                        
+                        bt.logging.warning(f"Updated miner_uid from {old_miner_uid} to {self.miner_uid}")
+                        bt.logging.warning("Deleted all predictions associated with the old miner_uid")
+                    else:
+                        bt.logging.info("No miner_uid mismatch found. No updates necessary.")
+        
+        except Exception as e:
+            bt.logging.error(f"Error updating miner_uid in stats database: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+        finally:
+            if conn:
+                self.db_manager.connection_pool.putconn(conn)
+
+        
+       
+
+
+
+
+
 
 
     def update_miner_uid_in_stats_db(self):

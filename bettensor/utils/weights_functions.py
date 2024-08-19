@@ -143,6 +143,12 @@ class WeightSetter:
         
         try:
             start_date = datetime(2024, 7, 28).date().isoformat()
+
+            # Check if there's any data in the predictions table
+            cursor.execute("SELECT COUNT(*) FROM predictions")
+            if cursor.fetchone()[0] == 0:
+                bt.logging.warning("No predictions data available. Skipping daily profits recalculation.")
+                return
             
             cursor.execute("""
                 UPDATE daily_miner_stats
@@ -188,6 +194,7 @@ class WeightSetter:
             bt.logging.info(f"Successfully recalculated daily profits from {start_date} to now")
         except Exception as e:
             bt.logging.error(f"Error recalculating daily profits: {e}")
+            bt.logging.error(f"Error recalculating daily profits: {e.with_traceback()}")
             conn.rollback()
         finally:
             conn.close()
@@ -201,7 +208,7 @@ class WeightSetter:
             return math.log10(count + 1) / math.log10(min_count)
     
     def compute_decay_factors(self):
-        decay_rate = 0.30
+        decay_rate = 0.46
         max_age_days = 365
         return {
             age: math.exp(-decay_rate * min(age, max_age_days))

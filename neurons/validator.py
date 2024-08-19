@@ -127,7 +127,7 @@ async def main(validator: BettensorValidator):
     validator.serve_axon()
     await validator.initialize_connection()
 
-    watchdog = Watchdog(timeout=300)  # 5 minutes timeout
+    watchdog = Watchdog(timeout=600)  # 10 minutes timeout
 
     bt.logging.info("Recalculating daily profits...")
     validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
@@ -381,8 +381,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_targets",
         type=int,
-        default=128,
-        help="Sets the value for the number of targets to query at once",
+        default=256,
+        help="Sets the value for the number of targets to query - set to 256 to ensure all miners are querie, it is now batched",
     )
     parser.add_argument(
         "--load_state",
