@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 import asyncio
 import bittensor as bt
+from bettensor import __spec_version__
 
 class WeightSetter:
     def __init__(self, metagraph, wallet, subtensor, neuron_config, loop, thread_executor, db_path):
@@ -471,6 +472,7 @@ class WeightSetter:
                         wallet=self.wallet,
                         uids=self.metagraph.uids,
                         weights=weights,
+                        version_key=__spec_version__,
                         wait_for_inclusion=False,
                         wait_for_finalization=True,
                     )),
