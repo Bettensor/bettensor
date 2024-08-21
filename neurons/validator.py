@@ -127,7 +127,11 @@ async def main(validator: BettensorValidator):
     validator.serve_axon()
     await validator.initialize_connection()
 
-    watchdog = Watchdog(timeout=600)  # 10 minutes timeout
+    watchdog = Watchdog(timeout=900)  # 15 minutes timeout
+
+    if not validator.last_updated_block:
+        bt.logging.info("Updating last updated block; will set weights this iteration")
+        validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block) - 301
 
     bt.logging.info("Recalculating daily profits...")
     validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
