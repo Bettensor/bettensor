@@ -25,9 +25,8 @@ LOGGING_LEVEL=""
 # Miner-specific variables
 AXON_PORT=""
 VALIDATOR_MIN_STAKE=""
-SERVER_TYPE=""
 
-# Function to prompt for user input
+# Function to prompt for user input if not provided as an argument
 prompt_for_input() {
     local prompt="$1"
     local default="$2"
@@ -38,38 +37,41 @@ prompt_for_input() {
     fi
 }
 
-# Function to prompt for yes/no input
+# Function to prompt for yes/no input if not provided as an argument
 prompt_yes_no() {
     local prompt="$1"
     local var_name="$2"
-    while true; do
-        read -p "$prompt [y/n]: " yn
-        case $yn in
-            [Yy]* ) eval $var_name="true"; break;;
-            [Nn]* ) eval $var_name="false"; break;;
-            * ) echo "Please answer yes or no.";;
-        esac
-    done
+    if [ -z "${!var_name}" ]; then
+        while true; do
+            read -p "$prompt [y/n]: " yn
+            case $yn in
+                [Yy]* ) eval $var_name="true"; break;;
+                [Nn]* ) eval $var_name="false"; break;;
+                * ) echo "Please answer yes or no.";;
+            esac
+        done
+    fi
 }
 
-# Function to prompt for server type (only for miners)
-prompt_for_server_type() {
-    local prompt="Do you want to run the server locally or connect to a central server?"
-    local var_name="SERVER_TYPE"
-    while true; do
-        read -p "$prompt [local/central]: " user_input
-        case $user_input in
-            [Ll]ocal ) eval $var_name="local"; break;;
-            [Cc]entral ) eval $var_name="central"; break;;
-            * ) echo "Please answer local or central.";;
-        esac
-    done
-}
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --neuron_type) NEURON_TYPE="$2"; shift 2 ;;
+        --network) NETWORK="$2"; shift 2 ;;
+        --wallet.name) WALLET_NAME="$2"; shift 2 ;;
+        --wallet.hotkey) WALLET_HOTKEY="$2"; shift 2 ;;
+        --logging.level) LOGGING_LEVEL="$2"; shift 2 ;;
+        --axon.port) AXON_PORT="$2"; shift 2 ;;
+        --validator_min_stake) VALIDATOR_MIN_STAKE="$2"; shift 2 ;;
+        --disable_auto_update) DISABLE_AUTO_UPDATE="$2"; shift 2 ;;
+        *) echo "Unknown parameter passed: $1"; exit 1 ;;
+    esac
+done
 
-# Prompt for neuron type
+# Prompt for neuron type if not provided
 prompt_for_input "Enter neuron type (miner/validator)" "miner" "NEURON_TYPE"
 
-# Prompt for network
+# Prompt for network if not provided
 prompt_for_input "Enter network (local/test/finney)" "finney" "NETWORK"
 case $NETWORK in
     test)
@@ -86,7 +88,7 @@ case $NETWORK in
         ;;
 esac
 
-# Prompt for wallet name and hotkey
+# Prompt for wallet name and hotkey if not provided
 prompt_for_input "Enter wallet name" "default" "WALLET_NAME"
 prompt_for_input "Enter wallet hotkey" "default" "WALLET_HOTKEY"
 DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --wallet.name $WALLET_NAME --wallet.hotkey $WALLET_HOTKEY"
@@ -97,9 +99,6 @@ if [ "$NEURON_TYPE" = "miner" ]; then
     DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --validator_min_stake $VALIDATOR_MIN_STAKE"
     prompt_for_input "Enter axon port" "12345" "AXON_PORT"
     DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --axon.port $AXON_PORT"
-    
-    # Prompt for server type
-    prompt_for_server_type
     
     # Set up PostgreSQL database parameters
     DB_NAME="bettensor"
@@ -120,24 +119,26 @@ if [ "$NEURON_TYPE" = "miner" ]; then
     python3 bettensor/miner/utils/health_check.py "$AXON_PORT" "$DB_PARAMS"
 fi
 
-# Prompt for logging level
+# Prompt for logging level if not provided
 prompt_for_input "Enter logging level (info/debug/trace)" "debug" "LOGGING_LEVEL"
 DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --logging.$LOGGING_LEVEL"
 
-# Prompt for disabling auto-update
+# Prompt for disabling auto-update if not provided
 prompt_yes_no "Do you want to disable auto-update? Warning: this will apply to all running neurons" "DISABLE_AUTO_UPDATE"
 
 # Start the neuron with PM2
 if [ "$NEURON_TYPE" = "miner" ]; then
     MINER_COUNT=$(pm2 list | grep -c "miner")
     NEURON_NAME="miner$MINER_COUNT"
+    NEURON_ARGS="$DEFAULT_NEURON_ARGS --axon.port $AXON_PORT"
 else
     VALIDATOR_COUNT=$(pm2 list | grep -c "validator")
     NEURON_NAME="validator$VALIDATOR_COUNT"
+    NEURON_ARGS="$DEFAULT_NEURON_ARGS"
 fi
 
-echo "Starting $NEURON_TYPE with arguments: $DEFAULT_NEURON_ARGS"
-pm2 start --name "$NEURON_NAME" -i 1 python -- ./neurons/$NEURON_TYPE.py $DEFAULT_NEURON_ARGS
+echo "Starting $NEURON_TYPE with arguments: $NEURON_ARGS"
+pm2 start --name "$NEURON_NAME" python -- ./neurons/$NEURON_TYPE.py $NEURON_ARGS
 
 # Check if the neuron started successfully
 if pm2 list | grep -q "$NEURON_NAME"; then
@@ -150,28 +151,23 @@ fi
 
 # Start additional services only for miners
 if [ "$NEURON_TYPE" = "miner" ]; then
-    # Start Flask server only if central server is selected
-    if [ "$SERVER_TYPE" = "central" ]; then
-        if ! pm2 list | grep -q "flask-server"; then
-            echo "Starting Flask server..."
-            pm2 start --name "flask-server" python -- \
-                -m bettensor.miner.interfaces.miner_interface_server \
-                --host "0.0.0.0" --port 5000 --public
+    if ! pm2 list | grep -q "flask-server"; then
+        echo "Starting Flask server..."
+        pm2 start --name "flask-server" python -- \
+            -m bettensor.miner.interfaces.miner_interface_server \
             
-            sleep 2  # Give the server a moment to start
+        
+        sleep 2  # Give the server a moment to start
 
-            if pm2 list | grep -q "flask-server"; then
-                echo "Flask server started successfully."
-                pm2 logs "flask-server" --lines 20 --nostream
-            else
-                echo "Failed to start Flask server. Check logs for details."
-                pm2 logs "flask-server" --lines 20 --nostream
-            fi
+        if pm2 list | grep -q "flask-server"; then
+            echo "Flask server started successfully."
+            pm2 logs "flask-server" --lines 20 --nostream
         else
-            echo "Flask server is already running."
+            echo "Failed to start Flask server. Check logs for details."
+            pm2 logs "flask-server" --lines 20 --nostream
         fi
     else
-        echo "Local server selected. Skipping Flask server startup."
+        echo "Flask server is already running."
     fi
 fi
 

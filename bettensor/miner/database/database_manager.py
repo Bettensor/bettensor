@@ -15,18 +15,18 @@ class DatabaseManager:
         self.db_port = db_port
         self.max_connections = max_connections
         
-        bt.logging.info("Initializing DatabaseManager")
-        bt.logging.info(f"Checking root user")
+        bt.logging.debug("Initializing DatabaseManager")
+        bt.logging.debug(f"Checking root user")
         self.is_root = self.check_root_user()
-        bt.logging.info(f"Ensuring database exists")
+        bt.logging.debug(f"Ensuring database exists")
         self.ensure_database_exists()
-        bt.logging.info(f"Waiting for database")
+        bt.logging.debug(f"Waiting for database")
         self.wait_for_database()
-        bt.logging.info(f"Creating connection pool")
+        bt.logging.debug(f"Creating connection pool")
         self.connection_pool = self.create_connection_pool()
-        bt.logging.info(f"Creating tables")
+        bt.logging.debug(f"Creating tables")
         self.create_tables()
-        bt.logging.info("DatabaseManager initialization complete")
+        bt.logging.debug("DatabaseManager initialization complete")
 
     def check_root_user(self):
         return self.db_user == 'root'
@@ -50,12 +50,12 @@ class DatabaseManager:
                 exists = cur.fetchone()
                 
                 if not exists:
-                    bt.logging.info(f"Creating database {self.db_name}")
+                    bt.logging.debug(f"Creating database {self.db_name}")
                     # Create the database
                     cur.execute(f"CREATE DATABASE {self.db_name}")
-                    bt.logging.info(f"Database {self.db_name} created successfully")
+                    bt.logging.debug(f"Database {self.db_name} created successfully")
                 else:
-                    bt.logging.info(f"Database {self.db_name} already exists")
+                    bt.logging.debug(f"Database {self.db_name} already exists")
         
         except psycopg2.Error as e:
             bt.logging.error(f"Error ensuring database exists: {e}")
@@ -79,8 +79,8 @@ class DatabaseManager:
                 ) as conn:
                     with conn.cursor() as cur:
                         cur.execute("SELECT 1")
-                bt.logging.info("Successfully connected to the database.")
-                return
+                        bt.logging.debug("Successfully connected to the database.")
+                        return
             except psycopg2.OperationalError:
                 if attempt < max_retries - 1:
                     bt.logging.warning(f"Database not ready (attempt {attempt + 1}/{max_retries}). Retrying in {retry_delay} seconds...")
@@ -175,7 +175,7 @@ class DatabaseManager:
         for table_name, create_query in tables:
             try:
                 self.execute_query(create_query)
-                bt.logging.info(f"Created table: {table_name}")
+                bt.logging.debug(f"Created table: {table_name}")
             except Exception as e:
                 bt.logging.error(f"Error creating table {table_name}: {e}")
 
