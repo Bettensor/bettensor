@@ -308,7 +308,7 @@ async def main(validator: BettensorValidator):
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
 
-            if current_block - validator.last_updated_block > 30:
+            if current_block - validator.last_updated_block % 15:
                 # Sends data to the website
                 try:
                     result = fetch_and_send_predictions("data/validator.db")
@@ -320,13 +320,6 @@ async def main(validator: BettensorValidator):
                 except Exception as e:
                     bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
-            current_time = datetime.now(timezone.utc)
-            if current_time - validator.last_api_call >= timedelta(minutes=30):  # 30 minutes in seconds
-                # Update results before setting weights next block
-                await validator.run_sync_in_async(validator.update_recent_games)
-                validator.last_api_call = current_time
-                validator.save_state()  # Save state after updating last_api_call
-            
             if current_block - validator.last_updated_block > 300:
 
                 try:
