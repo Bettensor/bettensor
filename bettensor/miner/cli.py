@@ -40,6 +40,10 @@ from bettensor.miner.database.database_manager import DatabaseManager
 from bettensor.miner.database.predictions import PredictionsHandler
 from bettensor.miner.database.games import GamesHandler
 from bettensor.miner.stats.miner_stats import MinerStateManager, MinerStatsHandler
+from prompt_toolkit.application.current import get_app
+from rich.console import Group
+from rich.align import Align
+import asyncio
 
 # Set up logging
 log_dir = "logs"
@@ -118,6 +122,7 @@ class Application:
         self.submission_message = None
         self.last_prediction_time = 0
         self.last_prediction_id = None
+        self.confirmation_mode = False
 
         self.initialize(progress)
 
@@ -453,7 +458,14 @@ class Application:
                     self.search_query.lower() in v.teamB.lower()}
         
         if not games:
-            return Panel(Text("No games found matching the search criteria.", justify="center", style=LIGHT_GREEN), title="Active Games", border_style=DARK_GREEN)
+            return Panel(
+                Group(
+                    self.generate_miner_info(),
+                    Text("No games found matching the search criteria.", justify="center", style=LIGHT_GREEN)
+                ),
+                title="Active Games",
+                border_style=DARK_GREEN
+            )
 
         max_widths = {
             "Sport": max((len(game.sport) for game in games.values()), default=10),
@@ -494,7 +506,15 @@ class Application:
         else:
             footer = f"Page {self.page} of {max(1, (len(games) - 1) // self.items_per_page + 1)}"
 
-        return Panel(Group(table, Text(footer, justify="center", style=LIGHT_GREEN)), title="Active Games", border_style=DARK_GREEN)
+        return Panel(
+            Group(
+                self.generate_miner_info(),
+                table,
+                Text(footer, justify="center", style=LIGHT_GREEN)
+            ),
+            title="Active Games",
+            border_style=DARK_GREEN
+        )
 
     def enter_prediction_for_selected_game(self):
         games = list(self.games_handler.get_active_games().items())
@@ -510,6 +530,11 @@ class Application:
         self.can_tie = selected_game.canTie  # Store the canTie value
 
     def generate_enter_prediction_view(self):
+        if hasattr(self, 'confirmation_mode') and self.confirmation_mode:
+            # Only display the confirmation message
+            content = [Text(self.submission_message, style="bold green", justify="center")]
+            return Panel(Group(*content), title="Prediction Confirmation", border_style=DARK_GREEN)
+        
         table = Table(show_header=False, box=box.ROUNDED, border_style=DARK_GREEN)
         table.add_column("Field", style=LIGHT_GREEN)
         table.add_column("Value", style=GOLD)
@@ -532,10 +557,15 @@ class Application:
         if self.wager_input_mode:
             footer_text = f"Enter wager amount (press 'w' to confirm, backspace to delete). Current input: ${self.wager_input}"
         
-        content = [table]
+        content = [
+            self.generate_miner_info(),
+            table
+        ]
+        
         if hasattr(self, 'submission_message') and self.submission_message:
-            content.append(Text(self.submission_message))
-            self.submission_message = None  # Clear the message after displaying it
+            message_style = "bold green" if "submitted" in self.submission_message else "bold red"
+            content.append(Text(self.submission_message, style=message_style))
+        
         content.append(Text(footer_text, style=LIGHT_GREEN))
         
         return Panel(Group(*content), title="Enter Prediction", border_style=DARK_GREEN)
@@ -766,6 +796,11 @@ class Application:
             self.predictions_search_query = ""
             event.app.invalidate()
 
+        @self.kb.add(Keys.Any, filter=Condition(lambda: hasattr(self, 'confirmation_mode') and self.confirmation_mode))
+        def _(event):
+            # Ignore all key presses during confirmation mode
+            pass
+
     def select_next_miner(self):
         current_index = next((i for i, miner in enumerate(self.available_miners) if str(miner['miner_uid']) == str(self.miner_uid)), -1)
         next_index = (current_index + 1) % len(self.available_miners)
@@ -838,6 +873,7 @@ class Application:
             logging.error(f"Unhandled exception: {e}", exc_info=True)
 
     def get_formatted_text(self):
+        
         layout = self.generate_layout()
         console = Console(width=self.console.width, height=self.console.height)
         with console.capture() as capture:
@@ -880,14 +916,54 @@ class Application:
                 self.submission_message = f"Prediction submitted: {self.prediction_outcome} with wager ${self.prediction_wager:.2f}"
                 self.last_prediction_time = current_time
                 self.last_prediction_id = prediction['predictionID']
-                self.current_view = "games"
-                self.reload_miner_data()  # Reload data after successful submission
+                self.reload_miner_data()
+                
+                # Set a flag to indicate we're in confirmation mode
+                self.confirmation_mode = True
+                
+                # Schedule return to games view after 2 seconds
+                app = get_app()
+                app.invalidate()
+                app.create_background_task(self.delayed_return_to_games())
             else:
                 self.submission_message = f"Failed to submit prediction: {result['message']}"
         else:
             self.submission_message = "Please select an outcome and enter a wager amount."
+        
+        # Force a redraw
+        get_app().invalidate()
 
+    async def delayed_return_to_games(self):
+        await asyncio.sleep(2)  # Wait for 2 seconds
+        self.current_view = "games"
+        self.submission_message = None
+        self.confirmation_mode = False
+        get_app().invalidate()  # Force a redraw
 
+    def generate_miner_info(self):
+        current_time_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        
+        miner_info = Table.grid(padding=(0, 1))
+        miner_info.add_column(style="bold " + LIGHT_GREEN, justify="right")
+        miner_info.add_column(style=GOLD, justify="left")
+        miner_info.add_row("Miner UID:", self.miner_uid)
+        miner_info.add_row("Cash:", f"${self.miner_cash:.2f}")
+        miner_info.add_row("Last Prediction:", self.format_last_prediction_date(self.miner_last_prediction_date))
+        miner_info.add_row("Current Time:", current_time_utc)
+
+        # Wrap the table in a panel with a fixed width
+        panel = Panel(
+            miner_info,
+            title="Miner Info",
+            border_style=DARK_GREEN,
+            width=60,  # Increased width to accommodate the time
+            expand=False
+        )
+
+        # Center the panel
+        centered_panel = Align.center(panel)
+
+        return Group(centered_panel)
 
 if __name__ == "__main__":
     main()

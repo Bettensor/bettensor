@@ -57,6 +57,8 @@ limiter = Limiter(
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        bt.logging.info(f"Entering token_required decorator for function: {f.__name__}")
+        
         token = None
         auth_header = request.headers.get('Authorization')
         
@@ -69,17 +71,50 @@ def token_required(f):
         if not token:
             return jsonify({'message': 'Token is missing!'}), 401
 
+        # Load the stored token
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+        token_store_path = os.path.join(root_dir, 'token_store.json')
+        bt.logging.info(f"Looking for token_store.json at: {token_store_path}")
+
+        if not os.path.exists(token_store_path):
+            bt.logging.error(f"token_store.json not found at {token_store_path}")
+            return jsonify({'message': 'Token store not found!', 'path': token_store_path}), 500
+
+        try:
+            with open(token_store_path, 'r') as file:
+                stored_token_data = json.load(file)
+        except json.JSONDecodeError:
+            bt.logging.error(f"Invalid JSON in token_store.json at {token_store_path}")
+            return jsonify({'message': 'Invalid token store format!'}), 500
+
+        stored_token = stored_token_data.get('jwt')
+        if not stored_token:
+            bt.logging.error("No 'jwt' field in token_store.json")
+            return jsonify({'message': 'No valid token found in store!'}), 401
+
+        if token != stored_token:
+            bt.logging.warning("Provided token does not match stored token")
+            return jsonify({'message': 'Invalid token!'}), 401
+
+        if stored_token_data.get('revoked', False):
+            bt.logging.warning("Token has been revoked")
+            return jsonify({'message': 'Token has been revoked!'}), 401
+
         try:
             jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        except jwt.ExpiredSignatureError:
+        except ExpiredSignatureError:
+            bt.logging.warning("Token has expired")
             return jsonify({'message': 'Token has expired!'}), 401
-        except jwt.InvalidTokenError:
+        except InvalidTokenError:
+            bt.logging.warning("Invalid token")
             return jsonify({'message': 'Invalid token!'}), 401
-            
 
+        bt.logging.info(f"Token verification successful. Calling {f.__name__}")
         return f(*args, **kwargs)
 
     return decorated
+
 
 @app.route('/submit_predictions', methods=['POST'])
 @token_required
@@ -181,9 +216,9 @@ def get_active_miners():
                 cur.execute("""
                     SELECT m.miner_uid, m.miner_hotkey, m.miner_rank, m.miner_cash
                     FROM miner_stats m
-                    JOIN miner_active a ON m.miner_uid = a.miner_uid
+                    JOIN miner_active a ON m.miner_uid = CAST (a.miner_uid AS INTEGER)
                     WHERE a.last_active_timestamp > %s
-                """, (datetime.now() - timedelta(minutes=20),))
+                """, (datetime.utcnow() - timedelta(minutes=20),))
                 active_miners = cur.fetchall()
         return active_miners
     except Exception as e:
@@ -241,6 +276,59 @@ if __name__ == '__main__':
 
     cert_path = os.path.join(os.path.dirname(__file__), 'cert.pem')
     key_path = os.path.join(os.path.dirname(__file__), 'key.pem')
+
+    # Generate self-signed certificate if it doesn't exist
+    if not (os.path.exists(cert_path) and os.path.exists(key_path)):
+        bt.logging.info("Generating self-signed certificate...")
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization
+        import datetime
+
+        # Generate our key
+        key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+        )
+
+        # Generate a self-signed certificate
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, u"US"),
+            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, u"California"),
+            x509.NameAttribute(NameOID.LOCALITY_NAME, u"San Francisco"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, u"Bettensor"),
+            x509.NameAttribute(NameOID.COMMON_NAME, u"bettensor.com"),
+        ])
+        cert = x509.CertificateBuilder().subject_name(
+            subject
+        ).issuer_name(
+            issuer
+        ).public_key(
+            key.public_key()
+        ).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(
+            datetime.datetime.utcnow()
+        ).not_valid_after(
+            datetime.datetime.utcnow() + datetime.timedelta(days=365)
+        ).add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(u"localhost")]),
+            critical=False,
+        ).sign(key, hashes.SHA256())
+
+        # Write our certificate out to disk
+        with open(cert_path, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+        # Write our key out to disk
+        with open(key_path, "wb") as f:
+            f.write(key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert_path, key_path)

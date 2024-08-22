@@ -149,10 +149,6 @@ def main(miner: BettensorMiner):
                         else:
                             bt.logging.info("No soccer games to process")
 
-                    
-        
-                
-
             miner.step += 1
             time.sleep(1)
 
@@ -195,5 +191,6 @@ if __name__ == "__main__":
 
     # Create a miner based on the Class definitions
     subnet_miner = BettensorMiner(parser=parser)
+    subnet_miner.start()
 
     main(subnet_miner)
