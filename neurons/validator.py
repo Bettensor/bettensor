@@ -127,7 +127,15 @@ async def main(validator: BettensorValidator):
     validator.serve_axon()
     await validator.initialize_connection()
 
-    watchdog = Watchdog(timeout=600)  # 10 minutes timeout
+    # Load the state if `load_state` argument is set to True
+    if args.load_state.lower() == "true":
+        validator.load_state()
+
+    watchdog = Watchdog(timeout=900)  # 15 minutes timeout
+
+    if not validator.last_updated_block:
+        bt.logging.info("Updating last updated block; will set weights this iteration")
+        validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block) - 301
 
     bt.logging.info("Recalculating daily profits...")
     validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
@@ -155,16 +163,9 @@ async def main(validator: BettensorValidator):
                     bt.logging.error(f"Error fetching game data: {e}")
                     # Continue with the previous data
 
-            # Ensure last_update_recent_games is a datetime object
-            if not isinstance(validator.last_update_recent_games, datetime):
-                validator.last_update_recent_games = datetime.fromtimestamp(validator.last_update_recent_games, tz=timezone.utc)
-
-            # Update recent games every 30 minutes
-            if current_time - validator.last_update_recent_games >= timedelta(minutes=30):
                 try:
                     await validator.run_sync_in_async(validator.update_recent_games)
-                    validator.last_update_recent_games = current_time
-                    validator.save_state()  # Save state after updating last_update_recent_games
+                    validator.save_state()  # Save state after updating games
                 except Exception as e:
                     bt.logging.error(f"Error updating recent games: {str(e)}")
 
@@ -300,7 +301,7 @@ async def main(validator: BettensorValidator):
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
             )
 
-            if current_block - validator.last_updated_block > 30:
+            if current_block - validator.last_updated_block % 15:
                 # Sends data to the website
                 try:
                     result = fetch_and_send_predictions("data/validator.db")
@@ -312,13 +313,6 @@ async def main(validator: BettensorValidator):
                 except Exception as e:
                     bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
-            current_time = datetime.now(timezone.utc)
-            if current_time - validator.last_api_call >= timedelta(minutes=30):  # 30 minutes in seconds
-                # Update results before setting weights next block
-                await validator.run_sync_in_async(validator.update_recent_games)
-                validator.last_api_call = current_time
-                validator.save_state()  # Save state after updating last_api_call
-            
             if current_block - validator.last_updated_block > 300:
 
                 try:
@@ -403,3 +397,4 @@ if __name__ == "__main__":
         sys.exit()
 
     asyncio.get_event_loop().run_until_complete(main(validator))
+

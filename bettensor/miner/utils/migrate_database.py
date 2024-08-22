@@ -52,7 +52,7 @@ def wait_for_postgres(max_retries=5, retry_delay=5):
             pg_conn = get_postgres_connection()
             if pg_conn:
                 pg_conn.close()
-                bt.logging.info("Successfully connected to PostgreSQL.")
+                bt.logging.debug("Successfully connected to PostgreSQL.")
                 return True
         except psycopg2.OperationalError:
             if attempt < max_retries - 1:

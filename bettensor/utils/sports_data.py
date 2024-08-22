@@ -282,25 +282,33 @@ class SportsData:
                             and bet["name"] == "Match Winner"
                             and len(bet["values"]) >= 3
                         ):
-                            # Use next() to find the correct odds regardless of order
-                            home_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Home"))
-                            away_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Away"))
-                            tie_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Tie"))
+                            odds_dict = {odd["value"]: float(odd["odd"]) for odd in bet["values"]}
+                            home_odds = odds_dict.get("Home")
+                            away_odds = odds_dict.get("Away")
+                            tie_odds = odds_dict.get("Draw")  # Note: It might be "Draw" instead of "Tie"
                             
-                            total_home_odds += home_odds
-                            total_away_odds += away_odds
-                            total_tie_odds += tie_odds
-                            count += 1
+                            if home_odds and away_odds and tie_odds:
+                                total_home_odds += home_odds
+                                total_away_odds += away_odds
+                                total_tie_odds += tie_odds
+                                count += 1
+                            else:
+                                bt.logging.warning(f"Missing odds for game {game_id} in bookmaker {bookmaker['name']}")
                         elif (
                             sport == "baseball"
                             and bet["name"] == "Home/Away"
                             and len(bet["values"]) >= 2
                         ):
-                            home_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Home"))
-                            away_odds = float(next(odd["odd"] for odd in bet["values"] if odd["value"] == "Away"))
-                            total_home_odds += home_odds
-                            total_away_odds += away_odds
-                            count += 1
+                            odds_dict = {odd["value"]: float(odd["odd"]) for odd in bet["values"]}
+                            home_odds = odds_dict.get("Home")
+                            away_odds = odds_dict.get("Away")
+                            
+                            if home_odds and away_odds:
+                                total_home_odds += home_odds
+                                total_away_odds += away_odds
+                                count += 1
+                            else:
+                                bt.logging.warning(f"Missing odds for game {game_id} in bookmaker {bookmaker['name']}")
                 # Calculate average odds if count is greater than 0
                 if count > 0:
                     avg_home_odds = round(total_home_odds / count, 2) if total_home_odds else None

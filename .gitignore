@@ -183,5 +183,5 @@ current_miner_uid.txt
 token_store.json
 bettensor_backup*
 bettensor_backup*
-interfaces/cert.pem
-interfaces/key.pem
+cert.pem
+key.pem

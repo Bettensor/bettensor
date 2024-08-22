@@ -13,8 +13,7 @@ import numpy as np
 
 class PredictionsHandler:
     def __init__(self, db_manager, state_manager, miner_hotkey: str):
-        print("PredictionsHandler initialized")
-        bt.logging.info("PredictionsHandler initialized")
+        bt.logging.debug("PredictionsHandler initialized")
         self.db_manager = db_manager
         self.state_manager = state_manager
         self.miner_hotkey = miner_hotkey
@@ -34,7 +33,7 @@ class PredictionsHandler:
         """
         try:
             self.db_manager.execute_query(query, params=(self.miner_uid,))
-            bt.logging.info("Successfully updated predictions with miner ID")
+            bt.logging.debug("Successfully updated predictions with miner ID")
         except Exception as e:
             bt.logging.error(f"Error updating predictions with miner ID: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
@@ -82,7 +81,7 @@ class PredictionsHandler:
                     'wager': prediction.get('wager', 0),
                     'predictionDate': prediction.get('predictionDate')
                 })
-                bt.logging.info(f"Prediction {prediction['predictionID']} added successfully: {inserted_row}")
+                bt.logging.debug(f"Prediction {prediction['predictionID']} added successfully: {inserted_row}")
                 return {'status': 'success', 'message': f"Prediction {prediction['predictionID']} added successfully", 'data': inserted_row}
             else:
                 bt.logging.error("No row returned after insertion")
