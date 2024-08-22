@@ -127,6 +127,10 @@ async def main(validator: BettensorValidator):
     validator.serve_axon()
     await validator.initialize_connection()
 
+    # Load the state if `load_state` argument is set to True
+    if args.load_state.lower() == "true":
+        validator.load_state()
+
     watchdog = Watchdog(timeout=900)  # 15 minutes timeout
 
     if not validator.last_updated_block:
