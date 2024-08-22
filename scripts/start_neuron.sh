@@ -15,7 +15,7 @@ chmod +x neurons/*.py
 
 # Default neuron arguments
 DEFAULT_NEURON_ARGS=""
-DISABLE_AUTO_UPDATE="false"
+DISABLE_AUTO_UPDATE=""
 NEURON_TYPE=""
 NETWORK=""
 WALLET_NAME=""
@@ -41,16 +41,14 @@ prompt_for_input() {
 prompt_yes_no() {
     local prompt="$1"
     local var_name="$2"
-    if [ -z "${!var_name}" ]; then
-        while true; do
-            read -p "$prompt [y/n]: " yn
-            case $yn in
-                [Yy]* ) eval $var_name="true"; break;;
-                [Nn]* ) eval $var_name="false"; break;;
-                * ) echo "Please answer yes or no.";;
-            esac
-        done
-    fi
+    while true; do
+        read -p "$prompt [y/n]: " yn
+        case $yn in
+            [Yy]* ) eval $var_name="true"; break;;
+            [Nn]* ) eval $var_name="false"; break;;
+            * ) echo "Please answer yes or no.";;
+        esac
+    done
 }
 
 # Parse command line arguments
@@ -211,3 +209,4 @@ for process in "$NEURON_NAME" "flask-server" "auto-updater"; do
         echo ""
     fi
 done
+
