@@ -295,12 +295,11 @@ class DatabaseManager:
         )
         """
         self.execute_query(query)
-
     def update_miner_activity(self, miner_uid):
         query = """
         INSERT INTO miner_active (miner_uid, last_active_timestamp)
-        VALUES (%s, CURRENT_TIMESTAMP)
+        VALUES (%s, CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
         ON CONFLICT (miner_uid) DO UPDATE
-        SET last_active_timestamp = CURRENT_TIMESTAMP
+        SET last_active_timestamp = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
         """
         self.execute_query(query, (miner_uid,))
