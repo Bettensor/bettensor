@@ -15,7 +15,8 @@ backcall==0.2.0
 backoff==2.2.1
 base58==2.1.1
 beautifulsoup4==4.12.3
-bittensor==6.9.3
+-e git+https://github.com/Bettensor/bettensor.git@21c57ae01c70cbf8d3a42f2818a8393a11abf94b#egg=bettensor
+bittensor==6.9.4
 black==23.7.0
 bleach==6.1.0
 blinker==1.8.2
@@ -148,8 +149,6 @@ pyRFC3339==1.1
 pytest==8.2.2
 pytest-asyncio==0.23.7
 python-dateutil==2.9.0.post0
-pytest-asyncio==0.23.7
-python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 python-Levenshtein==0.25.1
 python-statemachine==2.1.2
@@ -167,7 +166,7 @@ rich==13.7.1
 rpds-py==0.20.0
 rsa==4.9
 safetensors==0.4.4
-scalecodec==1.2.7
+scalecodec==1.2.11
 schedule==1.2.2
 scikit-learn==1.4.2
 scipy==1.14.0
@@ -179,7 +178,7 @@ sniffio==1.3.1
 soupsieve==2.6
 stack-data==0.6.3
 starlette==0.27.0
-substrate-interface==1.7.5
+substrate-interface==1.7.10
 sympy==1.12.1
 Telethon==1.36.0
 termcolor==2.4.0
