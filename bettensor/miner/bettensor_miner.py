@@ -184,7 +184,7 @@ class BettensorMiner(BaseNeuron):
             # Filter out predictions with finished outcomes
             unfinished_predictions = {
                 pred_id: pred for pred_id, pred in recent_predictions.items()
-                if pred.outcome == "Unfinished"
+                if pred.outcome == "Unfinished" or pred.outcome == "unfinished"
             }
 
             if not unfinished_predictions:

@@ -266,6 +266,8 @@ class PredictionsHandler:
             return "Team B Win"
         elif outcome in [2, "2", "Tie"]:
             return "Tie"
+        elif outcome in ["Unfinished", "unfinished"]:
+            return "Unfinished"
         else:
             bt.logging.warning(f"Unknown game outcome: {outcome}")
             return "Unknown"

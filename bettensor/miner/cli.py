@@ -70,7 +70,7 @@ LIGHT_GOLD = "yellow"
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--miner_uid', type=str, help='Miner UID')
+    parser.add_argument('--uid', type=str, help='Miner UID to start with')
     args = parser.parse_args()
 
     console = Console()
@@ -84,12 +84,10 @@ def main():
     with progress:
         main_task = progress.add_task("Starting up...", total=1)
         
-        # Show the spinner immediately
         console.print("Initializing CLI...")
         
-        # Create the application in a separate function to allow the spinner to update
         def create_app():
-            return Application(progress, args.miner_uid)
+            return Application(progress, args.uid)
         
         app = progress.update(main_task, advance=1, description="Creating application...", refresh=True)
         app = create_app()
@@ -100,9 +98,9 @@ def main():
 
 
 class Application:
-    def __init__(self, progress, miner_uid):
+    def __init__(self, progress, uid=None):
         self.console = Console()
-        self.miner_uid = miner_uid
+        self.uid = uid
         self.cli_channel = f'cli:{uuid.uuid4()}'
         self.running = True
         self.current_view = "main_menu"
@@ -181,24 +179,24 @@ class Application:
 
         self.miner_stats = {str(row['miner_uid']): row for row in self.available_miners}
 
-        parser = argparse.ArgumentParser(description="BetTensor Miner CLI")
-        parser.add_argument("--uid", help="Specify the miner UID to start with")
-        args = parser.parse_args()
-        self.current_miner_uid = args.uid if args.uid else self.get_saved_miner_uid()
+        if self.uid:
+            self.current_miner_uid = self.uid
+        else:
+            self.current_miner_uid = self.get_saved_miner_uid()
 
         valid_miner_found = False
         for miner in self.available_miners:
             if str(miner['miner_uid']) == str(self.current_miner_uid):
                 self.miner_hotkey = str(miner['miner_hotkey'])
                 self.miner_uid = str(miner['miner_uid'])
-                self.miner_cash = float(miner['miner_cash'])  # Explicitly store miner cash
+                self.miner_cash = float(miner['miner_cash'])
                 valid_miner_found = True
                 break
 
         if not valid_miner_found:
             self.miner_hotkey = str(self.available_miners[0]['miner_hotkey'])
             self.miner_uid = str(self.available_miners[0]['miner_uid'])
-            self.miner_cash = float(self.available_miners[0]['miner_cash'])  # Explicitly store miner cash
+            self.miner_cash = float(self.available_miners[0]['miner_cash'])
 
         self.save_miner_uid(self.miner_uid)
 
