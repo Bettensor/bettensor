@@ -907,7 +907,7 @@ class Application:
                 'teamAodds': self.selected_game.teamAodds,
                 'teamBodds': self.selected_game.teamBodds,
                 'tieOdds': self.selected_game.tieOdds,
-                'outcome': 'unfinished'
+                'outcome': 'Unfinished'
             }
 
             result = self.predictions_handler.add_prediction(prediction)
