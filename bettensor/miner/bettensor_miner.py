@@ -238,9 +238,7 @@ class BettensorMiner(BaseNeuron):
     def _clean_synapse(self, synapse: GameData, error: str) -> GameData:
         if not synapse.prediction_dict:
             bt.logging.warning("Cleaning synapse due to no predictions available")
-            bt.logging.warning("Cleaning synapse due to no predictions available")
         else:
-            bt.logging.error(f"Cleaning synapse due to error: {error}")
             bt.logging.error(f"Cleaning synapse due to error: {error}")
         
         synapse.gamedata_dict = None
