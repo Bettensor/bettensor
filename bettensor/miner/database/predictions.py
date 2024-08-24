@@ -117,8 +117,8 @@ class PredictionsHandler:
         bt.logging.trace(f"Processing predictions for {len(updated_games)} updated games and {len(new_games)} new games")
         updated_predictions = self.process_game_results(updated_games)
         recent_predictions = self.get_recent_predictions()
-        result = {pred.predictionID: pred for pred in recent_predictions}
-        bt.logging.trace(f"Processed {len(result)} predictions")
+        result = {**recent_predictions, **updated_predictions}
+        bt.logging.info(f"Processed {len(result)} predictions")
         return result
     
     def process_model_predictions(self, games: Dict[str, TeamGame], sport: str) -> Dict[str, TeamGamePrediction]:
@@ -184,40 +184,63 @@ class PredictionsHandler:
         else:
             return None
 
-    def process_game_results(self, updated_games: Dict[str, TeamGame]):
-        bt.logging.trace(f"Processing game results for {len(updated_games)} games")
-        updated_predictions = []
-        batch_updates = []
+    def process_game_results(self, game_results: Dict[str, TeamGame]):
+        bt.logging.trace(f"Processing game results for {len(game_results)} games")
+        updated_predictions = {}
+        for game_id, game in game_results.items():
+            bt.logging.debug(f"Processing prediction for game {game_id}")
+            query = """
+            SELECT predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
+                   teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
+            FROM predictions
+            WHERE teamGameID = %s AND outcome = 'Unfinished'
+            """
+            results = self.db_manager.execute_query(query, (game_id,))
+            for row in results:
+                try:
+                    prediction_data = {
+                        'predictionID': row['predictionid'],
+                        'teamGameID': row['teamgameid'],
+                        'minerID': row['minerid'],
+                        'predictionDate': row['predictiondate'].isoformat() if isinstance(row['predictiondate'], datetime) else row['predictiondate'],
+                        'predictedOutcome': row['predictedoutcome'],
+                        'teamA': row['teama'],
+                        'teamB': row['teamb'],
+                        'wager': float(row['wager']),
+                        'teamAodds': float(row['teamaodds']),
+                        'teamBodds': float(row['teambodds']),
+                        'tieOdds': float(row['tieodds']) if row['tieodds'] is not None else None,
+                        'outcome': row['outcome']
+                    }
+                    prediction = TeamGamePrediction(**prediction_data)
+                except Exception as e:
+                    bt.logging.error(f"Error creating TeamGamePrediction: {e}")
+                    bt.logging.error(f"Row data: {row}")
+                    continue
 
-        for external_id, game_data in updated_games.items():
-            predictions = self.get_predictions_for_game(external_id)
-            
-            for pred in predictions:
-                bt.logging.debug(f"Processing prediction {pred.predictionID} for game {external_id}")
-                processed_prediction = self.process_game_outcome(pred, game_data)
-                if processed_prediction: 
-                    updated_predictions.append(processed_prediction)
-                    batch_updates.append((processed_prediction.outcome, processed_prediction.predictionID))
-                    bt.logging.debug(f"Updated prediction {pred.predictionID} outcome to {processed_prediction.outcome}")
-                else:
-                    bt.logging.warning(f"Failed to process prediction {pred.predictionID} for game {external_id}")
-
-        if batch_updates:
-            query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
-            try:
-                self.db_manager.execute_batch(query, batch_updates)
-                bt.logging.info(f"Successfully updated {len(batch_updates)} predictions")
-            except Exception as e:
-                bt.logging.error(f"Error updating predictions in batch: {str(e)}")
-                bt.logging.error(f"Attempting individual updates...")
-                for outcome, prediction_id in batch_updates:
-                    try:
-                        self.db_manager.execute_query(query, (outcome, prediction_id))
-                        bt.logging.debug(f"Successfully updated prediction {prediction_id}")
-                    except Exception as e:
-                        bt.logging.error(f"Error updating prediction {prediction_id}: {str(e)}")
-
-        bt.logging.trace(f"Processed {len(updated_predictions)} predictions")
+                bt.logging.trace(f"Processing game outcome for prediction: {prediction.predictionID}, game: {game.id}")
+                
+                actual_outcome = self._map_game_outcome(game.outcome)
+                predicted_outcome = self._map_predicted_outcome(prediction.predictedOutcome, game)
+                
+                bt.logging.debug(f"Actual outcome: {actual_outcome}, Predicted outcome: {predicted_outcome}")
+                
+                if actual_outcome == "Unfinished":
+                    bt.logging.debug(f"Game {game_id} is still unfinished. Keeping prediction {prediction.predictionID} as Unfinished.")
+                    continue
+                elif actual_outcome == "Unknown":
+                    bt.logging.warning(f"Unknown game outcome '{game.outcome}' for game {game_id}. Keeping prediction {prediction.predictionID} as Unfinished.")
+                    continue
+                
+                new_outcome = "Wager Won" if actual_outcome == predicted_outcome else "Wager Lost"
+                bt.logging.info(f"Updated prediction {prediction.predictionID} outcome to {new_outcome}")
+                
+                self.update_prediction_outcome(prediction.predictionID, new_outcome)
+                updated_predictions[prediction.predictionID] = prediction._replace(outcome=new_outcome)
+                
+                # Calculate earnings
+                self._calculate_earnings(prediction, game)
+        
         return updated_predictions
 
     def process_game_outcome(self, prediction: TeamGamePrediction, game_data: TeamGame) -> Optional[TeamGamePrediction]:
@@ -266,16 +289,23 @@ class PredictionsHandler:
             return "Team B Win"
         elif outcome in [2, "2", "Tie"]:
             return "Tie"
-        elif outcome in ["Unfinished", "unfinished"]:
+        elif outcome in ["Unfinished", "unfinished", None]:  # Added None as a possible "Unfinished" state
             return "Unfinished"
         else:
             bt.logging.warning(f"Unknown game outcome: {outcome}")
             return "Unknown"
 
     def _map_predicted_outcome(self, outcome, game_data):
-        if outcome in ["Team A Win", "Home Win"] or outcome == game_data.teamA:
+        if isinstance(game_data, dict):
+            team_a = game_data.get('teama') or game_data.get('teamA')
+            team_b = game_data.get('teamb') or game_data.get('teamB')
+        else:
+            team_a = getattr(game_data, 'teamA', None)
+            team_b = getattr(game_data, 'teamB', None)
+
+        if outcome in ["Team A Win", "Home Win"] or outcome == team_a:
             return "Team A Win"
-        elif outcome in ["Team B Win", "Away Win"] or outcome == game_data.teamB:
+        elif outcome in ["Team B Win", "Away Win"] or outcome == team_b:
             return "Team B Win"
         elif "Tie" in outcome:
             return "Tie"
@@ -325,12 +355,12 @@ class PredictionsHandler:
         SELECT predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
                teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
         FROM predictions
-        WHERE minerID = %s
+        WHERE minerID = %s AND outcome = 'Unfinished'
         ORDER BY predictionDate DESC
         LIMIT %s
         """
         results = self.db_manager.execute_query(query, (self.miner_uid, limit))
-        predictions = []
+        predictions = {}
         for row in results:
             try:
                 if row['predictiondate'] is not None:
@@ -349,10 +379,11 @@ class PredictionsHandler:
                     tieOdds=float(row['tieodds']) if row['tieodds'] is not None else None,
                     outcome=row['outcome']
                 )
-                predictions.append(prediction)
+                predictions[row['predictionid']] = prediction
             except Exception as e:
                 bt.logging.error(f"Error processing prediction: {e}")
                 bt.logging.error(f"Row data: {row}")
+        bt.logging.info(f"Retrieved {len(predictions)} recent predictions")
         return predictions
 
     def get_predictions_for_game(self, external_id: str) -> List[TeamGamePrediction]:
@@ -425,3 +456,67 @@ class PredictionsHandler:
             return wager * odds
         else:
             return 0.0
+
+    def check_and_correct_prediction_outcomes(self):
+        bt.logging.info("Starting to check and correct prediction outcomes")
+        query = """
+        SELECT p.predictionID, p.teamGameID, p.outcome as prediction_outcome, 
+               p.predictedOutcome, g.outcome as game_outcome, 
+               p.teamA, p.teamB, p.teamAodds, p.teamBodds, p.tieOdds
+        FROM predictions p
+        JOIN games g ON p.teamGameID = g.externalID
+        WHERE p.outcome != 'Unfinished'
+        """
+        try:
+            results = self.db_manager.execute_query(query)
+            bt.logging.info(f"Found {len(results)} predictions to check")
+            corrections = []
+            for row in results:
+                prediction_id = row['predictionid']
+                prediction_outcome = row['prediction_outcome']
+                predicted_outcome = row['predictedoutcome']
+                game_outcome = row['game_outcome']
+                
+                if game_outcome == 'Unfinished' or game_outcome is None:
+                    corrections.append((prediction_id, 'Unfinished'))
+                    bt.logging.debug(f"Resetting prediction {prediction_id} to Unfinished as game is not finished")
+                elif prediction_outcome not in ['Wager Won', 'Wager Lost']:
+                    corrections.append((prediction_id, 'Unfinished'))
+                    bt.logging.debug(f"Resetting prediction {prediction_id} to Unfinished due to invalid outcome: {prediction_outcome}")
+                else:
+                    # Check if the prediction outcome is correct
+                    actual_outcome = self._map_game_outcome(game_outcome)
+                    predicted_outcome = self._map_predicted_outcome(predicted_outcome, row)
+                    
+                    if actual_outcome == "Unknown":
+                        corrections.append((prediction_id, 'Unfinished'))
+                        bt.logging.debug(f"Resetting prediction {prediction_id} to Unfinished due to unknown game outcome")
+                    elif actual_outcome == predicted_outcome:
+                        if prediction_outcome != "Wager Won":
+                            corrections.append((prediction_id, 'Wager Won'))
+                            bt.logging.debug(f"Correcting prediction {prediction_id} to Wager Won")
+                    else:
+                        if prediction_outcome != "Wager Lost":
+                            corrections.append((prediction_id, 'Wager Lost'))
+                            bt.logging.debug(f"Correcting prediction {prediction_id} to Wager Lost")
+            
+            if corrections:
+                update_query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
+                self.db_manager.execute_batch(update_query, [(outcome, pred_id) for pred_id, outcome in corrections])
+                bt.logging.info(f"Corrected {len(corrections)} prediction outcomes")
+            else:
+                bt.logging.info("No prediction outcomes needed correction")
+        
+        except Exception as e:
+            bt.logging.error(f"Error checking and correcting prediction outcomes: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+        
+        bt.logging.info("Finished checking and correcting prediction outcomes")
+
+    def update_prediction_outcome(self, prediction_id: str, new_outcome: str):
+        bt.logging.debug(f"Updating prediction {prediction_id} outcome to {new_outcome}")
+        query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
+        self.db_manager.execute_query(query, (new_outcome, prediction_id))
+        bt.logging.info(f"Updated prediction {prediction_id} outcome to {new_outcome}")
+
+   

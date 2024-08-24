@@ -124,6 +124,9 @@ DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --logging.$LOGGING_LEVEL"
 # Prompt for disabling auto-update if not provided
 prompt_yes_no "Do you want to disable auto-update? Warning: this will apply to all running neurons" "DISABLE_AUTO_UPDATE"
 
+# Prompt for starting Flask server
+prompt_yes_no "Would you like to start flask server for connecting to bettensor.com?" "FLASK_SERVER"
+
 # Start the neuron with PM2
 if [ "$NEURON_TYPE" = "miner" ]; then
     MINER_COUNT=$(pm2 list | grep -c "miner")
@@ -149,23 +152,26 @@ fi
 
 # Start additional services only for miners
 if [ "$NEURON_TYPE" = "miner" ]; then
-    if ! pm2 list | grep -q "flask-server"; then
-        echo "Starting Flask server..."
-        pm2 start --name "flask-server" python -- \
-            -m bettensor.miner.interfaces.miner_interface_server \
+    if [ "$FLASK_SERVER" = "true" ]; then
+        if ! pm2 list | grep -q "flask-server"; then
+            echo "Starting Flask server..."
+            pm2 start --name "flask-server" python -- \
+                -m bettensor.miner.interfaces.miner_interface_server
             
-        
-        sleep 2  # Give the server a moment to start
+            sleep 2  # Give the server a moment to start
 
-        if pm2 list | grep -q "flask-server"; then
-            echo "Flask server started successfully."
-            pm2 logs "flask-server" --lines 20 --nostream
+            if pm2 list | grep -q "flask-server"; then
+                echo "Flask server started successfully."
+                pm2 logs "flask-server" --lines 20 --nostream
+            else
+                echo "Failed to start Flask server. Check logs for details."
+                pm2 logs "flask-server" --lines 20 --nostream
+            fi
         else
-            echo "Failed to start Flask server. Check logs for details."
-            pm2 logs "flask-server" --lines 20 --nostream
+            echo "Flask server is already running."
         fi
     else
-        echo "Flask server is already running."
+        echo "Flask server will not be started."
     fi
 fi
 
@@ -209,4 +215,3 @@ for process in "$NEURON_NAME" "flask-server" "auto-updater"; do
         echo ""
     fi
 done
-

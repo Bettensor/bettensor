@@ -20,6 +20,7 @@ class HealthCheck:
         self.check_and_install_dependencies()
         self.check_and_setup_redis()
         self.check_and_setup_postgres()
+        self.clear_pycache()
         self.check_and_update_python_deps()
         bt.logging.info("Health check completed")
 
@@ -147,6 +148,28 @@ class HealthCheck:
         
         bt.logging.info("Updating project requirements...")
         self.run_command(['pip', 'install', '-r', 'requirements.txt'], "Failed to install requirements")
+
+    def clear_pycache(self):
+        bt.logging.info("Clearing pycache...")
+        try:
+            # First, try to use find with -regextype posix-extended
+            result = subprocess.run(
+                ['find', '.', '-regextype', 'posix-extended', '-regex', '.*(__pycache__|\.pyc|\.pyo)$', '-exec', 'rm', '-rf', '{}', '+'],
+                check=True, capture_output=True, text=True
+            )
+            bt.logging.info("Successfully cleared pycache using extended regex")
+        except subprocess.CalledProcessError:
+            bt.logging.warning("Failed to clear pycache using extended regex. Trying alternative method.")
+            try:
+                # If the first method fails, try a more basic approach
+                subprocess.run(['find', '.', '-name', '__pycache__', '-exec', 'rm', '-rf', '{}', '+'], check=True)
+                subprocess.run(['find', '.', '-name', '*.pyc', '-exec', 'rm', '-f', '{}', '+'], check=True)
+                subprocess.run(['find', '.', '-name', '*.pyo', '-exec', 'rm', '-f', '{}', '+'], check=True)
+                bt.logging.info("Successfully cleared pycache using alternative method")
+            except subprocess.CalledProcessError as e:
+                bt.logging.error(f"Failed to clear pycache: {e}")
+                bt.logging.error(f"Command output: {e.output}")
+
 
 def run_health_check(db_params, axon_port):
     bt.logging.info(f"Received db_params: {db_params}")

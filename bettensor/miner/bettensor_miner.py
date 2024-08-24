@@ -23,6 +23,7 @@ from bettensor.miner.models.model_utils import SoccerPredictor, MinerConfig
 import uuid
 from datetime import datetime, timezone
 from bettensor.miner.utils.health_check import run_health_check
+import asyncio
 
 class BettensorMiner(BaseNeuron):
     def __init__(self, parser: ArgumentParser):
@@ -200,19 +201,6 @@ class BettensorMiner(BaseNeuron):
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")
             return self._clean_synapse(synapse, f"Error in forward method: {e}")
-        
-        #ensure synapse is correctly structured one last time , otherwise return error type
-        if synapse.metadata.synapse_type != "prediction":
-            bt.logging.error(f"Synapse is not of type prediction: {type(synapse)}")
-            return self._clean_synapse(synapse, f"Synapse is not of type prediction: {type(synapse)}")
-
-            return self._clean_synapse(synapse, f"Error in forward method: {e}")
-        
-        #ensure synapse is correctly structured one last time , otherwise return error type
-        if synapse.metadata.synapse_type != "prediction":
-            bt.logging.error(f"Synapse is not of type prediction: {type(synapse)}")
-            return self._clean_synapse(synapse, f"Synapse is not of type prediction: {type(synapse)}")
-
 
         return synapse
 
@@ -268,7 +256,19 @@ class BettensorMiner(BaseNeuron):
         self.health_thread.daemon = True
         self.health_thread.start()
         
+        # Start periodic prediction check in a separate thread
+        bt.logging.info("Starting periodic prediction check")
+        self.prediction_check_thread = threading.Thread(target=self.run_periodic_prediction_check)
+        self.prediction_check_thread.daemon = True
+        self.prediction_check_thread.start()
+        
         bt.logging.info("Miner started")
+
+    def run_periodic_prediction_check(self, interval_hours=1):
+        while True:
+            bt.logging.info(f"Running periodic prediction outcome check")
+            self.predictions_handler.check_and_correct_prediction_outcomes()
+            time.sleep(interval_hours * 3600)  # Sleep for the specified interval
 
     def stop(self):
         bt.logging.info("Stopping miner")
@@ -662,5 +662,7 @@ class BettensorMiner(BaseNeuron):
         finally:
             if conn:
                 self.db_manager.connection_pool.putconn(conn)
+
+
 
 
