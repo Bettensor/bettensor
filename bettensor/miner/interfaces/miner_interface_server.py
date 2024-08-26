@@ -169,6 +169,7 @@ def submit_predictions():
 @token_required
 def heartbeat():
     try:
+        
         uptime = int(time.time() - server_start_time)
         auth_header = request.headers.get('Authorization')
         token = auth_header.split(" ")[1] if auth_header and auth_header.startswith('Bearer ') else None

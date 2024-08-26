@@ -105,7 +105,10 @@ class BettensorMiner(BaseNeuron):
             "max_connections": self.args.max_connections
         }
         self.db_manager = DatabaseManager(**db_params)
-        self.db_manager.initialize_default_model_params(miner_uid=self.miner_uid)
+
+        # Check and update miner_uid if necessary
+        self.update_miner_uid_in_stats_db()
+
         # Setup state manager
         bt.logging.info("Initializing state manager")
         self.miner_hotkey = self.wallet.hotkey.ss58_address
@@ -148,16 +151,9 @@ class BettensorMiner(BaseNeuron):
         # Initialize MinerConfig
         self.miner_config = MinerConfig()
 
-        #check if miner_uid in miner_stats table is the same as the current miner_uid 
-        self.update_miner_uid_in_stats_db()
-        
-        #check if miner_uid in miner_stats table is the same as the current miner_uid 
-        self.update_miner_uid_in_stats_db()
-        
     def forward(self, synapse: GameData) -> GameData:
         bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
 
-        # Print version information and perform version checks
         print(f"Synapse version: {synapse.metadata.subnet_version}, our version: {self.subnet_version}")
         self._check_version(synapse.metadata.subnet_version)
 
@@ -170,13 +166,10 @@ class BettensorMiner(BaseNeuron):
             if changed_games:
                 bt.logging.info(f"Processing {len(changed_games)} changed games")
                 updated_games, new_games = self.games_handler.process_games(changed_games)
-                recent_predictions = self.predictions_handler.process_predictions(updated_games, new_games)
-                
-                # Update cache with new predictions
-                self.cache_manager.update_cached_predictions(recent_predictions)
-            else:
-                bt.logging.info("No changes in game data, using cached predictions")
-                recent_predictions = self.cache_manager.get_cached_predictions()
+                self.predictions_handler.process_predictions(updated_games, new_games)
+
+            # Fetch recent predictions directly from the database
+            recent_predictions = self.predictions_handler.get_predictions(self.miner_uid)
 
             if not recent_predictions:
                 bt.logging.warning("No predictions available")
@@ -226,6 +219,7 @@ class BettensorMiner(BaseNeuron):
     def _clean_synapse(self, synapse: GameData, error: str) -> GameData:
         if not synapse.prediction_dict:
             bt.logging.warning("Cleaning synapse due to no predictions available")
+            bt.logging.warning(f"If you have recently made predictions, please examine your logs for errors and reach out to the dev team if it persists.")
         else:
             bt.logging.error(f"Cleaning synapse due to error: {error}")
         
@@ -622,44 +616,53 @@ class BettensorMiner(BaseNeuron):
 
 
     def update_miner_uid_in_stats_db(self):
-        bt.logging.info("Updating miner_uid in stats database if necessary")
+        bt.logging.info("Checking and updating miner_uid in stats database if necessary")
         
         try:
             with self.db_manager.connection_pool.getconn() as conn:
                 with conn.cursor() as cur:
-                    # Check for existing entry with matching hotkey but different miner_uid
+                    # Check for existing entry with matching hotkey
                     cur.execute("""
                         SELECT miner_uid FROM miner_stats 
-                        WHERE miner_hotkey = %s AND miner_uid != %s
-                    """, (self.miner_hotkey, self.miner_uid))
+                        WHERE miner_hotkey = %s
+                    """, (self.miner_hotkey,))
                     
                     result = cur.fetchone()
                     
                     if result:
-                        old_miner_uid = result[0]
-                        bt.logging.warning(f"Found mismatch: Hotkey {self.miner_hotkey} associated with miner_uid {old_miner_uid}")
-                        
-                        # Delete the old entry
-                        cur.execute("DELETE FROM miner_stats WHERE miner_uid = %s", (old_miner_uid,))
-                        
-                        # Delete all predictions for the old miner_uid
-                        cur.execute("DELETE FROM predictions WHERE minerid = %s", (old_miner_uid,))
-                        
-                        conn.commit()
-                        
-                        bt.logging.warning(f"Updated miner_uid from {old_miner_uid} to {self.miner_uid}")
-                        bt.logging.warning("Deleted all predictions associated with the old miner_uid")
+                        existing_miner_uid = result[0]
+                        if existing_miner_uid != self.miner_uid:
+                            bt.logging.warning(f"Miner UID changed for hotkey {self.miner_hotkey}. Old UID: {existing_miner_uid}, New UID: {self.miner_uid}")
+                            
+                            # Update the miner_uid in the miner_stats table
+                            cur.execute("""
+                                UPDATE miner_stats 
+                                SET miner_uid = %s 
+                                WHERE miner_hotkey = %s
+                            """, (self.miner_uid, self.miner_hotkey))
+                            
+                            # Delete all predictions for the old miner_uid
+                            cur.execute("DELETE FROM predictions WHERE minerid = %s", (existing_miner_uid,))
+                            
+                            conn.commit()
+                            
+                            bt.logging.warning(f"Updated miner_uid from {existing_miner_uid} to {self.miner_uid}")
+                            bt.logging.warning("Deleted all predictions associated with the old miner_uid")
+                            
+                            # Reset the miner's stats
+                            self.state_manager.initialize_state()
+                        else:
+                            bt.logging.info("Miner UID is up to date. No changes necessary.")
                     else:
-                        bt.logging.info("No miner_uid mismatch found. No updates necessary.")
-                        return
-
-            # Initialize state outside of the previous database transaction
-            self.state_manager.initialize_state()
-            self.stats_handler.load_stats_from_state()
+                        bt.logging.info("No existing miner stats found. A new entry will be created during initialization.")
         
         except Exception as e:
             bt.logging.error(f"Error updating miner_uid in stats database: {str(e)}")
             bt.logging.error(traceback.format_exc())
+
+        # Ensure the state is properly initialized or updated
+        self.state_manager.load_state()
+        self.stats_handler.load_stats_from_state()
 
 
 

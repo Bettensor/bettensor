@@ -100,14 +100,18 @@ class PredictionsHandler:
                g.teamA as home, g.teamB as away
         FROM predictions p
         JOIN games g ON p.teamGameID = g.externalID
-        WHERE p.minerID = %s
+        WHERE p.minerID = %s 
+        ORDER BY p.predictionDate DESC 
+        LIMIT 100
         """
         try:
             results = self.db_manager.execute_query(query, (miner_uid,))
+            predictions = {}
             for row in results:
                 if row['predictiondate'] is not None:
                     row['predictiondate'] = row['predictiondate'].isoformat() if isinstance(row['predictiondate'], datetime) else row['predictiondate']
-            return {row['predictionid']: row for row in results}
+                predictions[row['predictionid']] = TeamGamePrediction(**row)
+            return predictions
         except Exception as e:
             bt.logging.error(f"Error getting predictions: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
@@ -236,7 +240,8 @@ class PredictionsHandler:
                 bt.logging.info(f"Updated prediction {prediction.predictionID} outcome to {new_outcome}")
                 
                 self.update_prediction_outcome(prediction.predictionID, new_outcome)
-                updated_predictions[prediction.predictionID] = prediction._replace(outcome=new_outcome)
+                prediction.outcome = new_outcome  # Update the prediction object
+                updated_predictions[prediction.predictionID] = prediction
                 
                 # Calculate earnings
                 self._calculate_earnings(prediction, game)
@@ -518,5 +523,39 @@ class PredictionsHandler:
         query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
         self.db_manager.execute_query(query, (new_outcome, prediction_id))
         bt.logging.info(f"Updated prediction {prediction_id} outcome to {new_outcome}")
+
+    def _calculate_earnings(self, prediction: TeamGamePrediction, game: TeamGame):
+        bt.logging.trace(f"Calculating earnings for prediction {prediction.predictionID}")
+        
+        earnings = 0
+        if prediction.outcome == "Wager Won":
+            if prediction.predictedOutcome == game.teamA:
+                odds = prediction.teamAodds
+            elif prediction.predictedOutcome == game.teamB:
+                odds = prediction.teamBodds
+            else:  # Tie
+                odds = prediction.tieOdds
+            
+            earnings = prediction.wager * odds
+        elif prediction.outcome == "Wager Lost":
+            earnings = 0  # No change in earnings for a lost wager
+        else:
+            bt.logging.warning(f"Unexpected outcome {prediction.outcome} for prediction {prediction.predictionID}")
+            return
+
+        bt.logging.info(f"Earnings for prediction {prediction.predictionID}: {earnings}")
+        
+        # Update miner stats
+        self.stats_handler.update_miner_earnings(earnings)
+        
+        # Update cash (only add earnings for wins, don't subtract wager)
+        self.stats_handler.update_miner_cash(earnings)
+        
+        if prediction.outcome == "Wager Won":
+            self.stats_handler.increment_miner_wins()
+        elif prediction.outcome == "Wager Lost":
+            self.stats_handler.increment_miner_losses()
+
+        self.stats_handler.update_win_loss_ratio()
 
    
