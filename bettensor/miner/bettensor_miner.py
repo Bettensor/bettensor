@@ -642,10 +642,6 @@ class BettensorMiner(BaseNeuron):
                         # Delete the old entry
                         cur.execute("DELETE FROM miner_stats WHERE miner_uid = %s", (old_miner_uid,))
                         
-
-                        self.state_manager.initialize_state()
-                        self.stats_handler.load_stats_from_state()
-                        
                         # Delete all predictions for the old miner_uid
                         cur.execute("DELETE FROM predictions WHERE minerid = %s", (old_miner_uid,))
                         
@@ -655,13 +651,15 @@ class BettensorMiner(BaseNeuron):
                         bt.logging.warning("Deleted all predictions associated with the old miner_uid")
                     else:
                         bt.logging.info("No miner_uid mismatch found. No updates necessary.")
+                        return
+
+            # Initialize state outside of the previous database transaction
+            self.state_manager.initialize_state()
+            self.stats_handler.load_stats_from_state()
         
         except Exception as e:
             bt.logging.error(f"Error updating miner_uid in stats database: {str(e)}")
             bt.logging.error(traceback.format_exc())
-        finally:
-            if conn:
-                self.db_manager.connection_pool.putconn(conn)
 
 
 

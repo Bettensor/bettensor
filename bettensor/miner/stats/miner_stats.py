@@ -272,11 +272,13 @@ class MinerStateManager:
             'miner_win_loss_ratio': 0.0,
             'last_daily_reset': datetime.now(timezone.utc).isoformat()
         }
+        bt.logging.info("Calling save_state with initial state")
         self.save_state(initial_state)
+        bt.logging.info("save_state completed")
         return initial_state
 
     def save_state(self, state: Dict[str, Any] = None):
-        # bt.logging.info("Saving miner state")
+        bt.logging.info("Saving miner state")
         if state is None:
             state = self.state
         try:
@@ -318,15 +320,15 @@ class MinerStateManager:
                 cur = conn.cursor()
                 cur.execute(query, params)
                 conn.commit()
-                # bt.logging.info("Miner state saved successfully")
+                bt.logging.info("Miner state saved successfully")
             finally:
                 if cur:
                     cur.close()
                 if conn:
                     self.db_manager.connection_pool.putconn(conn)
         except Exception as e:
-            # bt.logging.error(f"Error saving miner state: {e}")
-            # bt.logging.error(traceback.format_exc())
+            bt.logging.error(f"Error saving miner state: {e}")
+            bt.logging.error(traceback.format_exc())
             raise
 
     def update_state(self, new_state: Dict[str, Any]):
