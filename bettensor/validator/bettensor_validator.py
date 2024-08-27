@@ -525,23 +525,6 @@ class BettensorValidator(BaseNeuron):
         self.create_table()
         self.insert_predictions(processed_uids, predictions_dict)
 
-    def add_new_miners(self):
-        """
-        adds new miners to the database, if there are new hotkeys in the metagraph
-        """
-        if self.hotkeys:
-            uids_with_stake = self.metagraph.total_stake >= 0.0
-            for i, hotkey in enumerate(self.metagraph.hotkeys):
-                if (hotkey not in self.hotkeys) and (i not in uids_with_stake):
-                    coldkey = self.metagraph.coldkeys[i]
-
-                    if self.miner_stats.init_miner_row(hotkey, coldkey, i):
-                        bt.logging.info(f"added new miner to the database: {hotkey}")
-                    else:
-                        bt.logging.error(
-                            f"failed to add new miner to the database: {hotkey}"
-                        )
-
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
         if self.scores is None:
