@@ -20,6 +20,7 @@ NEURON_TYPE=""
 NETWORK=""
 WALLET_NAME=""
 WALLET_HOTKEY=""
+WALLET_PATH=""
 LOGGING_LEVEL=""
 
 # Miner-specific variables
@@ -58,6 +59,7 @@ while [[ $# -gt 0 ]]; do
         --network) NETWORK="$2"; shift 2 ;;
         --wallet.name) WALLET_NAME="$2"; shift 2 ;;
         --wallet.hotkey) WALLET_HOTKEY="$2"; shift 2 ;;
+        --wallet.path) WALLET_PATH="$2"; shift 2 ;;
         --logging.level) LOGGING_LEVEL="$2"; shift 2 ;;
         --axon.port) AXON_PORT="$2"; shift 2 ;;
         --validator_min_stake) VALIDATOR_MIN_STAKE="$2"; shift 2 ;;
@@ -89,7 +91,8 @@ esac
 # Prompt for wallet name and hotkey if not provided
 prompt_for_input "Enter wallet name" "default" "WALLET_NAME"
 prompt_for_input "Enter wallet hotkey" "default" "WALLET_HOTKEY"
-DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --wallet.name $WALLET_NAME --wallet.hotkey $WALLET_HOTKEY"
+prompt_for_input "Enter wallet path" "~/.bittensor/wallets" "WALLET_PATH"
+DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --wallet.name $WALLET_NAME --wallet.hotkey $WALLET_HOTKEY --wallet.path $WALLET_PATH"
 
 # Miner-specific configuration
 if [ "$NEURON_TYPE" = "miner" ]; then

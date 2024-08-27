@@ -121,18 +121,18 @@ if [ "$LITE_NODE" = true ]; then
 fi
 
 # Update and install dependencies
-apt-get update 
-apt-get install -y build-essential net-tools clang curl git make libssl-dev protobuf-compiler llvm libudev-dev python-is-python3
+sudo apt-get update 
+sudo apt-get install -y build-essential net-tools clang curl git make libssl-dev protobuf-compiler llvm libudev-dev python-is-python3
 
 # Install Redis
-apt-get install -y redis-server
-systemctl enable redis-server
-systemctl start redis-server
+sudo apt-get install -y redis-server
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
 
 # Install PostgreSQL
-apt-get install -y postgresql postgresql-contrib
-systemctl enable postgresql
-systemctl start postgresql
+sudo apt-get install -y postgresql postgresql-contrib
+sudo systemctl enable postgresql
+sudo systemctl start postgresql
 
 # Set up PostgreSQL
 su - postgres -c "psql -c \"CREATE DATABASE $POSTGRES_DATABASE;\""
@@ -189,13 +189,13 @@ else
 fi
 
 # Install Python 3.10
-apt-get install -y software-properties-common
-add-apt-repository -y ppa:deadsnakes/ppa
-apt-get update
-apt-get install -y python3.10 python3.10-venv python3.10-dev
+sudo apt-get install -y software-properties-common
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt-get update
+sudo apt-get install -y python3.10 python3.10-venv python3.10-dev
 
 # Install npm, jq, and pm2
-apt-get install -y npm jq
+sudo apt-get install -y npm jq
 npm install -g pm2
 
 # Determine the correct directory structure
