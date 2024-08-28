@@ -25,6 +25,7 @@ LOGGING_LEVEL=""
 # Miner-specific variables
 AXON_PORT=""
 VALIDATOR_MIN_STAKE=""
+FLASK_SERVER=""
 
 # Function to prompt for user input if not provided as an argument
 prompt_for_input() {
@@ -41,6 +42,13 @@ prompt_for_input() {
 prompt_yes_no() {
     local prompt="$1"
     local var_name="$2"
+    local current_value="${!var_name}"
+
+    # Skip prompt if var_name is already set to 'true' or 'false'
+    if [[ "$current_value" == "true" || "$current_value" == "false" ]]; then
+      return 0
+    fi
+
     while true; do
         read -p "$prompt [y/n]: " yn
         case $yn in
@@ -62,6 +70,7 @@ while [[ $# -gt 0 ]]; do
         --axon.port) AXON_PORT="$2"; shift 2 ;;
         --validator_min_stake) VALIDATOR_MIN_STAKE="$2"; shift 2 ;;
         --disable_auto_update) DISABLE_AUTO_UPDATE="$2"; shift 2 ;;
+        --start_flask_server) FLASK_SERVER="$2"; shift 2 ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
 done
