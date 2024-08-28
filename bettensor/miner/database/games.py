@@ -84,7 +84,7 @@ class GamesHandler:
                     bt.logging.debug(f"New game added: {external_id}")
                 else:
                     updated_games[external_id] = game_data
-                    bt.logging.debug(f"Game updated: {external_id}")
+                    #bt.logging.debug(f"Game updated: {external_id}")
                 
                 if outcome != game_data.outcome:
                     bt.logging.info(f"Game {external_id} outcome changed from {outcome} to {game_data.outcome}")

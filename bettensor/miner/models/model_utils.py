@@ -8,6 +8,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from huggingface_hub import PyTorchModelHubMixin
 from bettensor.miner.database.database_manager import DatabaseManager
+import bittensor as bt
 import time
 
 @dataclass
@@ -42,16 +43,23 @@ class SoccerPredictor:
         self.get_model_params(self.db_manager)
 
 
-    def get_model_params(self,db_manager: DatabaseManager):
+    def get_model_params(self, db_manager: DatabaseManager):
         current_time = time.time()
         if current_time - self.last_param_update >= self.param_refresh_interval:
-            row = db_manager.get_model_params(self.id)
-            self.model_on = row['model_on']
-            self.wager_distribution_steepness = row['wager_distribution_steepness']
-            self.fuzzy_match_percentage = row['fuzzy_match_percentage']
-            self.minimum_wager_amount = row['minimum_wager_amount']
-            self.maximum_wager_amount = row['max_wager_amount']
-            self.top_n_games = row['top_n_games']
+            if self.id is None:
+                bt.logging.warning("Miner ID is not set. Using default model parameters.")
+            else:
+                row = db_manager.get_model_params(self.id)
+                if row is None:
+                    bt.logging.info(f"No model parameters found for miner ID: {self.id}. Using default values.")
+                    db_manager.initialize_default_model_params(self.id)
+                else:
+                    self.model_on = row.get('model_on', False)
+                    self.wager_distribution_steepness = row.get('wager_distribution_steepness', 1)
+                    self.fuzzy_match_percentage = row.get('fuzzy_match_percentage', 80)
+                    self.minimum_wager_amount = row.get('minimum_wager_amount', 1.0)
+                    self.maximum_wager_amount = row.get('max_wager_amount', 100.0)
+                    self.top_n_games = row.get('top_n_games', 10)
             self.last_param_update = current_time
 
  

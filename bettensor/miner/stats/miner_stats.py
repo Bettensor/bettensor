@@ -6,16 +6,15 @@ import bittensor as bt
 from datetime import datetime, timezone, timedelta
 
 class MinerStatsHandler:
-    def __init__(self, state_manager):
-        # bt.logging.trace("Initializing MinerStatsHandler")
+    def __init__(self, state_manager=None):
         self.state_manager = state_manager
-        self.db_manager = state_manager.db_manager
-        self.stats = self.state_manager.state
+        self.db_manager = state_manager.db_manager if state_manager else None
+        self.stats = self.state_manager.state if state_manager else {}
         if 'miner_current_incentive' not in self.stats:
             self.stats['miner_current_incentive'] = 0.0
         self.lock = threading.Lock()
-        self.update_stats_from_predictions()
-        # bt.logging.trace("MinerStatsHandler initialization complete")
+        if state_manager and state_manager.miner_uid:
+            self.update_stats_from_predictions()
 
     def load_stats_from_state(self):
         with self.lock:

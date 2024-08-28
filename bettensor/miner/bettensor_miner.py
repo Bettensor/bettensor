@@ -106,21 +106,18 @@ class BettensorMiner(BaseNeuron):
         }
         self.db_manager = DatabaseManager(**db_params)
 
-        # Check and update miner_uid if necessary
-        self.update_miner_uid_in_stats_db()
-
         # Setup state manager
         bt.logging.info("Initializing state manager")
         self.miner_hotkey = self.wallet.hotkey.ss58_address
         self.miner_uid = self.miner_uid
 
+        # Initialize state_manager before using it
         self.state_manager = MinerStateManager(
             db_manager=self.db_manager,
             miner_hotkey=self.miner_hotkey,
             miner_uid=self.miner_uid
         )
-
-        # Create an instance of MinerStatsHandler
+           # Create an instance of MinerStatsHandler
         self.stats_handler = MinerStatsHandler(self.state_manager)
 
         # Setup handlers
@@ -128,6 +125,11 @@ class BettensorMiner(BaseNeuron):
         self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_hotkey)
         self.games_handler = GamesHandler(self.db_manager, self.predictions_handler)
 
+
+        # Check and update miner_uid if necessary
+        self.update_miner_uid_in_stats_db()
+
+     
         # Setup cache manager
         bt.logging.info("Initializing cache manager")
         self.cache_manager = CacheManager()
@@ -169,7 +171,7 @@ class BettensorMiner(BaseNeuron):
                 self.predictions_handler.process_predictions(updated_games, new_games)
 
             # Fetch recent predictions directly from the database
-            recent_predictions = self.predictions_handler.get_predictions(self.miner_uid)
+            recent_predictions = self.predictions_handler.get_recent_predictions(self.miner_uid)
 
             if not recent_predictions:
                 bt.logging.warning("No predictions available")
@@ -616,11 +618,14 @@ class BettensorMiner(BaseNeuron):
 
 
     def update_miner_uid_in_stats_db(self):
-        bt.logging.info("Checking and updating miner_uid in stats database if necessary")
+        bt.logging.info("Checking miner_uid in stats database")
         
         try:
             with self.db_manager.connection_pool.getconn() as conn:
                 with conn.cursor() as cur:
+                    # Cast miner_uid to string right before the query
+                    current_miner_uid = str(self.miner_uid)
+                    
                     # Check for existing entry with matching hotkey
                     cur.execute("""
                         SELECT miner_uid FROM miner_stats 
@@ -630,23 +635,23 @@ class BettensorMiner(BaseNeuron):
                     result = cur.fetchone()
                     
                     if result:
-                        existing_miner_uid = result[0]
-                        if existing_miner_uid != self.miner_uid:
-                            bt.logging.warning(f"Miner UID changed for hotkey {self.miner_hotkey}. Old UID: {existing_miner_uid}, New UID: {self.miner_uid}")
+                        existing_miner_uid = str(result[0])  # Ensure existing_miner_uid is also a string
+                        if existing_miner_uid != current_miner_uid:
+                            bt.logging.warning(f"Miner UID changed for hotkey {self.miner_hotkey}. Old UID: {existing_miner_uid}, New UID: {current_miner_uid}")
                             
                             # Update the miner_uid in the miner_stats table
                             cur.execute("""
                                 UPDATE miner_stats 
                                 SET miner_uid = %s 
                                 WHERE miner_hotkey = %s
-                            """, (self.miner_uid, self.miner_hotkey))
+                            """, (current_miner_uid, self.miner_hotkey))
                             
                             # Delete all predictions for the old miner_uid
                             cur.execute("DELETE FROM predictions WHERE minerid = %s", (existing_miner_uid,))
                             
                             conn.commit()
                             
-                            bt.logging.warning(f"Updated miner_uid from {existing_miner_uid} to {self.miner_uid}")
+                            bt.logging.warning(f"Updated miner_uid from {existing_miner_uid} to {current_miner_uid}")
                             bt.logging.warning("Deleted all predictions associated with the old miner_uid")
                             
                             # Reset the miner's stats
@@ -655,12 +660,13 @@ class BettensorMiner(BaseNeuron):
                             bt.logging.info("Miner UID is up to date. No changes necessary.")
                     else:
                         bt.logging.info("No existing miner stats found. A new entry will be created during initialization.")
+                        self.state_manager.initialize_state()
         
         except Exception as e:
-            bt.logging.error(f"Error updating miner_uid in stats database: {str(e)}")
+            bt.logging.error(f"Error checking miner_uid in stats database: {str(e)}")
             bt.logging.error(traceback.format_exc())
 
-        # Ensure the state is properly initialized or updated
+        # Ensure the state is properly loaded
         self.state_manager.load_state()
         self.stats_handler.load_stats_from_state()
 

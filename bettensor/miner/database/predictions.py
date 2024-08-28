@@ -12,19 +12,23 @@ from bettensor.miner.stats.miner_stats import MinerStatsHandler
 import numpy as np
 
 class PredictionsHandler:
-    def __init__(self, db_manager, state_manager, miner_hotkey: str):
+    def __init__(self, db_manager, state_manager=None, miner_hotkey: str = None):
         bt.logging.debug("PredictionsHandler initialized")
         self.db_manager = db_manager
         self.state_manager = state_manager
         self.miner_hotkey = miner_hotkey
-        self.miner_uid = state_manager.miner_uid
+        self.miner_uid = state_manager.miner_uid if state_manager else None
         self.new_prediction_window = timedelta(hours=24)
-        self.stats_handler = MinerStatsHandler(state_manager)
+        self.stats_handler = MinerStatsHandler(state_manager) if state_manager else None
         self.models = {'soccer': SoccerPredictor(model_name='podos_soccer_model', id=self.miner_uid, db_manager=self.db_manager, miner_stats_handler=self.stats_handler)}
-        self.update_predictions_with_minerid()
+        if self.miner_uid:
+            self.update_predictions_with_minerid()
         bt.logging.trace("PredictionsHandler initialization complete")
 
     def update_predictions_with_minerid(self):
+        if not self.miner_uid:
+            bt.logging.debug("No miner_uid available, skipping prediction update")
+            return
         bt.logging.trace("Updating predictions with miner ID")
         query = """
         UPDATE predictions

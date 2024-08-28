@@ -155,7 +155,7 @@ class DatabaseManager:
             """),
             ("model_params", """
             CREATE TABLE IF NOT EXISTS model_params (
-                id SERIAL PRIMARY KEY,
+                id TEXT PRIMARY KEY,
                 model_on BOOLEAN,
                 wager_distribution_steepness INTEGER,
                 fuzzy_match_percentage INTEGER,
@@ -182,12 +182,13 @@ class DatabaseManager:
     def initialize_default_model_params(self, miner_uid):
         bt.logging.info(f"Initializing default model params for miner: {miner_uid}")
         self.ensure_model_params_table_exists()
-        self.ensure_miner_params_exist(miner_uid)
+        if miner_uid:
+            self.ensure_miner_params_exist(miner_uid)
 
     def ensure_model_params_table_exists(self):
         query = """
         CREATE TABLE IF NOT EXISTS model_params (
-            id SERIAL PRIMARY KEY,
+            id TEXT PRIMARY KEY,
             model_on BOOLEAN,
             wager_distribution_steepness INTEGER,
             fuzzy_match_percentage INTEGER,
@@ -220,9 +221,9 @@ class DatabaseManager:
             """
             self.execute_query(insert_query, (miner_uid, *default_params.values()))
 
-    def get_model_params(self, miner_uid):
+    def get_model_params(self, miner_id):
         query = "SELECT * FROM model_params WHERE id = %s"
-        result = self.execute_query(query, (miner_uid,))
+        result = self.execute_query(query, (miner_id,))
         return result[0] if result else None
 
     def update_model_params(self, miner_uid, params):
@@ -303,3 +304,33 @@ class DatabaseManager:
         SET last_active_timestamp = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
         """
         self.execute_query(query, (miner_uid,))
+
+    def is_miner_active(self, miner_uid):
+        query = """
+        SELECT COUNT(*) FROM miner_active
+        WHERE miner_uid = %s AND last_active_timestamp > NOW() - INTERVAL '5 minutes'
+        """
+        result = self.execute_query(query, (miner_uid,))
+        return result[0]['count'] > 0 if result else False
+
+    def ensure_miner_model_params(self, miner_uid):
+        query = "SELECT * FROM model_params WHERE id = %s"
+        result = self.execute_query(query, (miner_uid,))
+        
+        if not result:
+            default_params = {
+                'model_on': False,
+                'wager_distribution_steepness': 1,
+                'fuzzy_match_percentage': 80,
+                'minimum_wager_amount': 1.0,
+                'max_wager_amount': 100.0,
+                'top_n_games': 10
+            }
+            insert_query = """
+            INSERT INTO model_params (
+                id, model_on, wager_distribution_steepness, fuzzy_match_percentage,
+                minimum_wager_amount, max_wager_amount, top_n_games
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            self.execute_query(insert_query, (miner_uid, *default_params.values()))
+            bt.logging.info(f"Created default model parameters for miner: {miner_uid}")

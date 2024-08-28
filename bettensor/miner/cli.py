@@ -21,7 +21,6 @@ from rich import box
 from rich.style import Style
 from rich.prompt import Prompt, IntPrompt, FloatPrompt
 from rich.progress import Progress, SpinnerColumn, TextColumn
-
 from prompt_toolkit import Application as PromptApplication
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout.containers import Window
@@ -158,6 +157,8 @@ class Application:
         for attempt in range(max_retries):
             try:
                 self.db_manager = DatabaseManager(db_name, db_user, db_password, db_host)
+                #print("DatabaseManager instance created:", self.db_manager)  # Add this line
+                #print("DatabaseManager methods:", dir(self.db_manager))  # Add this line
                 # Test the connection
                 self.db_manager.execute_query("SELECT 1")
                 bt.logging.debug("Successfully connected to the database.")
@@ -174,35 +175,42 @@ class Application:
         self.available_miners = self.get_available_miners()
 
         if not self.available_miners:
-            #self.console_print("[bold yellow]Warning: No miners found in the database. Some features may not work correctly.[/bold yellow]")
-            self.available_miners = [{'miner_uid': 'default', 'miner_hotkey': 'default', 'miner_cash': 1000, 'miner_rank': 'N/A'}]
-
-        self.miner_stats = {str(row['miner_uid']): row for row in self.available_miners}
-
-        if self.uid:
-            self.current_miner_uid = self.uid
+            self.miner_uid = "default"
+            self.miner_hotkey = "default"
+            self.miner_cash = 0
+            self.miner_is_active = False
         else:
-            self.current_miner_uid = self.get_saved_miner_uid()
+            if self.uid:
+                self.current_miner_uid = self.uid
+            else:
+                self.current_miner_uid = self.get_saved_miner_uid()
 
-        valid_miner_found = False
-        for miner in self.available_miners:
-            if str(miner['miner_uid']) == str(self.current_miner_uid):
-                self.miner_hotkey = str(miner['miner_hotkey'])
-                self.miner_uid = str(miner['miner_uid'])
-                self.miner_cash = float(miner['miner_cash'])
-                valid_miner_found = True
-                break
+            valid_miner_found = False
+            for miner in self.available_miners:
+                if str(miner['miner_uid']) == str(self.current_miner_uid):
+                    self.miner_hotkey = str(miner['miner_hotkey'])
+                    self.miner_uid = str(miner['miner_uid'])
+                    self.miner_cash = float(miner['miner_cash'])
+                    self.miner_is_active = miner.get('is_active', False)
+                    valid_miner_found = True
+                    break
 
-        if not valid_miner_found:
-            self.miner_hotkey = str(self.available_miners[0]['miner_hotkey'])
-            self.miner_uid = str(self.available_miners[0]['miner_uid'])
-            self.miner_cash = float(self.available_miners[0]['miner_cash'])
+            if not valid_miner_found:
+                self.miner_hotkey = str(self.available_miners[0]['miner_hotkey'])
+                self.miner_uid = str(self.available_miners[0]['miner_uid'])
+                self.miner_cash = float(self.available_miners[0]['miner_cash'])
+                self.miner_is_active = self.available_miners[0].get('is_active', False)
 
         self.save_miner_uid(self.miner_uid)
 
     def get_available_miners(self):
         self.console_print("Retrieving miners from database...")
-        query = "SELECT miner_uid, miner_hotkey, miner_cash, miner_rank FROM miner_stats"
+        query = """
+        SELECT ms.miner_uid, ms.miner_hotkey, ms.miner_cash, ms.miner_rank,
+               CASE WHEN ma.last_active_timestamp > NOW() - INTERVAL '5 minutes' THEN TRUE ELSE FALSE END as is_active
+        FROM miner_stats ms
+        LEFT JOIN miner_active ma ON ms.miner_uid::text = ma.miner_uid::text
+        """
         try:
             result = self.db_manager.execute_query(query)
             logging.debug(f"Retrieved miners: {result}")
@@ -218,7 +226,12 @@ class Application:
         self.state_manager.load_state()
 
     def init_predictions_handler(self):
-        self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_hotkey)
+        if self.miner_uid is None or self.miner_uid == "default":
+            bt.logging.warning("Miner UID is not set. Skipping predictions handler initialization.")
+            self.predictions_handler = None
+        else:
+            self.predictions_handler = PredictionsHandler(self.db_manager, self.state_manager, self.miner_hotkey)
+            self.db_manager.initialize_default_model_params(self.miner_uid)
 
     def init_games_handler(self):
         self.games_handler = GamesHandler(self.db_manager, self.predictions_handler)
@@ -308,19 +321,15 @@ class Application:
         console_width = self.console.width
         console_height = self.console.height
 
-        # Calculate available space for the table
-        available_height = console_height - 10  # Adjust for header, footer, and padding
-        available_width = console_width - 4  # Adjust for panel borders
+        available_height = console_height - 10
+        available_width = console_width - 4
 
-        # Determine the number of rows and columns based on available space
-        num_rows = min(11, available_height)  # We have 11 items to display
+        num_rows = min(12, available_height)  # Increased to 12 to accommodate the new row
         num_columns = 2
 
-        # Calculate column widths
         option_width = min(30, available_width // 3)
-        value_width = available_width - option_width - 3  # 3 for padding and separator
+        value_width = available_width - option_width - 3
 
-        # Adjust font size based on available space
         if available_width < 80:
             option_style = f"dim {LIGHT_GREEN}"
             value_style = f"dim {GOLD}"
@@ -335,9 +344,17 @@ class Application:
         table.add_column("Option", style=option_style, width=option_width)
         table.add_column("Value", style=value_style, width=value_width)
         
+        #print("Attempting to call is_miner_active")
+        #print("db_manager type:", type(self.db_manager))
+        #print("db_manager methods:", dir(self.db_manager))
+        is_active = self.db_manager.is_miner_active(self.miner_uid)
+        active_status = "Active" if is_active else "Inactive"
+        active_style = value_style if is_active else "bold red"
+
         rows = [
             ("Miner Hotkey", self.miner_hotkey),
             ("Miner UID", self.miner_uid),
+            ("Miner Status", active_status),
             ("Miner Cash", f"${self.miner_cash:.2f}"),
             ("Current Incentive", f"{self.stats_handler.get_current_incentive():.2f} τ per day"),
             ("Last Prediction", self.format_last_prediction_date(self.miner_last_prediction_date)),
@@ -348,8 +365,11 @@ class Application:
             ("Win/Loss Ratio", f"{self.miner_win_loss_ratio:.2f}")
         ]
 
-        for row in rows[:num_rows]:
-            table.add_row(row[0], row[1])
+        for i, row in enumerate(rows[:num_rows]):
+            if i == 2:  # This is the "Miner Status" row
+                table.add_row(row[0], Text(row[1], style=active_style))
+            else:
+                table.add_row(row[0], row[1])
 
         return Panel(table, title="Miner Statistics", border_style=DARK_GREEN, expand=True)
 
@@ -805,10 +825,11 @@ class Application:
         next_miner = self.available_miners[next_index]
         self.miner_uid = str(next_miner['miner_uid'])
         self.miner_hotkey = str(next_miner['miner_hotkey'])
+        self.miner_is_active = next_miner['is_active']
         self.save_miner_uid(self.miner_uid)
         self.reload_miner_data()
-        #self.console_print(f"[bold green]Switched to miner with UID: {self.miner_uid}[/bold green]")
-
+        
+        
     def reload_miner_data(self):
         try:
             # Fetch the latest miner stats from the database
@@ -947,6 +968,13 @@ class Application:
         miner_info.add_row("Miner UID:", self.miner_uid)
         miner_info.add_row("Cash:", f"${self.miner_cash:.2f}")
         miner_info.add_row("Last Prediction:", self.format_last_prediction_date(self.miner_last_prediction_date))
+        
+        # Add miner activity status
+        is_active = self.db_manager.is_miner_active(self.miner_uid)
+        active_status = "Active" if is_active else "Inactive"
+        active_style = GOLD if is_active else "bold red"
+        miner_info.add_row("Status:", Text(active_status, style=active_style))
+        
         miner_info.add_row("Current Time:", current_time_utc)
 
         # Wrap the table in a panel with a fixed width
