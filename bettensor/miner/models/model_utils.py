@@ -10,6 +10,8 @@ from huggingface_hub import PyTorchModelHubMixin
 from bettensor.miner.database.database_manager import DatabaseManager
 import bittensor as bt
 import time
+import torch
+from huggingface_hub import hf_hub_download
 
 @dataclass
 class MinerConfig:
@@ -79,10 +81,25 @@ class SoccerPredictor:
         try:
             import warnings
             warnings.filterwarnings("ignore", message="enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.self_attn.batch_first was not True")
-            model = PodosTransformer.from_pretrained(f"Bettensor/{model_name}").to(self.device);
-            return model
+            
+            # Define the local path to save the model
+            local_model_path = os.path.join(os.path.dirname(__file__), '..', 'models', f'{model_name}.pt')
+            
+            if os.path.exists(local_model_path):
+                # Load the model from local file if it exists
+                model = PodosTransformer.load_from_checkpoint(local_model_path)
+                bt.logging.info(f"Loaded model from local file: {local_model_path}")
+            else:
+                # Download the model from Hugging Face Hub
+                model = PodosTransformer.from_pretrained(f"Bettensor/{model_name}")
+                
+                # Save the model locally
+                torch.save(model.state_dict(), local_model_path)
+                bt.logging.info(f"Downloaded model from Hugging Face Hub and saved to: {local_model_path}")
+            
+            return model.to(self.device)
         except Exception as e:
-            print(f"Error pulling huggingface model: {e}")
+            bt.logging.error(f"Error loading model: {e}")
             return None
 
     def preprocess_data(self, home_teams, away_teams, odds):
@@ -193,3 +210,21 @@ class PodosTransformer(nn.Module, PyTorchModelHubMixin):
             x = x / self.temperature
 
         return x
+
+    @classmethod
+    def load_from_checkpoint(cls, checkpoint_path):
+        # Load the state dict
+        state_dict = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+        
+        # Infer model parameters from the state dict
+        input_dim = state_dict['projection.weight'].size(1)
+        model_dim = state_dict['projection.weight'].size(0)
+        num_classes = state_dict['fc.weight'].size(0)
+        
+        # Create a new instance of the model
+        model = cls(input_dim, model_dim, num_classes)
+        
+        # Load the state dict into the model
+        model.load_state_dict(state_dict)
+        
+        return model

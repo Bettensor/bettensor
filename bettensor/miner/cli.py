@@ -43,6 +43,8 @@ from prompt_toolkit.application.current import get_app
 from rich.console import Group
 from rich.align import Align
 import asyncio
+from huggingface_hub import hf_hub_download
+import torch
 
 # Set up logging
 log_dir = "logs"

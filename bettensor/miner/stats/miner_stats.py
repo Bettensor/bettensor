@@ -228,6 +228,26 @@ class MinerStatsHandler:
             bt.logging.info(f"Retrieved miner cash: {cash}")
             return cash
 
+    def update_miner_earnings(self, earnings: float):
+        with self.lock:
+            self.stats['miner_lifetime_earnings'] = self.stats.get('miner_lifetime_earnings', 0) + earnings
+            self.state_manager.update_state({'miner_lifetime_earnings': self.stats['miner_lifetime_earnings']})
+
+    def update_miner_cash(self, amount: float):
+        with self.lock:
+            self.stats['miner_cash'] = self.stats.get('miner_cash', 0) + amount
+            self.state_manager.update_state({'miner_cash': self.stats['miner_cash']})
+
+    def increment_miner_wins(self):
+        with self.lock:
+            self.stats['miner_lifetime_wins'] = self.stats.get('miner_lifetime_wins', 0) + 1
+            self.state_manager.update_state({'miner_lifetime_wins': self.stats['miner_lifetime_wins']})
+
+    def increment_miner_losses(self):
+        with self.lock:
+            self.stats['miner_lifetime_losses'] = self.stats.get('miner_lifetime_losses', 0) + 1
+            self.state_manager.update_state({'miner_lifetime_losses': self.stats['miner_lifetime_losses']})
+
 class MinerStateManager:
     DAILY_CASH = 1000.0
 
