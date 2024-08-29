@@ -881,7 +881,6 @@ class BettensorValidator(BaseNeuron):
         return cursor.fetchall()
 
     def determine_winner(self, game_info):
-        time.sleep(0.1) # RapidAPI rate limits these individual calls
         game_id, teamA, teamB, externalId = game_info
 
         conn = self.connect_db()
@@ -896,17 +895,35 @@ class BettensorValidator(BaseNeuron):
 
         sport = result[0]
 
-        if sport == "baseball":
-            game_data = self.api_client.get_baseball_game(str(externalId))
-        elif sport == "soccer":
-            game_data = self.api_client.get_soccer_game(str(externalId))
-        else:
-            bt.logging.error(f"Unsupported sport: {sport}")
-            return
+        bt.logging.debug(f"Fetching {sport} game data for externalId: {externalId}")
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            if sport == "baseball":
+                game_data = self.api_client.get_baseball_game(str(externalId))
+            elif sport == "soccer":
+                game_data = self.api_client.get_soccer_game(str(externalId))
+            else:
+                bt.logging.error(f"Unsupported sport: {sport}")
+                return
+
+            if game_data is not None:
+                break
+            elif attempt < max_retries - 1:
+                bt.logging.warning(f"Retrying fetch for game {externalId} (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                bt.logging.error(f"Failed to fetch game data after {max_retries} attempts")
+                return
 
         if not game_data:
             return
 
+        # Process game_data and determine the winner as before
+        # ...
+
+        bt.logging.debug(f"Processed game result for {externalId}: {numeric_outcome}")
+        self.update_game_outcome(externalId, numeric_outcome)
         game_response = game_data.get("response", [])[0]
 
         if sport == "baseball":
