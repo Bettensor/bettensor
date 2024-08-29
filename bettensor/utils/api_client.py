@@ -32,7 +32,7 @@ class APIClient:
             response = requests.get(url, headers=headers, params=params)
             self.last_request_time = time.time()
 
-            bt.logging.debug(f"Response status code: {response.status_code}")
+            bt.logging.trace(f"Response status code: {response.status_code}")
 
             if response.status_code == 200:
                 return response.json()

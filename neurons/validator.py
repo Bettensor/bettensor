@@ -347,7 +347,7 @@ async def main(validator: BettensorValidator):
             watchdog.reset()
             # Sleep for a duration equivalent to the block time (i.e., time between successive blocks).
             bt.logging.debug("Sleeping for: 45 seconds")
-            await asyncio.sleep(135)
+            await asyncio.sleep(45)
 
             #bt.logging.warning(f"TESTING AUTO UPDATE!!")
 

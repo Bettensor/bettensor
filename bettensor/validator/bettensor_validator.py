@@ -855,7 +855,7 @@ class BettensorValidator(BaseNeuron):
                 (numeric_outcome, game_id),
             )
             if cursor.rowcount == 0:
-                bt.logging.warning(f"No game updated for externalId {game_id}")
+                bt.logging.trace(f"No game updated for externalId {game_id}")
             else:
                 bt.logging.info(f"Updated game {game_id} with outcome: {numeric_outcome}")
             conn.commit()
