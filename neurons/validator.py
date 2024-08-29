@@ -141,7 +141,6 @@ async def main(validator: BettensorValidator):
     validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
 
     while True:
-        await validator.run_sync_in_async(validator.update_recent_games)
         try:
             watchdog.reset()
             current_time = datetime.now(timezone.utc)
