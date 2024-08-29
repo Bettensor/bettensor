@@ -150,7 +150,7 @@ async def main(validator: BettensorValidator):
                 validator.last_api_call = datetime.fromtimestamp(validator.last_api_call, tz=timezone.utc)
             
             # Update games every hour
-            if current_time - validator.last_api_call >= timedelta(hours=1):
+            if current_time - validator.last_api_call >= timedelta(minutes=90):
                 try:
                     all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
                     if all_games is None:
