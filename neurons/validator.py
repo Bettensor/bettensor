@@ -141,7 +141,7 @@ async def main(validator: BettensorValidator):
     validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
 
     while True:
-
+        await validator.run_sync_in_async(validator.update_recent_games)
         try:
             watchdog.reset()
             current_time = datetime.now(timezone.utc)
@@ -348,7 +348,7 @@ async def main(validator: BettensorValidator):
             watchdog.reset()
             # Sleep for a duration equivalent to the block time (i.e., time between successive blocks).
             bt.logging.debug("Sleeping for: 45 seconds")
-            await asyncio.sleep(45)
+            await asyncio.sleep(135)
 
             #bt.logging.warning(f"TESTING AUTO UPDATE!!")
 
