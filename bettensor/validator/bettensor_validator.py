@@ -879,42 +879,18 @@ class BettensorValidator(BaseNeuron):
         )
         return cursor.fetchall()
 
+
     def determine_winner(self, game_info):
         game_id, teamA, teamB, externalId = game_info
 
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT sport FROM game_data WHERE externalId = ?", (externalId,))
-        result = cursor.fetchone()
-        conn.close()
-
-        if not result:
+        sport = self.get_sport_from_db(externalId)
+        if not sport:
             bt.logging.error(f"No game found with externalId {externalId}")
             return
 
-        sport = result[0]
-
         bt.logging.debug(f"Fetching {sport} game data for externalId: {externalId}")
 
-        max_retries = 3
-        game_data = None
-        for attempt in range(max_retries):
-            if sport == "baseball":
-                game_data = self.api_client.get_baseball_game(str(externalId))
-            elif sport == "soccer":
-                game_data = self.api_client.get_soccer_game(str(externalId))
-            else:
-                bt.logging.error(f"Unsupported sport: {sport}")
-                return
-
-            if game_data is not None:
-                break
-            elif attempt < max_retries - 1:
-                bt.logging.warning(f"Retrying fetch for game {externalId} (Attempt {attempt + 1}/{max_retries})")
-                time.sleep(2 ** attempt)  # Exponential backoff
-            else:
-                bt.logging.error(f"Failed to fetch game data after {max_retries} attempts")
-                return
+        game_data = self.api_client.get_baseball_game(str(externalId)) if sport == "baseball" else self.api_client.get_soccer_game(str(externalId))
 
         if not game_data or "response" not in game_data or not game_data["response"]:
             bt.logging.error(f"Invalid or empty game data for {externalId}")
@@ -922,141 +898,90 @@ class BettensorValidator(BaseNeuron):
 
         game_response = game_data["response"][0]
 
-        numeric_outcome = None  # Initialize numeric_outcome
-
-        try:
-            if sport == "baseball":
-                status = game_response.get("status", {}).get("long")
-                if status != "Finished":
-                    bt.logging.debug(f"Baseball game {externalId} is not finished yet. Current status: {status}")
-                    return
-
-                home_score = game_response.get("scores", {}).get("home", {}).get("total")
-                away_score = game_response.get("scores", {}).get("away", {}).get("total")
-
-                if home_score is None or away_score is None:
-                    bt.logging.error(f"Unable to extract scores for baseball game {externalId}")
-                    return
-
-                if home_score > away_score:
-                    numeric_outcome = 0
-                elif away_score > home_score:
-                    numeric_outcome = 1
-                else:
-                    numeric_outcome = 2
-
-            elif sport == "soccer":
-                status = game_response.get("fixture", {}).get("status", {}).get("long")
-                if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
-                    bt.logging.debug(f"Soccer game {externalId} is not finished yet. Current status: {status}")
-                    return
-
-                home_score = game_response.get("goals", {}).get("home")
-                away_score = game_response.get("goals", {}).get("away")
-
-                if home_score is None or away_score is None:
-                    bt.logging.error(f"Unable to extract scores for soccer game {externalId}")
-                    return
-
-                if home_score > away_score:
-                    numeric_outcome = 0
-                elif away_score > home_score:
-                    numeric_outcome = 1
-                else:
-                    numeric_outcome = 2
-
-            else:
-                bt.logging.error(f"Unsupported sport: {sport}")
+        if sport == "baseball":
+            status = game_response.get("status", {}).get("long")
+            if status != "Finished":
+                bt.logging.info(f"Baseball game {externalId} is not finished yet. Current status: {status}")
                 return
+        elif sport == "soccer":
+            status = game_response.get("fixture", {}).get("status", {}).get("long")
+            if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
+                bt.logging.info(f"Soccer game {externalId} is not finished yet. Current status: {status}")
+                return
+        else:
+            bt.logging.error(f"Unsupported sport: {sport}")
+            return
 
-            bt.logging.debug(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
-            bt.logging.debug(f"Numeric outcome: {numeric_outcome}")
+        # Process scores and update game outcome
+        self.process_game_result(sport, game_response, externalId, teamA, teamB)
 
-            if numeric_outcome is not None:
-                self.update_game_outcome(externalId, numeric_outcome)
-            else:
-                bt.logging.error(f"Failed to determine numeric outcome for game {externalId}")
+    def process_game_result(self, sport, game_response, externalId, teamA, teamB):
+        if sport == "baseball":
+            home_score = game_response.get("scores", {}).get("home", {}).get("total")
+            away_score = game_response.get("scores", {}).get("away", {}).get("total")
+        elif sport == "soccer":
+            home_score = game_response.get("goals", {}).get("home")
+            away_score = game_response.get("goals", {}).get("away")
+        else:
+            bt.logging.error(f"Unsupported sport: {sport}")
+            return
 
-        except KeyError as e:
-            bt.logging.error(f"KeyError while processing game data for {externalId}: {str(e)}")
-        except Exception as e:
-            bt.logging.error(f"Unexpected error while processing game data for {externalId}: {str(e)}")
+        if home_score is None or away_score is None:
+            bt.logging.error(f"Unable to extract scores for {sport} game {externalId}")
+            return
+
+        if home_score > away_score:
+            numeric_outcome = 0
+        elif away_score > home_score:
+            numeric_outcome = 1
+        else:
+            numeric_outcome = 2
+
+        bt.logging.info(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
+        bt.logging.info(f"Numeric outcome: {numeric_outcome}")
+
+        self.update_game_outcome(externalId, numeric_outcome)
+
+    def get_sport_from_db(self, externalId):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT sport FROM game_data WHERE externalId = ?", (externalId,))
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else None
 
     def update_recent_games(self):
         """Updates the outcomes of recent games and corresponding predictions"""
-        recent_games = self.get_recent_games()
+        current_time = datetime.utcnow().replace(tzinfo=timezone.utc)
+        
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        # Fetch games that have started at least 2 hours ago but don't have a final outcome yet
+        two_hours_ago = current_time - timedelta(hours=2)
+        cursor.execute("""
+            SELECT id, teamA, teamB, externalId, eventStartDate, sport
+            FROM game_data
+            WHERE eventStartDate <= ? AND outcome = 'Unfinished'
+            ORDER BY eventStartDate
+        """, (two_hours_ago.isoformat(),))
+        
+        recent_games = cursor.fetchall()
+        conn.close()
 
-        for game_info in recent_games:
-            game_id, teamA, teamB, externalId = game_info
+        bt.logging.info(f"Checking {len(recent_games)} games for updates")
 
-            self.determine_winner(game_info)
+        for game in recent_games:
+            game_id, teamA, teamB, externalId, start_time, sport = game
+            start_time = datetime.fromisoformat(start_time)
+            
+            # Additional check to ensure the game has indeed started
+            if start_time > current_time:
+                bt.logging.debug(f"Skipping {sport} game {externalId}, scheduled start time is in the future.")
+                continue
 
-            max_retries = 5
-            for attempt in range(max_retries):
-                try:
-                    conn = self.connect_db()
-                    cursor = conn.cursor()
-
-                    try:
-                        # Fetch the updated outcome from game_data
-                        cursor.execute(
-                            "SELECT outcome FROM game_data WHERE externalId = ?",
-                            (externalId,),
-                        )
-                        result = cursor.fetchone()
-
-                        if result is None:
-                            bt.logging.warning(
-                                f"No game found with externalId {externalId}"
-                            )
-                            break
-
-                        new_outcome = result[0]
-
-                        if new_outcome == "Unfinished":
-                            break
-
-                        # Update predictions table where outcome is 'Unfinished' and matches teamGameID
-                        cursor.execute(
-                            """
-                            UPDATE predictions
-                            SET outcome = ?
-                            WHERE teamGameID = ? AND outcome = 'Unfinished'
-                        """,
-                            (new_outcome, externalId),
-                        )
-
-                        conn.commit()
-                        bt.logging.info(
-                            f"Updated predictions for game {externalId} with outcome {new_outcome}"
-                        )
-                        break  # If successful, break the retry loop
-
-                    except sqlite3.OperationalError as e:
-                        if "database is locked" in str(e) and attempt < max_retries - 1:
-                            bt.logging.warning(
-                                f"Database locked, retrying in 1 second... (Attempt {attempt + 1})"
-                            )
-                            time.sleep(1)
-                        else:
-                            bt.logging.error(
-                                f"Error updating predictions for game {externalId}: {e}"
-                            )
-                            break
-                    except Exception as e:
-                        bt.logging.error(
-                            f"Error updating predictions for game {externalId}: {e}"
-                        )
-                        break
-                    finally:
-                        conn.close()
-
-                except Exception as e:
-                    bt.logging.error(f"Error connecting to database: {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(1)
-                    else:
-                        break
+            bt.logging.debug(f"Checking {sport} game {externalId} for results")
+            self.determine_winner((game_id, teamA, teamB, externalId))
 
         bt.logging.info("Recent games and predictions update process completed")
 
