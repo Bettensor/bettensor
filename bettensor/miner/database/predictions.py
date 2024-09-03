@@ -2,6 +2,9 @@ import traceback
 from typing import Any, List, Dict, Optional, Union
 import uuid
 from bettensor.protocol import TeamGamePrediction, TeamGame
+import warnings
+from eth_utils.exceptions import ValidationError
+warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
 import bittensor as bt
 from datetime import datetime, timezone, timedelta
 import psycopg2

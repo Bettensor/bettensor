@@ -2,6 +2,9 @@ import threading
 import traceback
 from typing import Dict, Any
 from psycopg2.extras import RealDictCursor
+import warnings
+from eth_utils.exceptions import ValidationError
+warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
 import bittensor as bt
 from datetime import datetime, timezone, timedelta
 
@@ -239,17 +242,16 @@ class MinerStateManager:
         self.state = self.load_state()
 
     def load_state(self) -> Dict[str, Any]:
-        # bt.logging.trace("Loading miner state from database")
+        if not self.miner_uid:
+            return {}
+        
         query = "SELECT * FROM miner_stats WHERE miner_hotkey = %s"
         conn, cur = self.db_manager.connection_pool.getconn(), None
         try:
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(query, (self.miner_hotkey,))
             result = cur.fetchone()
-            if result:
-                return result
-            else:
-                return self.initialize_state()
+            return result if result else {}
         finally:
             if cur:
                 cur.close()
@@ -257,6 +259,9 @@ class MinerStateManager:
                 self.db_manager.connection_pool.putconn(conn)
 
     def initialize_state(self) -> Dict[str, Any]:
+        if not self.miner_uid:
+            return {}
+        
         bt.logging.info("Initializing new miner state in database")
         initial_state = {
             'miner_hotkey': self.miner_hotkey,
@@ -276,9 +281,10 @@ class MinerStateManager:
         return initial_state
 
     def save_state(self, state: Dict[str, Any] = None):
-        # bt.logging.info("Saving miner state")
-        if state is None:
-            state = self.state
+        if not self.miner_uid or not state:
+            return
+        
+        bt.logging.info("Saving miner state")
         try:
             query = """
             INSERT INTO miner_stats (
@@ -301,7 +307,7 @@ class MinerStateManager:
             """
             params = (
                 self.miner_hotkey,
-                self.miner_uid if self.miner_uid is not None else None,
+                self.miner_uid if self.miner_uid != "default" else None,
                 state.get('miner_cash', 0),
                 state.get('miner_current_incentive', 0),
                 state.get('miner_last_prediction_date'),
@@ -313,53 +319,12 @@ class MinerStateManager:
                 state.get('miner_win_loss_ratio', 0),
                 state.get('last_daily_reset')
             )
-            conn, cur = self.db_manager.connection_pool.getconn(), None
-            try:
-                cur = conn.cursor()
-                cur.execute(query, params)
-                conn.commit()
-                # bt.logging.info("Miner state saved successfully")
-            finally:
-                if cur:
-                    cur.close()
-                if conn:
-                    self.db_manager.connection_pool.putconn(conn)
+            self.db_manager.execute_query(query, params)
+            bt.logging.info("Miner state saved successfully")
         except Exception as e:
-            # bt.logging.error(f"Error saving miner state: {e}")
-            # bt.logging.error(traceback.format_exc())
-            raise
+            bt.logging.error(f"Error saving miner state: {e}")
+            bt.logging.error(traceback.format_exc())
 
-    def update_state(self, new_state: Dict[str, Any]):
-        # bt.logging.trace("Updating miner state in database")
-        set_clause = ', '.join([f"{k} = %s" for k in new_state.keys()])
-        query = f"""
-        UPDATE miner_stats
-        SET {set_clause}
-        WHERE miner_hotkey = %s
-        """
-        params = list(new_state.values()) + [self.miner_hotkey]
-        conn, cur = self.db_manager.connection_pool.getconn(), None
-        try:
-            cur = conn.cursor()
-            cur.execute(query, params)
-            conn.commit()
-        finally:
-            if cur:
-                cur.close()
-            if conn:
-                self.db_manager.connection_pool.putconn(conn)
-
-    def get_stats(self) -> Dict[str, Any]:
-        # bt.logging.trace("Getting miner stats from database")
-        query = "SELECT * FROM miner_stats WHERE miner_hotkey = %s"
-        conn, cur = self.db_manager.connection_pool.getconn(), None
-        try:
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute(query, (self.miner_hotkey,))
-            result = cur.fetchall()
-            return result[0] if result else {}
-        finally:
-            if cur:
-                cur.close()
-            if conn:
-                self.db_manager.connection_pool.putconn(conn)
+    def update_state(self, new_state):
+        self.state.update(new_state)
+        self.save_state(self.state)
