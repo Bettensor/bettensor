@@ -107,46 +107,45 @@ class DatabaseManager:
         tables = [
             ("predictions", """
             CREATE TABLE IF NOT EXISTS predictions (
-                predictionID TEXT PRIMARY KEY, 
-                teamGameID TEXT, 
-                minerID TEXT, 
-                predictionDate TEXT, 
-                predictedOutcome TEXT,
-                teamA TEXT,
-                teamB TEXT,
+                prediction_id TEXT PRIMARY KEY, 
+                game_id TEXT, 
+                miner_uid TEXT, 
+                prediction_date TEXT, 
+                predicted_outcome TEXT,
+                team_a TEXT,
+                team_b TEXT,
                 wager REAL,
-                teamAodds REAL,
-                teamBodds REAL,
-                tieOdds REAL,
+                team_a_odds REAL,
+                team_b_odds REAL,
+                tie_odds REAL,
                 outcome TEXT
             )
             """),
             ("games", """
             CREATE TABLE IF NOT EXISTS games (
-                gameID TEXT PRIMARY KEY,
-                teamA TEXT,
-                teamAodds REAL,
-                teamB TEXT,
-                teamBodds REAL,
+                game_id TEXT PRIMARY KEY,
+                team_a TEXT,
+                team_a_odds REAL,
+                team_b TEXT,
+                team_b_odds REAL,
                 sport TEXT,
                 league TEXT,
-                externalID TEXT UNIQUE,
-                createDate TEXT,
-                lastUpdateDate TEXT,
-                eventStartDate TEXT,
+                external_id TEXT UNIQUE,
+                create_date TEXT,
+                last_update_date TEXT,
+                event_start_date TEXT,
                 active INTEGER,
                 outcome TEXT,
-                tieOdds REAL,
-                canTie BOOLEAN
+                tie_odds REAL,
+                can_tie BOOLEAN
             )
             """),
             ("miner_stats", """
             CREATE TABLE IF NOT EXISTS miner_stats (
-                miner_hotkey TEXT PRIMARY KEY,
-                miner_uid INTEGER,
+                miner_uid TEXT PRIMARY KEY,
                 miner_rank INTEGER,
                 miner_cash REAL,
-                miner_current_incentive REAL,
+                miner_current_incentive FLOAT,
                 miner_last_prediction_date TEXT,
                 miner_lifetime_earnings REAL,
                 miner_lifetime_wager REAL,
@@ -159,7 +158,7 @@ class DatabaseManager:
             """),
             ("model_params", """
             CREATE TABLE IF NOT EXISTS model_params (
-                id TEXT PRIMARY KEY,
+                miner_uid TEXT PRIMARY KEY,
                 model_on BOOLEAN,
                 wager_distribution_steepness INTEGER,
                 fuzzy_match_percentage INTEGER,
