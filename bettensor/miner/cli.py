@@ -8,9 +8,17 @@ import traceback
 import uuid
 import pytz
 import subprocess
-import bittensor as bt
 import sys
 import os
+import warnings
+from eth_utils.exceptions import ValidationError
+# Suppress specific warnings
+warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
+
+
+warnings.filterwarnings("ignore", message="Network 345 with name 'Yooldo Verse Mainnet' does not have a valid ChainId.*")
+warnings.filterwarnings("ignore", message="Network 12611 with name 'Astar zkEVM' does not have a valid ChainId.*")
+
 from datetime import datetime, timezone
 from rich.console import Console, Group
 from rich.table import Table, Column
@@ -30,6 +38,7 @@ from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.keys import Keys
 import time
+import bittensor as bt
 import random
 from rich.live import Live
 from rich.columns import Columns
@@ -45,6 +54,8 @@ from rich.align import Align
 import asyncio
 from huggingface_hub import hf_hub_download
 import torch
+
+
 
 # Set up logging
 log_dir = "logs"
@@ -99,33 +110,44 @@ def main():
 
 
 class Application:
-    def __init__(self, progress, uid=None):
+    def __init__(self, progress, miner_uid=None):
         self.console = Console()
-        self.uid = uid
+        self.uid = miner_uid
         self.cli_channel = f'cli:{uuid.uuid4()}'
         self.running = True
         self.current_view = "main_menu"
         self.page = 1
-        self.items_per_page = 10
-        self.kb = KeyBindings()
-        self.setup_keybindings()
         self.cursor_position = 0
-        self.search_query = ""
-        self.search_mode = False
-        self.wager_input_mode = False
-        self.wager_input = ""
-        self.predictions_search_query = ""
-        self.predictions_search_mode = False
+        self.items_per_page = 10
+        self.db_manager = None
+        self.miner_uid = None
+        self.miner_hotkey = None
+        self.state_manager = None
+        self.stats_handler = None
+        self.predictions_handler = None
+        self.games_handler = None
+        self.available_miners = []
+        self.miner_cash = 0
+        self.miner_lifetime_earnings = 0
+        self.miner_lifetime_wager = 0
+        self.miner_lifetime_wins = 0
+        self.miner_lifetime_losses = 0
+        self.miner_win_loss_ratio = 0
+        self.miner_last_prediction_date = None
+        self.miner_is_active = False
         self.last_key_press = None
+        self.search_mode = False
+        self.predictions_search_mode = False
+        self.wager_input_mode = False
+        self.search_query = ""
+        self.predictions_search_query = ""
+        self.wager_input = ""
+        self.prediction_outcome = None
+        self.prediction_wager = None
         self.esc_pressed_once = False
         self.submission_message = None
-        self.last_prediction_time = 0
-        self.last_prediction_id = None
         self.confirmation_mode = False
 
-        self.initialize(progress)
-
-    def initialize(self, progress):
         with progress:
             task = progress.add_task("Initializing application...", total=6)
 
@@ -135,17 +157,24 @@ class Application:
             progress.update(task, advance=1, description="Fetching available miners...")
             self.init_miners()
 
-            progress.update(task, advance=1, description="Initializing miner state manager...")
-            self.init_state_manager()
+            if self.miner_uid and self.miner_uid != "default":
+                progress.update(task, advance=1, description="Initializing miner state manager...")
+                self.init_state_manager()
 
-            progress.update(task, advance=1, description="Initializing predictions handler...")
-            self.init_predictions_handler()
+                progress.update(task, advance=1, description="Initializing predictions handler...")
+                self.init_predictions_handler()
 
-            progress.update(task, advance=1, description="Initializing games handler...")
-            self.init_games_handler()
+                progress.update(task, advance=1, description="Initializing games handler...")
+                self.init_games_handler()
 
-            progress.update(task, advance=1, description="Reloading miner data...")
-            self.reload_data()
+                progress.update(task, advance=1, description="Reloading miner data...")
+                self.reload_miner_data()
+            else:
+                progress.update(task, advance=4, description="No valid miner available. Skipping miner-specific initializations...")
+                bt.logging.warning("No valid miner available. The application will run with limited functionality.")
+
+        self.kb = KeyBindings()
+        self.setup_keybindings()
 
     def init_database(self):
         db_host = os.getenv('DB_HOST', 'localhost')
@@ -223,9 +252,14 @@ class Application:
             return []
 
     def init_state_manager(self):
-        self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid)
-        self.stats_handler = MinerStatsHandler(self.state_manager)
-        self.state_manager.load_state()
+        if self.miner_uid and self.miner_uid != "default":
+            self.state_manager = MinerStateManager(self.db_manager, self.miner_hotkey, self.miner_uid)
+            self.stats_handler = MinerStatsHandler(self.state_manager)
+            self.state_manager.load_state()
+        else:
+            self.state_manager = None
+            self.stats_handler = None
+            bt.logging.warning("No valid miner selected. State manager and stats handler not initialized.")
 
     def init_predictions_handler(self):
         if self.miner_uid is None or self.miner_uid == "default":
@@ -236,25 +270,36 @@ class Application:
             self.db_manager.initialize_default_model_params(self.miner_uid)
 
     def init_games_handler(self):
-        self.games_handler = GamesHandler(self.db_manager, self.predictions_handler)
-        self.unsubmitted_predictions = {}
+        if self.miner_uid and self.miner_uid != "default" and self.predictions_handler:
+            self.games_handler = GamesHandler(self.db_manager, self.predictions_handler)
+            self.unsubmitted_predictions = {}
+        else:
+            self.games_handler = None
+            self.unsubmitted_predictions = {}
 
-    def reload_data(self):
-        """
-        Reload all data for the current miner.
-        """
+    def reload_miner_data(self):
+        if not self.miner_uid or self.miner_uid == "default" or not self.db_manager:
+            bt.logging.warning("No valid miner or database manager. Skipping miner data reload.")
+            return
+
         try:
-            self.state_manager.load_state()
-            self.miner_stats = self.state_manager.get_stats()
-            self.miner_cash = float(self.miner_stats.get('miner_cash', 0))
-            self.miner_lifetime_earnings = float(self.miner_stats.get('miner_lifetime_earnings', 0))
-            self.miner_lifetime_wager = float(self.miner_stats.get('miner_lifetime_wager', 0))
-            self.miner_lifetime_wins = int(self.miner_stats.get('miner_lifetime_wins', 0))
-            self.miner_lifetime_losses = int(self.miner_stats.get('miner_lifetime_losses', 0))
-            self.miner_win_loss_ratio = float(self.miner_stats.get('miner_win_loss_ratio', 0))
-            self.miner_last_prediction_date = self.miner_stats.get('miner_last_prediction_date')
+            miner_stats = self.db_manager.execute_query(
+                "SELECT * FROM miner_stats WHERE miner_uid = %s",
+                (self.miner_uid,)
+            )
+            if miner_stats:
+                miner_stats = miner_stats[0]  # Assuming the query returns a single row
+                self.miner_cash = float(miner_stats.get('miner_cash', 0))
+                self.miner_lifetime_earnings = float(miner_stats.get('miner_lifetime_earnings', 0))
+                self.miner_lifetime_wager = float(miner_stats.get('miner_lifetime_wager', 0))
+                self.miner_lifetime_wins = int(miner_stats.get('miner_lifetime_wins', 0))
+                self.miner_lifetime_losses = int(miner_stats.get('miner_lifetime_losses', 0))
+                self.miner_win_loss_ratio = float(miner_stats.get('miner_win_loss_ratio', 0))
+                self.miner_last_prediction_date = miner_stats.get('miner_last_prediction_date')
+            else:
+                bt.logging.warning(f"No stats found for miner with UID: {self.miner_uid}")
         except Exception as e:
-            bt.logging.error(f"Error reloading data: {str(e)}")
+            bt.logging.error(f"Error reloading miner data: {str(e)}")
 
     @staticmethod
     def format_date(date_str):
@@ -326,7 +371,7 @@ class Application:
         available_height = console_height - 10
         available_width = console_width - 4
 
-        num_rows = min(12, available_height)  # Increased to 12 to accommodate the new row
+        num_rows = min(12, available_height)
         num_columns = 2
 
         option_width = min(30, available_width // 3)
@@ -345,20 +390,17 @@ class Application:
         table = Table(show_header=False, box=box.ROUNDED, border_style=DARK_GREEN, expand=True)
         table.add_column("Option", style=option_style, width=option_width)
         table.add_column("Value", style=value_style, width=value_width)
-        
-        #print("Attempting to call is_miner_active")
-        #print("db_manager type:", type(self.db_manager))
-        #print("db_manager methods:", dir(self.db_manager))
-        is_active = self.db_manager.is_miner_active(self.miner_uid)
+
+        is_active = self.db_manager.is_miner_active(self.miner_uid) if self.miner_uid else False
         active_status = "Active" if is_active else "Inactive"
         active_style = value_style if is_active else "bold red"
 
         rows = [
-            ("Miner Hotkey", self.miner_hotkey),
-            ("Miner UID", self.miner_uid),
+            ("Miner Hotkey", self.miner_hotkey or "N/A"),
+            ("Miner UID", self.miner_uid or "N/A"),
             ("Miner Status", active_status),
             ("Miner Cash", f"${self.miner_cash:.2f}"),
-            ("Current Incentive", f"{self.stats_handler.get_current_incentive():.2f} τ per day"),
+            ("Current Incentive", f"{self.stats_handler.get_current_incentive():.2f} τ per day" if self.stats_handler else "N/A"),
             ("Last Prediction", self.format_last_prediction_date(self.miner_last_prediction_date)),
             ("Lifetime Earnings", f"${self.miner_lifetime_earnings:.2f}"),
             ("Lifetime Wager Amount", f"${self.miner_lifetime_wager:.2f}"),
@@ -376,6 +418,13 @@ class Application:
         return Panel(table, title="Miner Statistics", border_style=DARK_GREEN, expand=True)
 
     def generate_predictions_view(self):
+        if not self.predictions_handler or not self.miner_uid:
+            return Panel(
+                Text("No predictions available. Please select a valid miner.", style=LIGHT_GREEN),
+                title="Predictions",
+                border_style=DARK_GREEN
+            )
+
         predictions = self.predictions_handler.get_predictions_with_teams(self.miner_uid)
         logging.debug(f"Retrieved {len(predictions)} predictions")
         
@@ -471,6 +520,13 @@ class Application:
         )
 
     def generate_games_view(self):
+        if self.games_handler is None:
+            return Panel(
+                Text("No games available. Please select a valid miner.", style=LIGHT_GREEN),
+                title="Games",
+                border_style=DARK_GREEN
+            )
+
         games = self.games_handler.get_active_games()
         if self.search_query:
             games = {k: v for k, v in games.items() if self.search_query.lower() in v.sport.lower() or 
@@ -537,6 +593,13 @@ class Application:
         )
 
     def enter_prediction_for_selected_game(self):
+        if not self.games_handler or not self.miner_uid:
+            return Panel(
+                Text("Unable to enter prediction. Please select a valid miner.", style=LIGHT_GREEN),
+                title="Enter Prediction",
+                border_style=DARK_GREEN
+            )
+
         games = list(self.games_handler.get_active_games().items())
         start = (self.page - 1) * self.items_per_page
         selected_game_id, selected_game = games[start + self.cursor_position]
@@ -550,6 +613,13 @@ class Application:
         self.can_tie = selected_game.canTie  # Store the canTie value
 
     def generate_enter_prediction_view(self):
+        if not self.games_handler or not self.miner_uid:
+            return Panel(
+                Text("Unable to enter prediction. Please select a valid miner.", style=LIGHT_GREEN),
+                title="Enter Prediction",
+                border_style=DARK_GREEN
+            )
+
         if hasattr(self, 'confirmation_mode') and self.confirmation_mode:
             # Only display the confirmation message
             content = [Text(self.submission_message, style="bold green", justify="center")]
@@ -623,10 +693,14 @@ class Application:
         return not (self.search_mode or self.predictions_search_mode)
 
     def setup_keybindings(self):
+       
+
         @self.kb.add('q', filter=Condition(lambda: self.is_not_searching()))
+        @self.kb.add(Keys.ControlC)
+        @self.kb.add(Keys.ControlX)
+        @self.kb.add(Keys.ControlZ)
         def _(event):
             self.quit()
-            event.app.exit()
 
         @self.kb.add('m', filter=Condition(lambda: self.is_not_searching()))
         def _(event):
@@ -646,7 +720,7 @@ class Application:
             self.page = 1
             self.cursor_position = 0
 
-        @self.kb.add('n', filter=Condition(lambda: self.is_not_searching()))
+        @self.kb.add('n', filter=Condition(lambda: self.is_not_searching() and self.available_miners))
         def _(event):
             self.select_next_miner()
 
@@ -822,6 +896,10 @@ class Application:
             pass
 
     def select_next_miner(self):
+        if not self.available_miners:
+            self.console_print("[bold red]No miners available to select.[/bold red]")
+            return
+
         current_index = next((i for i, miner in enumerate(self.available_miners) if str(miner['miner_uid']) == str(self.miner_uid)), -1)
         next_index = (current_index + 1) % len(self.available_miners)
         next_miner = self.available_miners[next_index]
@@ -830,36 +908,13 @@ class Application:
         self.miner_is_active = next_miner['is_active']
         self.save_miner_uid(self.miner_uid)
         self.reload_miner_data()
-        
-        
-    def reload_miner_data(self):
-        try:
-            # Fetch the latest miner stats from the database
-            miner_stats = self.db_manager.execute_query(
-                "SELECT * FROM miner_stats WHERE miner_uid = %s",
-                (self.miner_uid,)
-            )
-            if miner_stats:
-                miner_stats = miner_stats[0]  # Assuming the query returns a single row
-                self.miner_cash = float(miner_stats.get('miner_cash', 0))
-                self.miner_lifetime_earnings = float(miner_stats.get('miner_lifetime_earnings', 0))
-                self.miner_lifetime_wager = float(miner_stats.get('miner_lifetime_wager', 0))
-                self.miner_lifetime_wins = int(miner_stats.get('miner_lifetime_wins', 0))
-                self.miner_lifetime_losses = int(miner_stats.get('miner_lifetime_losses', 0))
-                self.miner_win_loss_ratio = float(miner_stats.get('miner_win_loss_ratio', 0))
-                self.miner_last_prediction_date = miner_stats.get('miner_last_prediction_date')
-            else:
-                bt.logging.warning(f"No stats found for miner with UID: {self.miner_uid}")
-        except Exception as e:
-            bt.logging.error(f"Error reloading miner data: {str(e)}")
+        self.console_print(f"[bold green]Switched to miner: {self.miner_uid}[/bold green]")
 
     def quit(self):
-        bt.logging.info("Received signal 2. Shutting down...")
-        bt.logging.info("Stopping miner")
-        self.state_manager.save_state()
-        bt.logging.info("Miner stopped")
-        bt.logging.info("Exiting due to signal")
-        sys.exit(0)
+        if self.state_manager:
+            self.state_manager.save_state()
+        self.running = False
+        get_app().exit()
 
     def get_saved_miner_uid(self):
         """
@@ -885,13 +940,28 @@ class Application:
 
     def run(self):
         try:
+            if not self.available_miners:
+                self.console_print("[bold red]No miners available. Please check your configuration.[/bold red]")
+                self.console_print("[bold yellow]The application will run with limited functionality.[/bold yellow]")
+                self.console_print("[bold yellow]You won't be able to switch miners or make predictions.[/bold yellow]")
+
             layout = PromptLayout(Window(content=FormattedTextControl(self.get_formatted_text)))
             app = PromptApplication(layout=layout, key_bindings=self.kb, full_screen=True)
+            
+            def exit_handler(signum, frame):
+                self.quit()
+            
+            signal.signal(signal.SIGINT, exit_handler)
+            signal.signal(signal.SIGTERM, exit_handler)
+            
             app.run()
         except Exception as e:
             self.console_print(f"[bold red]An error occurred: {e}[/bold red]")
             self.console_print(f"[bold yellow]Please check the log file: {log_file}[/bold yellow]")
             logging.error(f"Unhandled exception: {e}", exc_info=True)
+        finally:
+            if self.state_manager:
+                self.state_manager.save_state()
 
     def get_formatted_text(self):
         
@@ -955,12 +1025,11 @@ class Application:
         get_app().invalidate()
 
     async def delayed_return_to_games(self):
-        await asyncio.sleep(2)  # Wait for 2 seconds
+        await asyncio.sleep(2)  
         self.current_view = "games"
         self.submission_message = None
         self.confirmation_mode = False
-        get_app().invalidate()  # Force a redraw
-
+        get_app().invalidate
     def generate_miner_info(self):
         current_time_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         
