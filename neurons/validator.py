@@ -55,7 +55,7 @@ async def main(validator: BettensorValidator):
     load_dotenv()
     rapid_api_key = os.getenv('RAPID_API_KEY')
 
-    sports_data = SportsData()
+    sports_data = validator.sports_data
     sports_config = {
         "baseball": [
             {"id": "1", "season": "2024"}
@@ -150,7 +150,7 @@ async def main(validator: BettensorValidator):
                 validator.last_api_call = datetime.fromtimestamp(validator.last_api_call, tz=timezone.utc)
             
             # Update games every hour
-            if current_time - validator.last_api_call >= timedelta(minutes=90):
+            if current_time - validator.last_api_call >= timedelta(minutes=0):
                 try:
                     all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
                     if all_games is None:
@@ -365,6 +365,7 @@ if __name__ == "__main__":
     parser.add_argument('--wallet.hotkey', type=str, help="The hotkey of the wallet to use")
     parser.add_argument('--logging.trace', action='store_true', help="Enable trace logging")
     parser.add_argument('--logging.debug', action='store_true', help="Enable debug logging")
+    parser.add_argument('--use_bt_api', action='store_true', help="Use the Bettensor API for fetching game data")
     parser.add_argument(
         "--alpha", type=float, default=0.9, help="The alpha value for the validator."
     )

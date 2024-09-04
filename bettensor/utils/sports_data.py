@@ -8,16 +8,17 @@ import sqlite3
 import bittensor as bt
 import os
 
+from .api_client import APIClient
+from .bettensor_api import BettensorAPIClient
+
 
 class SportsData:
-    def __init__(self, db_name="data/validator.db"):
+    def __init__(self, db_name="data/validator.db", use_bt_api=False):
         self.db_name = db_name
+        self.use_bt_api = use_bt_api
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
-        self.api_hosts = {
-            "baseball": "api-baseball.p.rapidapi.com",
-            "soccer": "api-football-v1.p.rapidapi.com",
-        }
-        self.create_database()
+        self.api_client = APIClient(self.rapid_api_key)
+        self.bettensor_api_client = BettensorAPIClient()
         self.all_games = []
 
     def create_database(self):
@@ -98,20 +99,45 @@ class SportsData:
         return exists
 
     def get_multiple_game_data(self, sports_config):
-        bt.logging.info("Fetching games from RapidAPI")
+        bt.logging.info("Fetching games from API")
         all_games = []
-        for sport, leagues in sports_config.items():
-            for league_info in leagues:
-                league = league_info['id']
-                season = league_info.get('season', '2024')
-                try:
-                    games = self.get_game_data(sport=sport, league=league, season=season)
-                    all_games.extend(games)
-                except StopIteration:
-                    bt.logging.warning(f"StopIteration encountered while fetching data for {sport}, league {league}. Skipping.")
-                except Exception as e:
-                    bt.logging.error(f"Error fetching data for {sport}, league {league}: {e}")
-        return all_games
+
+        if self.use_bt_api:
+            games = self.bettensor_api_client.get_games()
+            if games:
+                all_games = [self.bettensor_api_client.transform_game_data(game) for game in games]
+        else:
+            for sport, leagues in sports_config.items():
+                for league_info in leagues:
+                    league = league_info['id']
+                    season = league_info.get('season', '2024')
+                    try:
+                        games = self.get_game_data(sport=sport, league=league, season=season)
+                        all_games.extend(games)
+                    except Exception as e:
+                        bt.logging.error(f"Error fetching data for {sport}, league {league}: {e}")
+
+        bt.logging.debug(f"Initially fetched {len(all_games)} games")
+        
+        # Filter games (keep existing filtering logic)
+        filtered_games = self.filter_games(all_games)
+
+        bt.logging.info(f"Filtered {len(all_games) - len(filtered_games)} games out of {len(all_games)} total games")
+        self.all_games = filtered_games
+
+        return filtered_games
+
+    def filter_games(self, games):
+        return [
+            game for game in games
+            if (game["odds"]["average_home_odds"] is not None and
+                game["odds"]["average_away_odds"] is not None and
+                game["odds"]["average_home_odds"] >= 1.05 and
+                game["odds"]["average_away_odds"] >= 1.05 and
+                not (game["odds"]["average_home_odds"] == 1.5 and
+                     game["odds"]["average_away_odds"] == 3.0 and
+                     game["odds"].get("average_tie_odds") == 1.5))
+        ]
 
     def get_game_data(self, sport, league="1", season="2024"):
         bt.logging.trace(f"Getting game data for sport: {sport}, league: {league}, season: {season}")

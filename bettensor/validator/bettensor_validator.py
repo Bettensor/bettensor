@@ -24,6 +24,7 @@ import numpy as np
 import torch
 from bettensor.utils.weights_functions import WeightSetter
 from bettensor.utils.api_client import APIClient
+from bettensor.utils.sports_data import SportsData
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -74,8 +75,13 @@ class BettensorValidator(BaseNeuron):
             parser.add_argument('--logging.info', action='store_true', help="Enable info logging")
         if not any(arg.dest == 'subtensor.chain_endpoint' for arg in parser._actions):
             parser.add_argument('--subtensor.chain_endpoint', type=str, help="subtensor endpoint")
+        if not any(arg.dest == 'use_bt_api' for arg in parser._actions):
+            parser.add_argument('--use_bt_api', action='store_true', help="Use the Bettensor API for fetching game data")
 
         args = parser.parse_args()
+
+        self.use_bt_api = args.use_bt_api
+        self.sports_data = SportsData(db_name=self.default_db_path, use_bt_api=self.use_bt_api)
 
         self.timeout = 12
         self.neuron_config = None
