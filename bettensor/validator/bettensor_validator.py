@@ -17,7 +17,6 @@ import requests
 import time
 from dotenv import load_dotenv
 import os
-import asyncio
 import concurrent.futures
 import math
 import numpy as np
@@ -99,8 +98,6 @@ class BettensorValidator(BaseNeuron):
         self.data_entry = None
         self.uid = None
         self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
-        self.loop = asyncio.get_event_loop()
-        self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
         self.axon_port = getattr(args, 'axon.port', None) 
         self.db_path = "data/validator.db"
         self.api_hosts = {
@@ -130,14 +127,13 @@ class BettensorValidator(BaseNeuron):
 
         return True
 
-    async def initialize_connection(self):
-        if self.subtensor is None:
-            try:
-                self.subtensor = bt.subtensor(config=self.neuron_config)
-                bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
-            except Exception as e:
-                bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
-                self.subtensor = None
+    def initialize_connection(self):
+        try:
+            self.subtensor = bt.subtensor(config=self.neuron_config)
+            bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+        except Exception as e:
+            bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
+            self.subtensor = None
         return self.subtensor
 
     def print_chain_endpoint(self):
@@ -146,13 +142,13 @@ class BettensorValidator(BaseNeuron):
         else:
             bt.logging.info("Subtensor is not initialized yet.")
 
-    async def get_subtensor(self):
+    def get_subtensor(self):
         if self.subtensor is None:
-            self.subtensor = await self.initialize_connection()
+            self.subtensor = self.initialize_connection()
         return self.subtensor
 
-    async def sync_metagraph(self):
-        subtensor = await self.get_subtensor()
+    def sync_metagraph(self):
+        subtensor = self.get_subtensor()
         self.metagraph.sync(subtensor=subtensor, lite=True)
         return self.metagraph
 
@@ -273,8 +269,6 @@ class BettensorValidator(BaseNeuron):
             wallet=self.wallet,
             subtensor=self.subtensor,
             neuron_config=self.neuron_config,
-            loop=self.loop,
-            thread_executor=self.thread_executor,
             db_path=self.db_path
         )
 
@@ -973,22 +967,13 @@ class BettensorValidator(BaseNeuron):
             self.determine_winner((game_id, teamA, teamB, externalId))
 
         bt.logging.info("Recent games and predictions update process completed")
-
-    async def run_sync_in_async(self, fn):
-        try:
-            return await self.loop.run_in_executor(self.thread_executor, fn)
-        except Exception as e:
-            bt.logging.error(f"Error in run_sync_in_async: {e}")
-            bt.logging.error(f"Function: {fn.__name__}")
-            bt.logging.error(f"Function details: {fn}")
-            return None
     
     def recalculate_all_profits(self):
         self.weight_setter.recalculate_daily_profits()
 
-    async def set_weights(self):
+    def set_weights(self):
         try:
-            return await self.weight_setter.set_weights(self.db_path)
+            return self.weight_setter.set_weights(self.db_path)
         except StopIteration:
             bt.logging.warning("StopIteration encountered in set_weights. Handling gracefully.")
             return None

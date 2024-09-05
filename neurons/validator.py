@@ -38,7 +38,6 @@ from uuid import UUID
 from argparse import ArgumentParser
 import sqlite3
 from dotenv import load_dotenv
-import asyncio
 
 
 # need to import the right protocol(s) here
@@ -50,7 +49,7 @@ from bettensor import protocol
 from datetime import datetime, timezone, timedelta
 from bettensor.utils.website_handler import fetch_and_send_predictions
 
-async def main(validator: BettensorValidator):
+def main(validator: BettensorValidator):
     # load rapid API key
     load_dotenv()
     rapid_api_key = os.getenv('RAPID_API_KEY')
@@ -113,19 +112,9 @@ async def main(validator: BettensorValidator):
             {"id": "812", "season": 2024},  # Super Cup, Belarus
         ]
     }
-    # commenting this out to prevent excessive api calls if validator crashes - strictly once/hour now
-    """ try:
-        all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
-        if all_games is None:
-            bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
-        else:
-            validator.last_api_call = datetime.now()
-    except Exception as e:
-        bt.logging.error(f"Error fetching game data: {e}")
-        # Continue with the previous data
- """
+    
     validator.serve_axon()
-    await validator.initialize_connection()
+    validator.initialize_connection()
 
     # Load the state if `load_state` argument is set to True
     if args.load_state.lower() == "true":
@@ -135,7 +124,7 @@ async def main(validator: BettensorValidator):
 
     if not validator.last_updated_block:
         bt.logging.info("Updating last updated block; will set weights this iteration")
-        validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block) - 301
+        validator.last_updated_block = validator.subtensor.block - 301
 
     bt.logging.info("Recalculating daily profits...")
     validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
@@ -152,7 +141,7 @@ async def main(validator: BettensorValidator):
             # Update games every hour
             if current_time - validator.last_api_call >= timedelta(minutes=0):
                 try:
-                    all_games = await validator.run_sync_in_async(lambda: sports_data.get_multiple_game_data(sports_config))
+                    all_games = validator.sports_data.get_multiple_game_data(sports_config)
                     if all_games is None:
                         bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
                     else:
@@ -166,7 +155,7 @@ async def main(validator: BettensorValidator):
                 # Only update recent games if not using Bettensor API
                 if not validator.use_bt_api:
                     try:
-                        await validator.run_sync_in_async(validator.update_recent_games)
+                        validator.update_recent_games
                         validator.save_state()  # Save state after updating games
                     except Exception as e:
                         bt.logging.error(f"Error updating recent games: {str(e)}")
@@ -175,7 +164,7 @@ async def main(validator: BettensorValidator):
             if validator.step % 5 == 0:
                 # Sync metagraph
                 try:
-                    validator.metagraph = await validator.sync_metagraph()
+                    validator.metagraph = validator.sync_metagraph()
                     bt.logging.debug(f"Metagraph synced: {validator.metagraph}")
                 except TimeoutError as e:
                     bt.logging.error(f"Metagraph sync timed out: {e}")
@@ -295,7 +284,7 @@ async def main(validator: BettensorValidator):
                     processed_uids=list_of_uids, predictions=responses
                 )
 
-            current_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
+            current_block = validator.subtensor.block
 
             bt.logging.debug(
                 f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
@@ -319,10 +308,10 @@ async def main(validator: BettensorValidator):
                     bt.logging.info("Attempting to update weights")
                     if validator.subtensor is None:
                         bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
-                        validator.subtensor = await validator.initialize_connection()
+                        validator.subtensor = validator.initialize_connection()
                     
                     if validator.subtensor is not None:
-                        success = await validator.set_weights()
+                        success = validator.set_weights()
                         bt.logging.info("Weight update attempt completed")
                     else:
                         bt.logging.error("Failed to reinitialize subtensor. Skipping weight update.")
@@ -333,7 +322,7 @@ async def main(validator: BettensorValidator):
 
                 # Update last_updated_block regardless of the outcome
                 try:
-                    validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block)
+                    validator.last_updated_block = validator.subtensor.block
                     bt.logging.info(f"Updated last_updated_block to {validator.last_updated_block}")
                 except Exception as e:
                     bt.logging.error(f"Error updating last_updated_block: {str(e)}")
@@ -348,14 +337,14 @@ async def main(validator: BettensorValidator):
             watchdog.reset()
             # Sleep for a duration equivalent to the block time (i.e., time between successive blocks).
             bt.logging.debug("Sleeping for: 45 seconds")
-            await asyncio.sleep(45)
+            time.sleep(45)
 
             #bt.logging.warning(f"TESTING AUTO UPDATE!!")
 
         except TimeoutError as e:
             bt.logging.error(f"Error in main loop: {str(e)}")
             # Attempt to reconnect if necessary
-            await validator.initialize_connection()
+            validator.initialize_connection()
 
 
 # The main function parses the configuration and runs the validator.
@@ -397,5 +386,5 @@ if __name__ == "__main__":
         bt.logging.error("Unable to initialize Validator. Exiting.")
         sys.exit()
 
-    asyncio.get_event_loop().run_until_complete(main(validator))
+    main(validator)
 
