@@ -103,11 +103,13 @@ class BettensorValidator(BaseNeuron):
         self.api_hosts = {
             "baseball": "api-baseball.p.rapidapi.com",
             "soccer": "api-football-v1.p.rapidapi.com",
+            "nfl": "api.b365api.com"
         }
 
         load_dotenv()  # take environment variables from .env.
         self.rapid_api_key = os.getenv("RAPID_API_KEY")
-        self.api_client = APIClient(self.rapid_api_key)
+        self.bet365_api_key = os.getenv("BET365_API_KEY")
+        self.api_client = APIClient(self.rapid_api_key, self.bet365_api_key)
 
         self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
         self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
@@ -873,13 +875,21 @@ class BettensorValidator(BaseNeuron):
 
         bt.logging.debug(f"Fetching {sport} game data for externalId: {externalId}")
 
-        game_data = self.api_client.get_baseball_game(str(externalId)) if sport == "baseball" else self.api_client.get_soccer_game(str(externalId))
+        if sport == "baseball":
+            game_data = self.api_client.get_baseball_game(str(externalId))
+        elif sport == "soccer":
+            game_data = self.api_client.get_soccer_game(str(externalId))
+        elif sport.lower() == "nfl":
+            game_data = self.api_client.get_nfl_result(str(externalId))
+        else:
+            bt.logging.error(f"Unsupported sport: {sport}")
+            return
 
-        if not game_data or "response" not in game_data or not game_data["response"]:
+        if not game_data or "results" not in game_data or not game_data["results"]:
             bt.logging.error(f"Invalid or empty game data for {externalId}")
             return
 
-        game_response = game_data["response"][0]
+        game_response = game_data["results"][0]
 
         if sport == "baseball":
             status = game_response.get("status", {}).get("long")
@@ -890,6 +900,11 @@ class BettensorValidator(BaseNeuron):
             status = game_response.get("fixture", {}).get("status", {}).get("long")
             if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
                 bt.logging.info(f"Soccer game {externalId} is not finished yet. Current status: {status}")
+                return
+        elif sport.lower() == "nfl":
+            status = game_response.get("time_status")
+            if status != 3:
+                bt.logging.info(f"NFL game {externalId} is not finished yet. Current status: {status}")
                 return
         else:
             bt.logging.error(f"Unsupported sport: {sport}")
@@ -905,6 +920,13 @@ class BettensorValidator(BaseNeuron):
         elif sport == "soccer":
             home_score = game_response.get("goals", {}).get("home")
             away_score = game_response.get("goals", {}).get("away")
+        elif sport.lower() == "nfl":
+            scores = game_response.get("ss", "").split("-")
+            if len(scores) == 2:
+                home_score, away_score = map(int, scores)
+            else:
+                bt.logging.error(f"Invalid score format for NFL game {externalId}")
+                return
         else:
             bt.logging.error(f"Unsupported sport: {sport}")
             return
@@ -912,6 +934,9 @@ class BettensorValidator(BaseNeuron):
         if home_score is None or away_score is None:
             bt.logging.error(f"Unable to extract scores for {sport} game {externalId}")
             return
+
+        home_score = int(home_score)
+        away_score = int(away_score)
 
         if home_score > away_score:
             numeric_outcome = 0
@@ -934,20 +959,19 @@ class BettensorValidator(BaseNeuron):
         return result[0] if result else None
 
     def update_recent_games(self):
-        """Updates the outcomes of recent games and corresponding predictions"""
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc)
         
         conn = self.connect_db()
         cursor = conn.cursor()
         
-        # Fetch games that have started at least 2 hours ago but don't have a final outcome yet
-        two_hours_ago = current_time - timedelta(hours=2)
+        # Fetch games that have started at least 4 hours ago but don't have a final outcome yet
+        four_hours_ago = current_time - timedelta(hours=4)
         cursor.execute("""
             SELECT id, teamA, teamB, externalId, eventStartDate, sport
             FROM game_data
             WHERE eventStartDate <= ? AND outcome = 'Unfinished'
             ORDER BY eventStartDate
-        """, (two_hours_ago.isoformat(),))
+        """, (four_hours_ago.isoformat(),))
         
         recent_games = cursor.fetchall()
         conn.close()

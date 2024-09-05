@@ -110,6 +110,9 @@ def main(validator: BettensorValidator):
             {"id": "72", "season": 2024},  # Serie B, Brazil
             {"id": "136", "season": 2024},  # Serie B, Italy
             {"id": "812", "season": 2024},  # Super Cup, Belarus
+        ],
+        "nfl": [
+            {"id": "12", "season": "2024"}  # NFL
         ]
     }
     
@@ -387,4 +390,3 @@ if __name__ == "__main__":
         sys.exit()
 
     main(validator)
-
