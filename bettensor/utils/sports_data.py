@@ -99,14 +99,17 @@ class SportsData:
         return exists
 
     def get_multiple_game_data(self, sports_config):
-        bt.logging.info("Fetching games from API")
         all_games = []
 
         if self.use_bt_api:
+            bt.logging.info("Fetching games from BettensorAPI. This will take a while on first run.")
             games = self.bettensor_api_client.get_games()
             if games:
                 all_games = [self.bettensor_api_client.transform_game_data(game) for game in games]
+            else:
+                bt.logging.info("No games to update.")
         else:
+            bt.logging.info("Fetching games from RapidAPI and Bet365")
             for sport, leagues in sports_config.items():
                 for league_info in leagues:
                     league = league_info['id']

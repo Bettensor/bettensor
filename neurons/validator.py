@@ -162,11 +162,14 @@ async def main(validator: BettensorValidator):
                     bt.logging.error(f"Error fetching game data: {e}")
                     # Continue with the previous data
 
-                try:
-                    await validator.run_sync_in_async(validator.update_recent_games)
-                    validator.save_state()  # Save state after updating games
-                except Exception as e:
-                    bt.logging.error(f"Error updating recent games: {str(e)}")
+
+                # Only update recent games if not using Bettensor API
+                if not validator.use_bt_api:
+                    try:
+                        await validator.run_sync_in_async(validator.update_recent_games)
+                        validator.save_state()  # Save state after updating games
+                    except Exception as e:
+                        bt.logging.error(f"Error updating recent games: {str(e)}")
 
             # Periodically sync subtensor status and save the state file
             if validator.step % 5 == 0:

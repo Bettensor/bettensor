@@ -962,7 +962,7 @@ class BettensorValidator(BaseNeuron):
 
         for game in recent_games:
             game_id, teamA, teamB, externalId, start_time, sport = game
-            start_time = datetime.fromisoformat(start_time)
+            start_time = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
             
             # Additional check to ensure the game has indeed started
             if start_time > current_time:
@@ -977,19 +977,10 @@ class BettensorValidator(BaseNeuron):
     async def run_sync_in_async(self, fn):
         try:
             return await self.loop.run_in_executor(self.thread_executor, fn)
-        except StopIteration:
-            bt.logging.warning("StopIteration encountered in run_sync_in_async. Handling gracefully.")
-            return None
         except Exception as e:
             bt.logging.error(f"Error in run_sync_in_async: {e}")
-            return None
-        try:
-            return await self.loop.run_in_executor(self.thread_executor, fn)
-        except StopIteration:
-            bt.logging.warning("StopIteration encountered in run_sync_in_async. Handling gracefully.")
-            return None
-        except Exception as e:
-            bt.logging.error(f"Error in run_sync_in_async: {e}")
+            bt.logging.error(f"Function: {fn.__name__}")
+            bt.logging.error(f"Function details: {fn}")
             return None
     
     def recalculate_all_profits(self):
