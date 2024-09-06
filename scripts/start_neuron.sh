@@ -63,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --validator_min_stake) VALIDATOR_MIN_STAKE="$2"; shift 2 ;;
         --disable_auto_update) DISABLE_AUTO_UPDATE="$2"; shift 2 ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
+        --use_bt_api) USE_BT_API="--use_bt_api"; shift ;;
     esac
 done
 
@@ -121,6 +122,16 @@ fi
 prompt_for_input "Enter logging level (info/debug/trace)" "debug" "LOGGING_LEVEL"
 DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --logging.$LOGGING_LEVEL"
 
+# Prompt for using BT API if not provided (only for validator)
+if [ "$NEURON_TYPE" = "validator" ]; then
+    if [ -z "$USE_BT_API" ]; then
+        prompt_yes_no "Do you want to use the BT API?" "USE_BT_API_CHOICE"
+        if [ "$USE_BT_API_CHOICE" = "true" ]; then
+            USE_BT_API="--use_bt_api"
+        fi
+    fi
+fi
+
 # Prompt for disabling auto-update if not provided
 prompt_yes_no "Do you want to disable auto-update? Warning: this will apply to all running neurons" "DISABLE_AUTO_UPDATE"
 
@@ -135,7 +146,7 @@ if [ "$NEURON_TYPE" = "miner" ]; then
 else
     VALIDATOR_COUNT=$(pm2 list | grep -c "validator")
     NEURON_NAME="validator$VALIDATOR_COUNT"
-    NEURON_ARGS="$DEFAULT_NEURON_ARGS"
+    NEURON_ARGS="$DEFAULT_NEURON_ARGS $USE_BT_API"
 fi
 
 echo "Starting $NEURON_TYPE with arguments: $NEURON_ARGS"
