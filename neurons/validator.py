@@ -24,8 +24,8 @@ import os
 
 from bettensor.protocol import GameData, Metadata
 
-from bettensor.utils.sports_data import SportsData
-from bettensor.utils.watchdog import Watchdog
+from bettensor.validator.utils.sports_data import SportsData
+from bettensor.validator.utils.watchdog import Watchdog
 
 # Bittensor
 import bittensor as bt
@@ -48,7 +48,7 @@ from bettensor import protocol
 # from update_games import update_games
 
 from datetime import datetime, timezone, timedelta
-from bettensor.utils.website_handler import fetch_and_send_predictions
+from bettensor.validator.utils.website_handler import fetch_and_send_predictions
 
 async def main(validator: BettensorValidator):
     # load rapid API key
@@ -123,7 +123,7 @@ async def main(validator: BettensorValidator):
     except Exception as e:
         bt.logging.error(f"Error fetching game data: {e}")
         # Continue with the previous data
- """
+    """
     validator.serve_axon()
     await validator.initialize_connection()
 
@@ -137,8 +137,8 @@ async def main(validator: BettensorValidator):
         bt.logging.info("Updating last updated block; will set weights this iteration")
         validator.last_updated_block = await validator.run_sync_in_async(lambda: validator.subtensor.block) - 301
 
-    bt.logging.info("Recalculating daily profits...")
-    validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
+    # bt.logging.info("Recalculating daily profits...")
+    # validator.recalculate_all_profits() # Running this at startup, then excluding it from the loop
 
     while True:
         try:

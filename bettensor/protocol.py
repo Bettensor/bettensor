@@ -167,6 +167,7 @@ class TeamGamePrediction(BaseModel):
     team_a_odds: float = Field(..., description="Team A odds at the time of prediction")
     team_b_odds: float = Field(..., description="Team B odds at the time of prediction")
     tie_odds: Optional[float] = Field(None, description="Tie odds at the time of prediction")
+    model_name: Optional[str] = Field(None, description="Name of the model that made the prediction - null if submitted by a human")
     outcome: str = Field(..., description="Outcome of prediction")
     payout: float = Field(..., description="Payout of prediction - for local tracking, not used in scoring")
 

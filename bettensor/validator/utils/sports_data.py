@@ -26,20 +26,20 @@ class SportsData:
         c.execute(
             """CREATE TABLE IF NOT EXISTS game_data (
                         id TEXT PRIMARY KEY,
-                        teamA TEXT,
-                        teamB TEXT,
+                        team_a TEXT,
+                        team_b TEXT,
                         sport TEXT,
                         league TEXT,
-                        externalId TEXT,
-                        createDate TEXT,
-                        lastUpdateDate TEXT,
-                        eventStartDate TEXT,
+                        external_id TEXT,
+                        create_date TEXT,
+                        last_update_date TEXT,
+                        event_start_date TEXT,
                         active INTEGER,
                         outcome TEXT,
-                        teamAodds REAL,
-                        teamBodds REAL,
-                        tieOdds REAL,
-                        canTie BOOLEAN
+                        team_a_odds REAL,
+                        team_b_odds REAL,
+                        tie_odds REAL,
+                        can_tie BOOLEAN
                     )"""
         )
         conn.commit()
@@ -49,7 +49,7 @@ class SportsData:
         conn = sqlite3.connect(self.db_name)
         c = conn.cursor()
         c.execute(
-            """INSERT INTO game_data (id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie)
+            """INSERT INTO game_data (id, team_a, team_b, sport, league, external_id, create_date, last_update_date, event_start_date, active, outcome, team_a_odds, team_b_odds, tie_odds, can_tie)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             game_data,
         )
@@ -62,8 +62,8 @@ class SportsData:
         if tieOdds is not None:
             c.execute(
                 """UPDATE game_data
-                         SET teamAodds = ?, teamBodds = ?, tieOdds = ?, lastUpdateDate = ?
-                         WHERE externalId = ?""",
+                         SET team_a_odds = ?, team_b_odds = ?, tie_odds = ?, last_update_date = ?
+                         WHERE external_id = ?""",
                 (
                     teamAodds,
                     teamBodds,
@@ -75,8 +75,8 @@ class SportsData:
         else:
             c.execute(
                 """UPDATE game_data
-                         SET teamAodds = ?, teamBodds = ?, lastUpdateDate = ?
-                         WHERE externalId = ?""",
+                         SET team_a_odds = ?, team_b_odds = ?, last_update_date = ?
+                         WHERE external_id = ?""",
                 (
                     teamAodds,
                     teamBodds,
@@ -87,11 +87,11 @@ class SportsData:
         conn.commit()
         conn.close()
 
-    def external_id_exists(self, externalId):
+    def external_id_exists(self, external_id):
         conn = sqlite3.connect(self.db_name)
         c = conn.cursor()
         c.execute(
-            """SELECT 1 FROM game_data WHERE externalId = ? LIMIT 1""", (externalId,)
+            """SELECT 1 FROM game_data WHERE external_id = ? LIMIT 1""", (external_id,)
         )
         exists = c.fetchone() is not None
         conn.close()

@@ -316,7 +316,9 @@ class BettensorMiner(BaseNeuron):
             bt.logging.debug(f"Invalid hotkey type: {type(hotkey)}")
             return False
 
-        whitelisted_hotkeys = []
+        whitelisted_hotkeys = ["5HK5tp6t2S59DywmHRWPBVJeJ86T61KjurYqeooqj8sREpeN","5F4tQyWrhfGVcNhoqeiNsR6KjD4wMZ2kfhLj4oHYuyHbZAc3","5EhvL1FVkQPpMjZX4MAADcW42i3xPSF1KiCpuaxTYVr28sux",
+                               "5HbLYXUBy1snPR8nfioQ7GoA9x76EELzEq9j7F32vWUQHm1x","5DvTpiniW9s3APmHRYn8FroUWyfnLtrsid5Mtn5EwMXHN2ed","5Hb63SvXBXqZ8zw6mwW1A39fHdqUrJvohXgepyhp2jgWedSB"]
+        
 
         if hotkey in whitelisted_hotkeys:
             bt.logging.debug(f"Hotkey {hotkey} is whitelisted")
@@ -361,6 +363,9 @@ class BettensorMiner(BaseNeuron):
 
     def priority(self, synapse: GameData) -> float:
         bt.logging.debug(f"Calculating priority for synapse from {synapse.dendrite.hotkey}")
+
+
+
         if self.check_whitelist(hotkey=synapse.dendrite.hotkey):
             bt.logging.debug(f"Whitelisted hotkey {synapse.dendrite.hotkey}, returning max priority")
             return 10000000.0
@@ -492,22 +497,22 @@ class BettensorMiner(BaseNeuron):
                         continue
 
                     # Generate a new predictionID
-                    prediction['predictionID'] = str(uuid.uuid4())
+                    prediction['prediction_id'] = str(uuid.uuid4())
 
                     # Set minerID and ensure predictionDate is in the correct format
-                    prediction['minerID'] = self.miner_uid
-                    prediction['predictionDate'] = datetime.now(timezone.utc).isoformat()
+                    prediction['miner_uid'] = self.miner_uid
+                    prediction['prediction_date'] = datetime.now(timezone.utc).isoformat()
 
                     # Set initial outcome to 'Unfinished'
                     prediction['outcome'] = 'Unfinished'
 
                     # Map externalId to teamGameID
-                    prediction['teamGameID'] = prediction['externalId']
-                    del prediction['externalId']
+                    prediction['team_game_id'] = prediction['external_id']
+                    del prediction['external_id']
 
                     # Ensure all required fields are present
-                    required_fields = ['predictionID', 'teamGameID', 'minerID', 'predictionDate', 'predictedOutcome',
-                                       'teamA', 'teamB', 'wager', 'teamAodds', 'teamBodds', 'tieOdds', 'outcome']
+                    required_fields = ['prediction_id', 'team_game_id', 'miner_uid', 'prediction_date', 'predicted_outcome',
+                                       'team_a', 'team_b', 'wager', 'team_a_odds', 'team_b_odds', 'tie_odds', 'outcome']
                     missing_fields = [field for field in required_fields if field not in prediction]
                     if missing_fields:
                         bt.logging.warning(f"Prediction missing required fields: {missing_fields}")

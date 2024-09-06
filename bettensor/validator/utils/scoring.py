@@ -16,6 +16,7 @@ Outputs:
 import numpy as np
 import torch as t
 import logging
+from bettensor.validator.utils.scoring_data import get_closed_predictions_for_day, get_closed_games_for_day
 
 
 class ScoringSystem:
@@ -32,7 +33,7 @@ class ScoringSystem:
         self.tiers = t.ones(num_miners, dtype=t.int)  # All miners start in tier 1
 
 
-        # TODO: Composite score weights - should be set by a config file maybe?
+        # TODO: Composite score weights - should be set by a config file maybe? 
 
 
         # WARNING: DO NOT CHANGE THESE VALUES. THEY WILL IMPACT VTRUST SIGNIFICANTLY. 
@@ -40,7 +41,7 @@ class ScoringSystem:
         self.roi_weight = 0.25
         self.ssi_weight = 0.25
 
-        
+
         
         # Tier configurations
         self.tier_configs = [
@@ -55,7 +56,7 @@ class ScoringSystem:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger(__name__)
 
-    def update_daily_scores(self, day: int, predictions: t.Tensor, closing_line_odds: t.Tensor, results: t.Tensor):
+    def update_daily_scores(self, day: int, predictions: t.Tensor, closing_line_odds: t.Tensor, results: t.Tensor, debug: bool = True):
         """
         Updates the daily scores for all miners.
         
@@ -66,15 +67,29 @@ class ScoringSystem:
         closing_line_odds: Tensor of shape (num_games, 2) where the last dimension contains
                            [game_id, closing_odds]
         results: Tensor of shape (num_games,) containing the actual results (0 or 1)
+        debug: If True, perform input validation checks (default: True)
         """
+        if debug:
+            if not isinstance(day, int) or day < 0 or day >= self.max_days:
+                raise ValueError(f"day must be an integer between 0 and {self.max_days-1}")
+            if not isinstance(predictions, t.Tensor) or predictions.dim() != 3 or predictions.size(2) != 3:
+                raise ValueError("predictions must be a 3D tensor with shape (num_miners, num_predictions, 3)")
+            if not isinstance(closing_line_odds, t.Tensor) or closing_line_odds.dim() != 2 or closing_line_odds.size(1) != 2:
+                raise ValueError("closing_line_odds must be a 2D tensor with shape (num_games, 2)")
+            if not isinstance(results, t.Tensor) or results.dim() != 1:
+                raise ValueError("results must be a 1D tensor")
+
         self.logger.info(f"Updating daily scores for day {day}")
         
-        # Calculate scores
-        self.clv_scores[:, day] = self.calculate_clv(predictions, closing_line_odds)
-        self.roi_scores[:, day] = self.calculate_roi(predictions, results)
-        self.sharpe_scores[:, day] = self.calculate_sharpe(self.roi_scores[:, :day+1])
-        self.sortino_scores[:, day] = self.calculate_sortino(self.roi_scores[:, :day+1])
-        self.num_predictions[:, day] = self.count_predictions(predictions)
+        try:
+            self.clv_scores[:, day] = self.calculate_clv(predictions, closing_line_odds, debug=debug)
+            self.roi_scores[:, day] = self.calculate_roi(predictions, results, debug=debug)
+            self.sharpe_scores[:, day] = self.calculate_sharpe(self.roi_scores[:, :day+1], debug=debug)
+            self.sortino_scores[:, day] = self.calculate_sortino(self.roi_scores[:, :day+1], debug=debug)
+            self.num_predictions[:, day] = self.count_predictions(predictions, debug=debug)
+        except Exception as e:
+            self.logger.error(f"Error updating scores for day {day}: {str(e)}")
+            raise
         
         self.logger.info(f"Daily scores updated for day {day}")
         self.log_score_summary(day)
@@ -287,6 +302,13 @@ class ScoringSystem:
     def calculate_composite_score(self, miner_uid: int, window: int) -> float:
         """
         Calculate the composite score for a miner over a given window.
+        
+        Args:
+        miner_uid: The unique identifier of the miner
+        window: The number of days to consider for the score calculation
+        
+        Returns:
+        The composite score for the miner
         """
         scores = (
             self.clv_scores[miner_uid, -window:].mean() +
@@ -295,6 +317,83 @@ class ScoringSystem:
             self.sortino_scores[miner_uid, -window:].mean()
         )
         return scores.item()
+
+    def check_demotion_eligibility(self, debug: bool = True):
+        """
+        Check demotion eligibility for all miners simultaneously using tensor operations.
+        
+        Args:
+        debug: If True, perform input validation checks (default: True)
+        
+        Returns:
+        Tensor of shape (num_miners,) containing the new tier for each miner
+        """
+        self.logger.info("Checking demotion eligibility")
+        
+        # Store current tiers and initialize new tiers
+        current_tiers = self.tiers
+        new_tiers = current_tiers.clone()
+
+        # Calculate composite scores for all miners
+        composite_scores = self.calculate_composite_scores()
+
+        # Calculate prediction counts for all miners and tiers at once
+        # This creates a tensor of shape (num_miners, num_tiers)
+        prediction_counts = t.stack([
+            self.num_predictions[:, -config['window']:].sum(dim=1)
+            for config in self.tier_configs
+        ], dim=1)
+
+        # Create a tensor of minimum prediction requirements for each tier
+        min_predictions = t.tensor([config['min_predictions'] for config in self.tier_configs])
+
+        # Check minimum prediction requirements for all tiers simultaneously
+        # This creates a boolean mask of shape (num_miners, num_tiers)
+        # where True indicates the miner doesn't meet the minimum predictions for that tier
+        demotion_mask = prediction_counts < min_predictions.unsqueeze(0)
+
+        # Identify miners eligible for demotion
+        # These are miners who are not in the lowest tier (tier > 1)
+        # and don't meet the minimum predictions for their current tier
+        demotion_candidates = t.where((current_tiers > 1) & demotion_mask[current_tiers - 1])[0]
+
+        # Process each demotion candidate
+        if len(demotion_candidates) > 0:
+            for miner in demotion_candidates:
+                current_tier = current_tiers[miner].item()
+                # Check each lower tier, starting from the immediate lower tier
+                for new_tier in range(current_tier - 1, 0, -1):
+                    lower_tier_mask = current_tiers == new_tier
+                    lower_tier_count = lower_tier_mask.sum()
+                    lower_tier_capacity = self.tier_configs[new_tier - 1]['capacity']
+
+                    if lower_tier_count < lower_tier_capacity:
+                        # If there's capacity in the lower tier, demote the miner
+                        new_tiers[miner] = new_tier
+                        break
+                    else:
+                        # If the lower tier is at capacity, compare scores
+                        lower_window = self.tier_configs[new_tier - 1]['window']
+                        miner_score = self.calculate_composite_score(miner, lower_window)
+                        lower_tier_scores = composite_scores[lower_tier_mask]
+                        min_score, min_score_index = lower_tier_scores.min(dim=0)
+
+                        if miner_score > min_score:
+                            # If the miner's score is better, demote them and cascade the demotion
+                            new_tiers[miner] = new_tier
+                            cascade_miner = t.where(lower_tier_mask)[0][min_score_index]
+                            new_tiers[cascade_miner] = new_tier - 1
+                            break
+                else:
+                    # If no suitable tier was found, demote to the lowest tier
+                    new_tiers[miner] = 1
+
+        # Perform debug checks if enabled
+        if debug:
+            if not t.all((new_tiers >= 1) & (new_tiers <= len(self.tier_configs))):
+                raise ValueError("Invalid tier assignments after demotion check")
+
+        return new_tiers
 
     def check_promotion_eligibility(self):
         """
@@ -334,49 +433,89 @@ class ScoringSystem:
         
         return next_tiers
 
-    def manage_tiers(self):
+    def manage_tiers(self, debug: bool = True):
         """
-        Manage tier promotions and demotions for all miners.
+        Manage tier demotions and promotions for all miners.
+        
+        Args:
+        debug: If True, perform input validation checks (default: True)
         """
         self.logger.info("Managing tiers")
-        old_tiers = self.tiers.clone()
-        new_tiers = self.check_promotion_eligibility()
-        self.tiers = new_tiers
         
-        promotions = (new_tiers > old_tiers).sum().item()
-        demotions = (new_tiers < old_tiers).sum().item()
-        self.logger.info(f"Tier changes: {promotions} promotions, {demotions} demotions")
+        try:
+            old_tiers = self.tiers.clone()
+            
+            # First, handle demotions
+            new_tiers = self.check_demotion_eligibility(debug=debug)
+            self.tiers = new_tiers
+            
+            # Then, handle promotions
+            new_tiers = self.check_promotion_eligibility()
+            
+            if debug:
+                if not t.all((new_tiers >= 1) & (new_tiers <= len(self.tier_configs))):
+                    raise ValueError("Invalid tier assignments")
+            
+            self.tiers = new_tiers
+            
+            demotions = (new_tiers < old_tiers).sum().item()
+            promotions = (new_tiers > old_tiers).sum().item()
+            self.logger.info(f"Tier changes: {demotions} demotions, {promotions} promotions")
+            
+            for tier in range(1, len(self.tier_configs) + 1):
+                tier_count = (self.tiers == tier).sum().item()
+                self.logger.info(f"Tier {tier}: {tier_count} miners")
+                
+                if debug:
+                    max_capacity = self.tier_configs[tier-1]['capacity']
+                    if tier_count > max_capacity:
+                        self.logger.warning(f"Tier {tier} exceeds maximum capacity: {tier_count} > {max_capacity}")
         
-        for tier in range(1, len(self.tier_configs) + 1):
-            tier_count = (self.tiers == tier).sum().item()
-            self.logger.info(f"Tier {tier}: {tier_count} miners")
+        except Exception as e:
+            self.logger.error(f"Error managing tiers: {str(e)}")
+            raise
 
-    def calculate_final_weights(self) -> t.Tensor:
+    def calculate_final_weights(self, debug: bool = True) -> t.Tensor:
         """
         Calculate the final weights for all miners based on their tier and composite score.
+        
+        Args:
+        debug: If True, perform input validation checks (default: True)
         
         Returns:
         Tensor of shape (num_miners,) containing the final weights for each miner
         """
         self.logger.info("Calculating final weights")
         
-        composite_scores = self.calculate_composite_scores()
-        weights = t.zeros_like(composite_scores)
-        
-        for tier, config in enumerate(self.tier_configs, 1):
-            tier_mask = self.tiers == tier
-            tier_scores = composite_scores[tier_mask]
+        try:
+            composite_scores = self.calculate_composite_scores()
+            weights = t.zeros_like(composite_scores)
             
-            # Normalize scores within the tier
-            tier_weights = tier_scores / tier_scores.sum()
+            for tier, config in enumerate(self.tier_configs, 1):
+                tier_mask = self.tiers == tier
+                tier_scores = composite_scores[tier_mask]
+                
+                if debug and tier_scores.numel() == 0:
+                    self.logger.warning(f"No miners in tier {tier}")
+                    continue
+                
+                # Normalize scores within the tier
+                tier_weights = tier_scores / tier_scores.sum()
+                
+                # Apply tier incentive
+                tier_weights *= config['incentive']
+                
+                weights[tier_mask] = tier_weights
             
-            # Apply tier incentive
-            tier_weights *= config['incentive']
+            # Normalize weights to sum to 1
+            total_weight = weights.sum()
+            if debug and total_weight == 0:
+                raise ValueError("Total weight is zero, cannot normalize")
+            weights /= total_weight
             
-            weights[tier_mask] = tier_weights
-        
-        # Normalize weights to sum to 1
-        weights /= weights.sum()
+        except Exception as e:
+            self.logger.error(f"Error calculating final weights: {str(e)}")
+            raise
         
         self.log_weight_summary(weights)
         
@@ -394,23 +533,54 @@ class ScoringSystem:
             self.logger.info(f"  Mean weight: {tier_weights.mean():.4f}")
             self.logger.info(f"  Max weight: {tier_weights.max():.4f}")
 
-    def run_epoch(self, predictions: t.Tensor, closing_line_odds: t.Tensor, results: t.Tensor):
-        """
-        Run a full epoch of scoring and tier management.
+    # def run_epoch(self, predictions: t.Tensor, closing_line_odds: t.Tensor, results: t.Tensor, debug: bool = True):
+    #     """
+    #     Run a full epoch of scoring and tier management.
         
-        Args:
-        predictions: Tensor of shape (num_miners, num_days, num_predictions, 3)
-        closing_line_odds: Tensor of shape (num_days, num_games, 2)
-        results: Tensor of shape (num_days, num_games)
-        """
-        self.logger.info("Starting new epoch")
+    #     Args:
+    #     predictions: Tensor of shape (num_miners, num_days, num_predictions, 3)
+    #     closing_line_odds: Tensor of shape (num_days, num_games, 2)
+    #     results: Tensor of shape (num_days, num_games)
+    #     debug: If True, perform input validation checks (default: True)
         
-        for day in range(predictions.size(1)):
-            self.update_daily_scores(day, predictions[:, day], closing_line_odds[day], results[day])
+    #     Returns:
+    #     Tensor of shape (num_miners,) containing the final weights for each miner
+    #     """
+    #     self.logger.info("Starting new epoch")
         
-        self.manage_tiers()
-        final_weights = self.calculate_final_weights()
+    #     if debug:
+    #         if not isinstance(predictions, t.Tensor) or predictions.dim() != 4 or predictions.size(3) != 3:
+    #             raise ValueError("predictions must be a 4D tensor with shape (num_miners, num_days, num_predictions, 3)")
+    #         if not isinstance(closing_line_odds, t.Tensor) or closing_line_odds.dim() != 3 or closing_line_odds.size(2) != 2:
+    #             raise ValueError("closing_line_odds must be a 3D tensor with shape (num_days, num_games, 2)")
+    #         if not isinstance(results, t.Tensor) or results.dim() != 2:
+    #             raise ValueError("results must be a 2D tensor with shape (num_days, num_games)")
+    #         if predictions.size(0) != self.num_miners or predictions.size(1) != self.max_days:
+    #             raise ValueError(f"predictions must have shape ({self.num_miners}, {self.max_days}, num_predictions, 3)")
+    #         if closing_line_odds.size(0) != self.max_days or results.size(0) != self.max_days:
+    #             raise ValueError(f"closing_line_odds and results must have {self.max_days} days")
         
-        self.logger.info("Epoch completed")
-        return final_weights
-    
+    #     try:
+    #         for day in range(predictions.size(1)):
+    #             self.update_daily_scores(day, predictions[:, day], closing_line_odds[day], results[day], debug=debug)
+            
+    #         self.manage_tiers(debug=debug)
+    #         final_weights = self.calculate_final_weights(debug=debug)
+        
+    #     except Exception as e:
+    #         self.logger.error(f"Error running epoch: {str(e)}")
+    #         raise
+        
+    #     self.logger.info("Epoch completed")
+    #     return final_weights
+    def preprocess_data(self, date: str):
+        '''
+        Preprocesses the data for a given day.
+        '''
+        predictions = self.get_closed_predictions_for_day(date)
+        games = self.get_closed_games_for_day(date)
+
+
+
+
+        

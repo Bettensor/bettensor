@@ -107,53 +107,66 @@ class DatabaseManager:
         tables = [
             ("predictions", """
             CREATE TABLE IF NOT EXISTS predictions (
-                prediction_id TEXT PRIMARY KEY, 
-                game_id TEXT, 
-                miner_uid TEXT, 
-                prediction_date TEXT, 
+                prediction_id TEXT PRIMARY KEY,
+                game_id TEXT,
+                miner_uid TEXT,
+                prediction_date TEXT,
                 predicted_outcome TEXT,
+                predicted_odds REAL,
                 team_a TEXT,
                 team_b TEXT,
                 wager REAL,
                 team_a_odds REAL,
                 team_b_odds REAL,
                 tie_odds REAL,
-                outcome TEXT
+                is_model_prediction BOOLEAN,
+                outcome TEXT,
+                payout REAL,
+                sent_to_site INTEGER DEFAULT 0
             )
             """),
             ("games", """
             CREATE TABLE IF NOT EXISTS games (
                 game_id TEXT PRIMARY KEY,
                 team_a TEXT,
-                team_a_odds REAL,
                 team_b TEXT,
-                team_b_odds REAL,
                 sport TEXT,
                 league TEXT,
-                external_id TEXT UNIQUE,
                 create_date TEXT,
                 last_update_date TEXT,
                 event_start_date TEXT,
-                active INTEGER,
+                active BOOLEAN,
                 outcome TEXT,
+                team_a_odds REAL,
+                team_b_odds REAL,
                 tie_odds REAL,
                 can_tie BOOLEAN
             )
             """),
             ("miner_stats", """
             CREATE TABLE IF NOT EXISTS miner_stats (
-                miner_uid TEXT PRIMARY KEY,
+                miner_hotkey TEXT PRIMARY KEY,
+                miner_coldkey TEXT,
+                miner_uid TEXT,
                 miner_rank INTEGER,
+                miner_status TEXT,
                 miner_cash REAL,
-                miner_current_incentive FLOAT,
+                miner_current_incentive REAL,
+                miner_current_tier INTEGER,
+                miner_current_scoring_window INTEGER,
+                miner_current_composite_score REAL,
+                miner_current_sharpe_ratio REAL,
+                miner_current_sortino_ratio REAL,
+                miner_current_roi REAL,
+                miner_current_clv_avg REAL,
                 miner_last_prediction_date TEXT,
                 miner_lifetime_earnings REAL,
-                miner_lifetime_wager REAL,
+                miner_lifetime_wager_amount REAL,
+                miner_lifetime_profit REAL,
                 miner_lifetime_predictions INTEGER,
                 miner_lifetime_wins INTEGER,
                 miner_lifetime_losses INTEGER,
-                miner_win_loss_ratio REAL,
-                last_daily_reset TEXT
+                miner_win_loss_ratio REAL
             )
             """),
             ("model_params", """

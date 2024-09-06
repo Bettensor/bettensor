@@ -80,19 +80,21 @@ def fetch_predictions_from_db(db_path):
     query_columns = [
         col
         for col in [
-            "predictionID",
-            "teamGameID",
-            "minerId",
-            "predictionDate",
-            "predictedOutcome",
-            "teamA",
-            "teamB",
+            "prediction_id",
+            "game_id",
+            "miner_id",
+            "prediction_date",
+            "predicted_outcome",
+            "predicted_odds",
+            "team_a",
+            "team_b",
             "wager",
-            "teamAodds",
-            "teamBodds",
-            "tieOdds",
-            "canOverwrite",
+            "team_a_odds",
+            "team_b_odds",
+            "tie_odds",
+            "is_model_prediction",
             "outcome",
+            "payout",
             "sent_to_site"
         ]
         if col in available_columns
@@ -147,19 +149,38 @@ def send_predictions(predictions, db_path):
         #except ValueError as e:
             #bt.logging.error(e)
         coldkey = "dummy_coldkey"
+        # Newer Schema will be sent as metadata for now
+        metadata = {
+            "miner_uid": prediction["miner_uid"],
+            "miner_hotkey": hotkey,
+            "miner_coldkey": coldkey,
+            "prediction_date": prediction["prediction_date"],
+            "predicted_outcome": prediction["predicted_outcome"],
+            "wager": prediction["wager"],
+            "predicted_odds": prediction["predicted_odds"],
+            "team_a_odds": prediction["team_a_odds"],
+            "team_b_odds": prediction["team_b_odds"],
+            "tie_odds": prediction["tie_odds"],
+            "is_model_prediction": prediction["is_model_prediction"],
+            "outcome": prediction["outcome"],
+            "payout": prediction["payout"],
+        }
 
         transformed_prediction = {
-            "externalGameId": prediction["teamGameID"],
-            "minerHotKey": hotkey,
-            "minerColdKey": coldkey,
-            "predictionDate": prediction["predictionDate"],
-            "predictedOutcome": prediction["predictedOutcome"],
+            "externalGameId": prediction["game_id"], # external id
+            "minerHotkey": hotkey,
+            "minerColdkey": coldkey,
+            "predictionDate": prediction["prediction_date"],
+            "predictedOutcome": prediction["predicted_outcome"],
             "wager": prediction["wager"],
+            "predictionOdds": prediction["predicted_odds"],
+            "metaData": metadata
+            
         }
 
         try:
-            date = datetime.strptime(prediction["predictionDate"], "%Y-%m-%d %H:%M:%S")
-            transformed_prediction["predictionDate"] = date.strftime(
+            date = datetime.strptime(prediction["prediction_date"], "%Y-%m-%d %H:%M:%S")
+            transformed_prediction["prediction_date"] = date.strftime(
                 "%Y-%m-%dT%H:%M:%S.%fZ"
             )
         except ValueError:
@@ -179,7 +200,7 @@ def send_predictions(predictions, db_path):
             url, data=json.dumps(transformed_data), headers=headers
         )
         if response.status_code == 200 or response.status_code == 201:
-            update_sent_status(db_path, [p['predictionID'] for p in predictions])
+            update_sent_status(db_path, [p['prediction_id'] for p in predictions])
         bt.logging.info(f"Response status code: {response.status_code}")
         bt.logging.debug(f"Response content: {response.text}")
         return response.status_code
