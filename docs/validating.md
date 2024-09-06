@@ -1,8 +1,8 @@
 # Guide for Validators
 
-## Option 1:
+## Option 1: Bettensors Central API
 
-1. Using the central API created by Bettensor. This distributes games from RapidAPI and Bet365 so that you don't have to pay for an api key. Just select the option of "use_bt_api" in the setup script, or pass it manually when running validator.py
+1. This API distributes games from RapidAPI and Bet365 so that you don't have to pay for an api key. Just select the option of "use_bt_api" in the setup script, or pass it manually when running validator.py.
 
 ## Option 2:
 
