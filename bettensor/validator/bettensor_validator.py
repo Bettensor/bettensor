@@ -23,7 +23,7 @@ import numpy as np
 import torch
 from bettensor.validator.utils.weights_functions import WeightSetter
 from bettensor.validator.utils.api_client import APIClient
-from bettensor.utils.sports_data import SportsData
+from bettensor.validator.utils.sports_data import SportsData
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -851,7 +851,7 @@ class BettensorValidator(BaseNeuron):
         elif sport == "soccer":
             game_data = self.api_client.get_soccer_game(str(external_id))
         elif sport.lower() == "nfl":
-            game_data = self.api_client.get_nfl_result(str(externalId))
+            game_data = self.api_client.get_nfl_result(str(external_id))
         else:
             bt.logging.error(f"Unsupported sport: {sport}")
             return
@@ -870,12 +870,12 @@ class BettensorValidator(BaseNeuron):
         elif sport == "soccer":
             status = game_response.get("fixture", {}).get("status", {}).get("long")
             if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
-                bt.logging.info(f"Soccer game {externalId} is not finished yet. Current status: {status}")
+                bt.logging.info(f"Soccer game {external_id} is not finished yet. Current status: {status}")
                 return
         elif sport.lower() == "nfl":
             status = game_response.get("time_status")
             if status != 3:
-                bt.logging.info(f"NFL game {externalId} is not finished yet. Current status: {status}")
+                bt.logging.info(f"NFL game {external_id} is not finished yet. Current status: {status}")
                 return
         else:
             bt.logging.error(f"Unsupported sport: {sport}")
@@ -896,7 +896,7 @@ class BettensorValidator(BaseNeuron):
             if len(scores) == 2:
                 home_score, away_score = map(int, scores)
             else:
-                bt.logging.error(f"Invalid score format for NFL game {externalId}")
+                bt.logging.error(f"Invalid score format for NFL game {external_id}")
                 return
         else:
             bt.logging.error(f"Unsupported sport: {sport}")
@@ -940,12 +940,9 @@ class BettensorValidator(BaseNeuron):
         cursor.execute("""
             SELECT id, team_a, team_b, external_id, event_start_date, sport
             FROM game_data
-            WHERE eventStartDate <= ? AND outcome = 'Unfinished'
-            ORDER BY eventStartDate
-        """, (four_hours_ago.isoformat(),))
             WHERE event_start_date <= ? AND outcome = 'Unfinished'
             ORDER BY event_start_date
-        """, (two_hours_ago.isoformat(),))
+        """, (four_hours_ago.isoformat(),))
         
         recent_games = cursor.fetchall()
         conn.close()
@@ -953,10 +950,8 @@ class BettensorValidator(BaseNeuron):
         bt.logging.info(f"Checking {len(recent_games)} games for updates")
 
         for game in recent_games:
-            game_id, teamA, teamB, externalId, start_time, sport = game
-            start_time = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
             game_id, team_a, team_b, external_id, start_time, sport = game
-            start_time = datetime.fromisoformat(start_time)
+            start_time = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
             
             # Additional check to ensure the game has indeed started
             if start_time > current_time:
