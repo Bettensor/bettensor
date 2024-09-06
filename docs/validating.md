@@ -4,7 +4,7 @@
 
 1. This API distributes games from RapidAPI and Bet365 so that you don't have to pay for an api key. Just select the option of "use_bt_api" in the setup script, or pass it manually when running validator.py.
 
-## Option 2:
+## Option 2: RapidAPI and Bet365 for Odds
 
 1. Obtain API key(s) on the MEGA plan from [this games API](https://rapidapi.com/search/Sports) (currently using API-FOOTBALL and API-BASEBALL). 
 
