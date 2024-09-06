@@ -3,7 +3,6 @@ import numpy as np
 import torch
 import sqlite3
 from datetime import datetime, timezone, timedelta
-import asyncio
 import bittensor as bt
 from bettensor import __spec_version__
 

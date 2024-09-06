@@ -16,8 +16,8 @@ class SportsData:
     def __init__(self, db_name="data/validator.db", use_bt_api=False):
         self.db_name = db_name
         self.use_bt_api = use_bt_api
-        self.rapid_api_key = os.getenv("RAPID_API_KEY")
-        self.bet365_api_key = os.getenv("BET365_API_KEY")
+        self.rapid_api_key = os.getenv("RAPID_API_KEY") if not use_bt_api else None
+        self.bet365_api_key = os.getenv("BET365_API_KEY") if not use_bt_api else None
         self.api_client = APIClient(self.rapid_api_key, self.bet365_api_key)
         self.bettensor_api_client = BettensorAPIClient()
         self.all_games = []
@@ -174,7 +174,7 @@ class SportsData:
             team_b_odds = game['odds']['average_away_odds']
             
             # Set tie_odds to 0.0 for NFL games, otherwise use the value from the game data or 0
-            tie_odds = 0.0 if sport.lower() == "nfl" else game['odds'].get('average_tie_odds', 0)
+            tie_odds = 0.0 if sport.lower() == "nfl" else game['odds'].get('average_tie_odds', 0.0)
             
             can_tie = sport.lower() == "soccer"
 
@@ -244,89 +244,6 @@ class SportsData:
 
         return filtered_games
 
-    def get_game_data(self, sport, league="1", season="2024"):
-        bt.logging.trace(f"Getting game data for sport: {sport}, league: {league}, season: {season}")
-        
-        start_date = datetime.utcnow().date()
-        end_date = start_date + timedelta(days=6)  # 7 days total
-        all_games = []
-
-        if sport == "soccer":
-            url = f"https://{self.api_hosts[sport]}/v3/fixtures"
-            querystring = {
-                "league": league,
-                "season": season,
-                "from": start_date.strftime("%Y-%m-%d"),
-                "to": end_date.strftime("%Y-%m-%d")
-            }
-            all_games.extend(self._fetch_games(url, querystring, sport))
-        elif sport == "baseball":
-            url = f"https://{self.api_hosts[sport]}/games"
-            for single_date in (start_date + timedelta(n) for n in range(7)):
-                querystring = {
-                    "league": league,
-                    "season": season,
-                    "date": single_date.strftime("%Y-%m-%d")
-                }
-                all_games.extend(self._fetch_games(url, querystring, sport))
-
-        bt.logging.debug(f"Initially fetched {len(all_games)} games for {sport}, league {league}")
-
-        # Filter games with odds less than 1.05; ensure odds are not None; exclude false odds of 1.5/3.0/1.5
-        filtered_games = []
-        for game in all_games:
-            if game["odds"]["average_home_odds"] is None or game["odds"]["average_away_odds"] is None:
-                continue
-            
-            if game["odds"]["average_home_odds"] < 1.05 or game["odds"]["average_away_odds"] < 1.05:
-                continue
-            
-            if (game["odds"]["average_home_odds"] == 1.5 and
-                game["odds"]["average_away_odds"] == 3.0 and
-                game["odds"].get("average_tie_odds") == 1.5):
-                continue
-            
-            filtered_games.append(game)
-
-        bt.logging.info(f"Filtered {len(all_games) - len(filtered_games)} games out of {len(all_games)} total games")
-        all_games = filtered_games
-
-        # Append the fetched games to the overall all_games list
-        self.all_games.extend(all_games)
-
-        # Insert or update the data in the database
-        for game in all_games:
-            try:
-                externalId = game["game_id"]
-                teamAodds = game["odds"]["average_home_odds"]
-                teamBodds = game["odds"]["average_away_odds"]
-                tieOdds = game["odds"].get("average_tie_odds") if sport == "soccer" else None
-
-                if self.external_id_exists(externalId):
-                    self.update_odds_in_database(externalId, teamAodds, teamBodds, tieOdds)
-                else:
-                    game_id = str(uuid.uuid4())
-                    teamA = game["home"]
-                    teamB = game["away"]
-                    sport_type = sport
-                    createDate = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-                    lastUpdateDate = createDate
-                    eventStartDate = game["date"]
-                    active = 0 if parser.isoparse(eventStartDate) > datetime.utcnow().replace(tzinfo=timezone.utc) else 1
-                    outcome = "Unfinished"
-                    canTie = sport == "soccer"
-
-                    game_data = (
-                        game_id, teamA, teamB, sport_type, league, externalId, createDate, lastUpdateDate,
-                        eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds if canTie else 0, canTie,
-                    )
-                    self.insert_into_database(game_data)
-            except KeyError as e:
-                bt.logging.error(f"Key Error during database insertion: {e} in game data: {game}")
-            except Exception as e:
-                bt.logging.error(f"Unexpected error during database insertion: {e}")
-
-        return all_games
 
     def get_upcoming_events(self):
         url = f"https://api.b365api.com/v1/bet365/upcoming?sport_id=12&token={self.bet365_api_key}"
@@ -418,18 +335,28 @@ class SportsData:
             
             response.raise_for_status()
             games = response.json()
-            
             if "response" in games:
-                games_list = [
-                    {
+                games_list = []
+                for i in games["response"]:
+
+                    league = i.get('league', {}).get('name', 'unknown_league')
+
+                    game_data = {
                         "home": i["teams"]["home"]["name"],
                         "away": i["teams"]["away"]["name"],
                         "game_id": i["fixture"]["id"] if sport == "soccer" else i["id"],
                         "date": i["fixture"]["date"] if sport == "soccer" else i["date"],
-                        "odds": self.get_game_odds(i["fixture"]["id"] if sport == "soccer" else i["id"], sport)
+                        "odds": self.get_game_odds(i["fixture"]["id"] if sport == "soccer" else i["id"], sport),
+                        "sport": sport,
+                        "league": league
                     }
-                    for i in games["response"]
-                ]
+                    
+                    if not game_data.get('sport'):
+                        bt.logging.error(f"Missing 'sport' field for game {game_data['game_id']}. Setting to default '{sport}'.")
+                        game_data['sport'] = sport
+
+                    games_list.append(game_data)
+                
                 bt.logging.debug(f"Fetched {len(games_list)} games for {sport}")
                 return games_list
             else:
@@ -521,19 +448,19 @@ class SportsData:
                     return {
                         "average_home_odds": avg_home_odds,
                         "average_away_odds": avg_away_odds,
-                        "average_tie_odds": avg_tie_odds if sport == "soccer" else None,
+                        "average_tie_odds": avg_tie_odds if sport == "soccer" else 0.0,
                     }
 
             # Return None values if no data is available
             return {
-                "average_home_odds": None,
-                "average_away_odds": None,
-                "average_tie_odds": None,
+                "average_home_odds": 0.0,
+                "average_away_odds": 0.0,
+                "average_tie_odds": 0.0,
             }
         except requests.exceptions.RequestException as e:
             bt.logging.error(f"Error fetching odds for game {game_id} in {sport}: {e}")
             return {
-                "average_home_odds": None,
-                "average_away_odds": None,
-                "average_tie_odds": None,
+                "average_home_odds": 0.0,
+                "average_away_odds": 0.0,
+                "average_tie_odds": 0.0,
             }

@@ -5,29 +5,28 @@ import bittensor as bt
 from datetime import datetime, timezone
 
 class APIClient:
-    def __init__(self, rapid_api_key: str, bet365_api_key: str):
+    def __init__(self, rapid_api_key: Optional[str] = None, bet365_api_key: Optional[str] = None):
         self.rapid_api_key = rapid_api_key
         self.bet365_api_key = bet365_api_key
         self.last_request_time = 0
         self.min_request_interval = 1  # Minimum 1 second between requests
 
     def _make_request(self, url: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        # Implement basic rate limiting
-        current_time = time.time()
-        time_since_last_request = current_time - self.last_request_time
-        if time_since_last_request < self.min_request_interval:
-            time.sleep(self.min_request_interval - time_since_last_request)
+        headers = {
+            "X-RapidAPI-Key": self.rapid_api_key
+        }
 
-        bt.logging.debug(f"Sending request to {url} with params: {params}")
+        bt.logging.trace(f"Sending request to {url} with params: {params} and headers: {headers}")
 
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, headers=headers, params=params)
             self.last_request_time = time.time()
 
             bt.logging.debug(f"Response status code: {response.status_code}")
 
             if response.status_code == 200:
-                return response.json()
+                json_response = response.json()
+                return json_response
             else:
                 bt.logging.error(f"Failed to fetch data. Status code: {response.status_code}")
                 bt.logging.error(f"Response content: {response.text}")
@@ -37,15 +36,19 @@ class APIClient:
             bt.logging.error(f"Request failed: {str(e)}")
             return None
 
+        except requests.exceptions.RequestException as e:
+            bt.logging.error(f"Request failed: {str(e)}")
+            return None
+
     def get_baseball_game(self, game_id: str) -> Optional[Dict[str, Any]]:
         url = "https://api-baseball.p.rapidapi.com/games"
         params = {"id": game_id}
-        return self._make_request(url, params, "baseball")
+        return self._make_request(url, params)
 
     def get_soccer_game(self, game_id: str) -> Optional[Dict[str, Any]]:
         url = "https://api-football-v1.p.rapidapi.com/v3/fixtures"
         params = {"id": game_id}
-        return self._make_request(url, params, "soccer")
+        return self._make_request(url, params)
 
     def get_upcoming_nfl_events(self) -> Optional[Dict[str, Any]]:
         url = "https://api.b365api.com/v1/bet365/upcoming"
@@ -71,7 +74,7 @@ class APIClient:
                 away_team = game['away']['name']
                 game_time = datetime.fromtimestamp(int(game['time']), tz=timezone.utc).isoformat()
 
-                bt.logging.debug(f"Fetching odds for {away_team} @ {home_team} ({game_time})")
+                bt.logging.trace(f"Fetching odds for {away_team} @ {home_team} ({game_time})")
                 odds_data = self.get_nfl_odds(game_id)
 
                 if odds_data:
@@ -90,7 +93,7 @@ class APIClient:
                             "sport": "nfl",
                             "league": "NFL",
                         })
-                        bt.logging.debug(f"Processed game: {home_team} vs {away_team}")
+                        bt.logging.trace(f"Processed game: {home_team} vs {away_team}")
                     else:
                         bt.logging.warning(f"No moneyline odds found for game {game_id}")
                 else:
@@ -114,5 +117,5 @@ class APIClient:
 
     def get_nfl_result(self, event_id: str) -> Optional[Dict[str, Any]]:
         url = "https://api.b365api.com/v1/bet365/result"
-        params = {"event_id": event_id, "token": self.nfl_api_token}
+        params = {"event_id": event_id, "token": self.bet365_api_key}
         return self._make_request(url, params)

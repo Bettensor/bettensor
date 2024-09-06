@@ -115,19 +115,34 @@ class BettensorAPIClient:
     def _update_game(self, cursor, game, active):
         outcome = self._get_numeric_outcome(game)
         
-        cursor.execute("""
-            UPDATE game_data
-            SET teamAodds = ?, teamBodds = ?, tieOdds = ?, lastUpdateDate = ?, active = ?
-            WHERE externalId = ?
-        """, (
-            game.get('teamAOdds'),
-            game.get('teamBOdds'),
-            game.get('drawOdds'),
-            datetime.now(timezone.utc).isoformat(),
-            active,
-            game.get('externalId')
-        ))
-        bt.logging.debug(f"Updated game {game.get('externalId')} with active={active}")
+        if outcome is not None:
+            cursor.execute("""
+                UPDATE game_data
+                SET teamAodds = ?, teamBodds = ?, tieOdds = ?, lastUpdateDate = ?, active = ?, outcome = ?
+                WHERE externalId = ?
+            """, (
+                game.get('teamAOdds'),
+                game.get('teamBOdds'),
+                game.get('drawOdds'),
+                datetime.now(timezone.utc).isoformat(),
+                active,
+                outcome,
+                game.get('externalId')
+            ))
+        else:
+            cursor.execute("""
+                UPDATE game_data
+                SET teamAodds = ?, teamBodds = ?, tieOdds = ?, lastUpdateDate = ?, active = ?
+                WHERE externalId = ?
+            """, (
+                game.get('teamAOdds'),
+                game.get('teamBOdds'),
+                game.get('drawOdds'),
+                datetime.now(timezone.utc).isoformat(),
+                active,
+                game.get('externalId')
+            ))
+        bt.logging.debug(f"Updated game {game.get('externalId')} with active={active}, outcome={outcome}")
 
 
 
@@ -204,6 +219,7 @@ class BettensorAPIClient:
                 "average_tie_odds": game.get("drawOdds")
             },
             "sport": game.get("sport").lower(),
-            "league": game.get("league")
+            "league": game.get("league"),
+            "outcome": game.get("outcome")
         }
 
