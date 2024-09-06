@@ -357,8 +357,11 @@ class DatabaseManager:
         for table, id_column in tables.items():
             query = f"""
             DELETE FROM {table}
-            WHERE {id_column} = 'default' OR {id_column} IS NULL
+            WHERE {id_column} IS NULL
             """
+            if table != 'model_params':
+                query += f" OR {id_column} = 'default'"
+            
             if table == 'miner_stats':
                 query = f"""
                 DELETE FROM {table}
