@@ -21,6 +21,7 @@ NETWORK=""
 WALLET_NAME=""
 WALLET_HOTKEY=""
 LOGGING_LEVEL=""
+USE_BT_API=""
 
 # Miner-specific variables
 AXON_PORT=""
