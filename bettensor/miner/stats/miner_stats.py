@@ -284,7 +284,7 @@ class MinerStateManager:
         if not self.miner_uid or not state:
             return
         
-        bt.logging.info("Saving miner state")
+        bt.logging.debug("Saving miner state")
         try:
             query = """
             INSERT INTO miner_stats (
@@ -320,7 +320,7 @@ class MinerStateManager:
                 state.get('last_daily_reset')
             )
             self.db_manager.execute_query(query, params)
-            bt.logging.info("Miner state saved successfully")
+            bt.logging.debug("Miner state saved successfully")
         except Exception as e:
             bt.logging.error(f"Error saving miner state: {e}")
             bt.logging.error(traceback.format_exc())
