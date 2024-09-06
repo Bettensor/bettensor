@@ -164,27 +164,28 @@ class BettensorMiner(BaseNeuron):
         bt.logging.debug(f"Processing game data: {len(synapse.gamedata_dict)} games")
         
         try:
-            # Check if there are any changes in game data
-            changed_games = self.cache_manager.filter_changed_games(synapse.gamedata_dict)
+            # Process all games, regardless of changes
+            updated_games, new_games = self.games_handler.process_games(synapse.gamedata_dict)
+            
+            # Get recent predictions from the database
+            recent_predictions = self.predictions_handler.get_recent_predictions()
+            
+            # Process predictions for updated and new games
+            processed_predictions = self.predictions_handler.process_predictions(updated_games, new_games)
+            
+            # Combine recent predictions with processed predictions
+            all_predictions = {**recent_predictions, **processed_predictions}
+            
+            # Update cache with all predictions
+            self.cache_manager.update_cached_predictions(all_predictions)
 
-            if changed_games:
-                bt.logging.info(f"Processing {len(changed_games)} changed games")
-                updated_games, new_games = self.games_handler.process_games(changed_games)
-                recent_predictions = self.predictions_handler.process_predictions(updated_games, new_games)
-                
-                # Update cache with new predictions
-                self.cache_manager.update_cached_predictions(recent_predictions)
-            else:
-                bt.logging.info("No changes in game data, using cached predictions")
-                recent_predictions = self.cache_manager.get_cached_predictions()
-
-            if not recent_predictions:
+            if not all_predictions:
                 bt.logging.warning("No predictions available")
                 return self._clean_synapse(synapse, "No predictions available")
 
             # Filter out predictions with finished outcomes
             unfinished_predictions = {
-                pred_id: pred for pred_id, pred in recent_predictions.items()
+                pred_id: pred for pred_id, pred in all_predictions.items()
                 if pred.outcome == "Unfinished" or pred.outcome == "unfinished"
             }
 
