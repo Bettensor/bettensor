@@ -17,13 +17,13 @@ import requests
 import time
 from dotenv import load_dotenv
 import os
-import asyncio
 import concurrent.futures
 import math
 import numpy as np
 import torch
 from bettensor.utils.weights_functions import WeightSetter
 from bettensor.utils.api_client import APIClient
+from bettensor.utils.sports_data import SportsData
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -74,8 +74,13 @@ class BettensorValidator(BaseNeuron):
             parser.add_argument('--logging.info', action='store_true', help="Enable info logging")
         if not any(arg.dest == 'subtensor.chain_endpoint' for arg in parser._actions):
             parser.add_argument('--subtensor.chain_endpoint', type=str, help="subtensor endpoint")
+        if not any(arg.dest == 'use_bt_api' for arg in parser._actions):
+            parser.add_argument('--use_bt_api', action='store_true', help="Use the Bettensor API for fetching game data")
 
         args = parser.parse_args()
+
+        self.use_bt_api = args.use_bt_api
+        self.sports_data = SportsData(db_name=self.default_db_path, use_bt_api=self.use_bt_api)
 
         self.timeout = 12
         self.neuron_config = None
@@ -93,18 +98,19 @@ class BettensorValidator(BaseNeuron):
         self.data_entry = None
         self.uid = None
         self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
-        self.loop = asyncio.get_event_loop()
-        self.thread_executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix='asyncio')
         self.axon_port = getattr(args, 'axon.port', None) 
         self.db_path = "data/validator.db"
         self.api_hosts = {
             "baseball": "api-baseball.p.rapidapi.com",
             "soccer": "api-football-v1.p.rapidapi.com",
+            "nfl": "api.b365api.com"
         }
 
-        load_dotenv()  # take environment variables from .env.
-        self.rapid_api_key = os.getenv("RAPID_API_KEY")
-        self.api_client = APIClient(self.rapid_api_key)
+        if not self.use_bt_api:
+            load_dotenv()
+        self.rapid_api_key = os.getenv("RAPID_API_KEY") if not self.use_bt_api else None
+        self.bet365_api_key = os.getenv("BET365_API_KEY") if not self.use_bt_api else None
+        self.api_client = APIClient(self.rapid_api_key, self.bet365_api_key)
 
         self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
         self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
@@ -124,14 +130,13 @@ class BettensorValidator(BaseNeuron):
 
         return True
 
-    async def initialize_connection(self):
-        if self.subtensor is None:
-            try:
-                self.subtensor = bt.subtensor(config=self.neuron_config)
-                bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
-            except Exception as e:
-                bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
-                self.subtensor = None
+    def initialize_connection(self):
+        try:
+            self.subtensor = bt.subtensor(config=self.neuron_config)
+            bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+        except Exception as e:
+            bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
+            self.subtensor = None
         return self.subtensor
 
     def print_chain_endpoint(self):
@@ -140,13 +145,13 @@ class BettensorValidator(BaseNeuron):
         else:
             bt.logging.info("Subtensor is not initialized yet.")
 
-    async def get_subtensor(self):
+    def get_subtensor(self):
         if self.subtensor is None:
-            self.subtensor = await self.initialize_connection()
+            self.subtensor = self.initialize_connection()
         return self.subtensor
 
-    async def sync_metagraph(self):
-        subtensor = await self.get_subtensor()
+    def sync_metagraph(self):
+        subtensor = self.get_subtensor()
         self.metagraph.sync(subtensor=subtensor, lite=True)
         return self.metagraph
 
@@ -267,8 +272,6 @@ class BettensorValidator(BaseNeuron):
             wallet=self.wallet,
             subtensor=self.subtensor,
             neuron_config=self.neuron_config,
-            loop=self.loop,
-            thread_executor=self.thread_executor,
             db_path=self.db_path
         )
 
@@ -327,7 +330,6 @@ class BettensorValidator(BaseNeuron):
         for uid, prediction_dict in predictions.items():
             for predictionID, res in prediction_dict.items():
                 if int(uid) not in processed_uids:
-                    bt.logging.info(f"UID {uid} not processed, skipping")
                     continue
 
                 # Get today's date in UTC
@@ -438,7 +440,6 @@ class BettensorValidator(BaseNeuron):
                         ),
                     )
                     conn.execute("COMMIT")
-                    bt.logging.debug(f"Inserted prediction for miner {minerId}. New total wager: ${new_total_wager}")
                 except sqlite3.Error as e:
                     conn.execute("ROLLBACK")
                     bt.logging.error(f"An error occurred: {e}")
@@ -511,12 +512,6 @@ class BettensorValidator(BaseNeuron):
                         predictions_dict[uid] = prediction_dict
                     else:
                         bt.logging.trace(f"prediction from miner {uid} is empty and will be skipped.")
-                        bt.logging.trace(f"""Synapse Details:
-                                            game_data_dict_len: {len(game_data_dict) if game_data_dict else 0}
-                                            prediction_dict: {prediction_dict if prediction_dict else 0}
-                                            metadata: {metadata if metadata else 0}
-                                            error: {error if error else 0}
-                                            """)
                 else:
                     bt.logging.warning("metadata is missing or does not contain neuron_uid.")
             else:
@@ -682,7 +677,6 @@ class BettensorValidator(BaseNeuron):
                 self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
                 self.last_update_recent_games = datetime.fromtimestamp(state.get("last_update_recent_games", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
 
-                bt.logging.info(f"scores loaded from saved file: {self.scores}")
             except Exception as e:
                 bt.logging.error(
                     f"validator state reset because an exception occurred: {e}"
@@ -840,7 +834,7 @@ class BettensorValidator(BaseNeuron):
             if cursor.rowcount == 0:
                 bt.logging.trace(f"No game updated for externalId {game_id}")
             else:
-                bt.logging.info(f"Updated game {game_id} with outcome: {numeric_outcome}")
+                bt.logging.trace(f"Updated game {game_id} with outcome: {numeric_outcome}")
             conn.commit()
         except Exception as e:
             bt.logging.error(f"Error updating game outcome: {e}")
@@ -871,35 +865,59 @@ class BettensorValidator(BaseNeuron):
             bt.logging.error(f"No game found with externalId {externalId}")
             return
 
-        bt.logging.debug(f"Fetching {sport} game data for externalId: {externalId}")
+        bt.logging.trace(f"Fetching {sport} game data for externalId: {externalId}")
 
-        game_data = self.api_client.get_baseball_game(str(externalId)) if sport == "baseball" else self.api_client.get_soccer_game(str(externalId))
+        if sport == "baseball":
+            game_data = self.api_client.get_baseball_game(str(externalId))
+        elif sport == "soccer":
+            game_data = self.api_client.get_soccer_game(str(externalId))
+        elif sport.lower() == "nfl":
+            game_data = self.api_client.get_nfl_result(str(externalId))
+        else:
+            bt.logging.error(f"Unsupported sport: {sport}")
+            return
 
-        if not game_data or "response" not in game_data or not game_data["response"]:
+        if not game_data or "results" not in game_data or not game_data["results"]:
             bt.logging.error(f"Invalid or empty game data for {externalId}")
             return
 
-        game_response = game_data["response"][0]
+        # For NFL, we directly process from 'results'
+        if sport.lower() == "nfl":
+            game_response = game_data["results"][0]
+            status = game_response.get("time_status")
+            if status != "3":  # 3 means the game has finished
+                bt.logging.trace(f"NFL game {externalId} is not finished yet. Current status: {status}")
+                return
+        else:
+            game_response = game_data["response"][0]
 
+        # Check if the game has finished
         if sport == "baseball":
             status = game_response.get("status", {}).get("long")
             if status != "Finished":
-                bt.logging.info(f"Baseball game {externalId} is not finished yet. Current status: {status}")
+                bt.logging.trace(f"Baseball game {externalId} is not finished yet. Current status: {status}")
                 return
         elif sport == "soccer":
             status = game_response.get("fixture", {}).get("status", {}).get("long")
             if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
-                bt.logging.info(f"Soccer game {externalId} is not finished yet. Current status: {status}")
+                bt.logging.trace(f"Soccer game {externalId} is not finished yet. Current status: {status}")
                 return
-        else:
-            bt.logging.error(f"Unsupported sport: {sport}")
-            return
 
         # Process scores and update game outcome
         self.process_game_result(sport, game_response, externalId, teamA, teamB)
 
     def process_game_result(self, sport, game_response, externalId, teamA, teamB):
-        if sport == "baseball":
+        # Handle NFL scores
+        if sport.lower() == "nfl":
+            # The NFL score is provided as a string like "20-27"
+            scores = game_response.get("ss", "").split("-")
+            if len(scores) == 2:
+                home_score, away_score = map(int, scores)
+            else:
+                bt.logging.error(f"Invalid score format for NFL game {externalId}")
+                return
+        # Handle baseball and soccer scores
+        elif sport == "baseball":
             home_score = game_response.get("scores", {}).get("home", {}).get("total")
             away_score = game_response.get("scores", {}).get("away", {}).get("total")
         elif sport == "soccer":
@@ -909,10 +927,16 @@ class BettensorValidator(BaseNeuron):
             bt.logging.error(f"Unsupported sport: {sport}")
             return
 
+        # Validate scores
         if home_score is None or away_score is None:
             bt.logging.error(f"Unable to extract scores for {sport} game {externalId}")
             return
 
+        # Convert scores to integers for comparison
+        home_score = int(home_score)
+        away_score = int(away_score)
+
+        # Determine game outcome: 0 for home win, 1 for away win, 2 for tie
         if home_score > away_score:
             numeric_outcome = 0
         elif away_score > home_score:
@@ -920,9 +944,9 @@ class BettensorValidator(BaseNeuron):
         else:
             numeric_outcome = 2
 
-        bt.logging.info(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
-        bt.logging.info(f"Numeric outcome: {numeric_outcome}")
+        bt.logging.trace(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
 
+        # Update the game outcome in the database
         self.update_game_outcome(externalId, numeric_outcome)
 
     def get_sport_from_db(self, externalId):
@@ -934,20 +958,19 @@ class BettensorValidator(BaseNeuron):
         return result[0] if result else None
 
     def update_recent_games(self):
-        """Updates the outcomes of recent games and corresponding predictions"""
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc)
         
         conn = self.connect_db()
         cursor = conn.cursor()
         
-        # Fetch games that have started at least 2 hours ago but don't have a final outcome yet
-        two_hours_ago = current_time - timedelta(hours=2)
+        # Fetch games that have started at least 4 hours ago but don't have a final outcome yet
+        four_hours_ago = current_time - timedelta(hours=4)
         cursor.execute("""
             SELECT id, teamA, teamB, externalId, eventStartDate, sport
             FROM game_data
             WHERE eventStartDate <= ? AND outcome = 'Unfinished'
             ORDER BY eventStartDate
-        """, (two_hours_ago.isoformat(),))
+        """, (four_hours_ago.isoformat(),))
         
         recent_games = cursor.fetchall()
         conn.close()
@@ -956,42 +979,23 @@ class BettensorValidator(BaseNeuron):
 
         for game in recent_games:
             game_id, teamA, teamB, externalId, start_time, sport = game
-            start_time = datetime.fromisoformat(start_time)
+            start_time = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
             
             # Additional check to ensure the game has indeed started
             if start_time > current_time:
-                bt.logging.debug(f"Skipping {sport} game {externalId}, scheduled start time is in the future.")
                 continue
 
-            bt.logging.debug(f"Checking {sport} game {externalId} for results")
+            bt.logging.trace(f"Checking {sport} game {externalId} for results")
             self.determine_winner((game_id, teamA, teamB, externalId))
 
         bt.logging.info("Recent games and predictions update process completed")
-
-    async def run_sync_in_async(self, fn):
-        try:
-            return await self.loop.run_in_executor(self.thread_executor, fn)
-        except StopIteration:
-            bt.logging.warning("StopIteration encountered in run_sync_in_async. Handling gracefully.")
-            return None
-        except Exception as e:
-            bt.logging.error(f"Error in run_sync_in_async: {e}")
-            return None
-        try:
-            return await self.loop.run_in_executor(self.thread_executor, fn)
-        except StopIteration:
-            bt.logging.warning("StopIteration encountered in run_sync_in_async. Handling gracefully.")
-            return None
-        except Exception as e:
-            bt.logging.error(f"Error in run_sync_in_async: {e}")
-            return None
     
     def recalculate_all_profits(self):
         self.weight_setter.recalculate_daily_profits()
 
-    async def set_weights(self):
+    def set_weights(self):
         try:
-            return await self.weight_setter.set_weights(self.db_path)
+            return self.weight_setter.set_weights(self.db_path)
         except StopIteration:
             bt.logging.warning("StopIteration encountered in set_weights. Handling gracefully.")
             return None

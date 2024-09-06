@@ -1,6 +1,9 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
+import warnings
+from eth_utils.exceptions import ValidationError
+warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
 import bittensor as bt
 import traceback
 import os
@@ -27,6 +30,7 @@ class DatabaseManager:
         bt.logging.debug(f"Creating tables")
         self.create_tables()
         bt.logging.debug("DatabaseManager initialization complete")
+        self.remove_default_rows()
 
     def check_root_user(self):
         return self.db_user == 'root'
@@ -180,6 +184,9 @@ class DatabaseManager:
                 bt.logging.error(f"Error creating table {table_name}: {e}")
 
     def initialize_default_model_params(self, miner_uid):
+        if not miner_uid or miner_uid == "default":
+            return
+        
         bt.logging.info(f"Initializing default model params for miner: {miner_uid}")
         self.ensure_model_params_table_exists()
         self.ensure_miner_params_exist(miner_uid)
@@ -199,6 +206,9 @@ class DatabaseManager:
         self.execute_query(query)
 
     def ensure_miner_params_exist(self, miner_uid):
+        if not miner_uid or miner_uid == "default":
+            return
+        
         default_params = {
             'model_on': False,
             'wager_distribution_steepness': 1,
@@ -303,3 +313,60 @@ class DatabaseManager:
         SET last_active_timestamp = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
         """
         self.execute_query(query, (miner_uid,))
+
+    def is_miner_active(self, miner_uid):
+        query = """
+        SELECT COUNT(*) FROM miner_active
+        WHERE miner_uid = %s AND last_active_timestamp > NOW() - INTERVAL '5 minutes'
+        """
+        result = self.execute_query(query, (miner_uid,))
+        return result[0]['count'] > 0 if result else False
+
+    def ensure_miner_model_params(self, miner_uid):
+        query = "SELECT * FROM model_params WHERE id = %s"
+        result = self.execute_query(query, (miner_uid,))
+        
+        if not result:
+            default_params = {
+                'model_on': False,
+                'wager_distribution_steepness': 1,
+                'fuzzy_match_percentage': 80,
+                'minimum_wager_amount': 1.0,
+                'max_wager_amount': 100.0,
+                'top_n_games': 10
+            }
+            insert_query = """
+            INSERT INTO model_params (
+                id, model_on, wager_distribution_steepness, fuzzy_match_percentage,
+                minimum_wager_amount, max_wager_amount, top_n_games
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            self.execute_query(insert_query, (miner_uid, *default_params.values()))
+            bt.logging.info(f"Created default model parameters for miner: {miner_uid}")
+
+    def remove_default_rows(self):
+        bt.logging.info("Checking and removing default rows from all tables")
+        tables = {
+            'predictions': 'minerID',
+            'games': 'gameID',
+            'miner_stats': 'miner_hotkey',
+            'model_params': 'id',
+            'miner_active': 'miner_uid'
+        }
+        
+        for table, id_column in tables.items():
+            query = f"""
+            DELETE FROM {table}
+            WHERE {id_column} = 'default' OR {id_column} IS NULL
+            """
+            if table == 'miner_stats':
+                query = f"""
+                DELETE FROM {table}
+                WHERE {id_column} = 'default'
+                """
+            try:
+                rows_deleted = self.execute_query(query)
+                if rows_deleted > 0:
+                    bt.logging.info(f"Removed {rows_deleted} default or NULL row(s) from {table}")
+            except Exception as e:
+                bt.logging.error(f"Error removing default or NULL rows from {table}: {str(e)}")

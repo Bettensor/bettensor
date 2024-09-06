@@ -3,18 +3,15 @@ import numpy as np
 import torch
 import sqlite3
 from datetime import datetime, timezone, timedelta
-import asyncio
 import bittensor as bt
 from bettensor import __spec_version__
 
 class WeightSetter:
-    def __init__(self, metagraph, wallet, subtensor, neuron_config, loop, thread_executor, db_path):
+    def __init__(self, metagraph, wallet, subtensor, neuron_config, db_path):
         self.metagraph = metagraph
         self.wallet = wallet
         self.subtensor = subtensor
         self.neuron_config = neuron_config
-        self.loop = loop
-        self.thread_executor = thread_executor
         self.decay_factors = self.compute_decay_factors()
         self.db_path = db_path
         self.initialize_daily_stats_table()
@@ -442,10 +439,7 @@ class WeightSetter:
         finally:
             conn.close()
 
-    async def run_sync_in_async(self, fn):
-        return await self.loop.run_in_executor(self.thread_executor, fn)
-
-    async def set_weights(self, db_path):
+    def set_weights(self, db_path):
         # Update daily stats if it's a new day
         self.update_all_daily_stats()
 
@@ -466,16 +460,14 @@ class WeightSetter:
         for i in range(NUM_RETRIES):
             bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
             try:
-                result = await asyncio.wait_for(
-                    self.run_sync_in_async(lambda: self.subtensor.set_weights(
-                        netuid=self.neuron_config.netuid,
-                        wallet=self.wallet,
-                        uids=self.metagraph.uids,
-                        weights=weights,
-                        version_key=__spec_version__,
-                        wait_for_inclusion=False,
-                        wait_for_finalization=True,
-                    )),
+                result = self.set_weights_with_timeout(
+                    netuid=self.neuron_config.netuid,
+                    wallet=self.wallet,
+                    uids=self.metagraph.uids,
+                    weights=weights,
+                    version_key=__spec_version__,
+                    wait_for_inclusion=False,
+                    wait_for_finalization=True,
                     timeout=90
                 )
                 bt.logging.trace(f"Set weights result: {result}")
@@ -493,7 +485,38 @@ class WeightSetter:
                 bt.logging.error(f"Error setting weights: {str(e)}")
             
             if i < NUM_RETRIES - 1:
-                await asyncio.sleep(10)
+                time.sleep(10)
         
         bt.logging.error("Failed to set weights after all attempts.")
         return False
+
+    def set_weights_with_timeout(self, netuid, wallet, uids, weights, version_key, wait_for_inclusion, wait_for_finalization, timeout):
+        result = [None]
+        exception = [None]
+
+        def target():
+            try:
+                result[0] = self.subtensor.set_weights(
+                    netuid=netuid,
+                    wallet=wallet,
+                    uids=uids,
+                    weights=weights,
+                    version_key=version_key,
+                    wait_for_inclusion=wait_for_inclusion,
+                    wait_for_finalization=wait_for_finalization
+                )
+            except Exception as e:
+                exception[0] = e
+
+        thread = threading.Thread(target=target)
+        thread.start()
+        thread.join(timeout)
+        
+        if thread.is_alive():
+            thread.join()  # Ensure the thread is properly cleaned up
+            raise TimeoutError("Operation timed out")
+        
+        if exception[0]:
+            raise exception[0]
+        
+        return result[0]

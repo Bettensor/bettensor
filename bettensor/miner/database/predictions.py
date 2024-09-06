@@ -2,6 +2,9 @@ import traceback
 from typing import Any, List, Dict, Optional, Union
 import uuid
 from bettensor.protocol import TeamGamePrediction, TeamGame
+import warnings
+from eth_utils.exceptions import ValidationError
+warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
 import bittensor as bt
 from datetime import datetime, timezone, timedelta
 import psycopg2
@@ -188,7 +191,7 @@ class PredictionsHandler:
         bt.logging.trace(f"Processing game results for {len(game_results)} games")
         updated_predictions = {}
         for game_id, game in game_results.items():
-            bt.logging.debug(f"Processing prediction for game {game_id}")
+            #bt.logging.debug(f"Processing prediction for game {game_id}")
             query = """
             SELECT predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
                    teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
