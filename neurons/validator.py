@@ -50,9 +50,15 @@ from datetime import datetime, timezone, timedelta
 from bettensor.validator.utils.website_handler import fetch_and_send_predictions
 
 def main(validator: BettensorValidator):
-    # load rapid API key
-    load_dotenv()
-    rapid_api_key = os.getenv('RAPID_API_KEY')
+    if not validator.use_bt_api:
+        load_dotenv()
+        rapid_api_key = os.getenv('RAPID_API_KEY')
+        bet365_api_key = os.getenv('BET365_API_KEY')
+        if not rapid_api_key or not bet365_api_key:
+            bt.logging.warning("API keys not set in .env file. Some functionality may be limited.")
+    else:
+        rapid_api_key = None
+        bet365_api_key = None
 
     sports_data = validator.sports_data
     sports_config = {
@@ -155,10 +161,11 @@ def main(validator: BettensorValidator):
                     # Continue with the previous data
 
 
-                # Only update recent games if not using Bettensor API
+                # Only update recent games if not using Bettensor API; bt_api does it automatically
                 if not validator.use_bt_api:
                     try:
-                        validator.update_recent_games
+                        bt.logging.info("Game results updated at startup.")
+                        validator.update_recent_games()
                         validator.save_state()  # Save state after updating games
                     except Exception as e:
                         bt.logging.error(f"Error updating recent games: {str(e)}")

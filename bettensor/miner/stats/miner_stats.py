@@ -5,6 +5,9 @@ from psycopg2.extras import RealDictCursor
 import warnings
 from eth_utils.exceptions import ValidationError
 warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
+import warnings
+from eth_utils.exceptions import ValidationError
+warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
 import bittensor as bt
 from datetime import datetime, timezone, timedelta
 
@@ -264,12 +267,16 @@ class MinerStateManager:
         if not self.miner_uid:
             return {}
         
+        if not self.miner_uid:
+            return {}
+        
         query = "SELECT * FROM miner_stats WHERE miner_hotkey = %s"
         conn, cur = self.db_manager.connection_pool.getconn(), None
         try:
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(query, (self.miner_hotkey,))
             result = cur.fetchone()
+            return result if result else {}
             return result if result else {}
         finally:
             if cur:
@@ -278,6 +285,9 @@ class MinerStateManager:
                 self.db_manager.connection_pool.putconn(conn)
 
     def initialize_state(self) -> Dict[str, Any]:
+        if not self.miner_uid:
+            return {}
+        
         if not self.miner_uid:
             return {}
         
@@ -327,6 +337,7 @@ class MinerStateManager:
             params = (
                 self.miner_hotkey,
                 self.miner_uid if self.miner_uid != "default" else None,
+                self.miner_uid if self.miner_uid != "default" else None,
                 state.get('miner_cash', 0),
                 state.get('miner_current_incentive', 0),
                 state.get('miner_last_prediction_date'),
@@ -343,7 +354,12 @@ class MinerStateManager:
         except Exception as e:
             bt.logging.error(f"Error saving miner state: {e}")
             bt.logging.error(traceback.format_exc())
+            bt.logging.error(f"Error saving miner state: {e}")
+            bt.logging.error(traceback.format_exc())
 
+    def update_state(self, new_state):
+        self.state.update(new_state)
+        self.save_state(self.state)
     def update_state(self, new_state):
         self.state.update(new_state)
         self.save_state(self.state)

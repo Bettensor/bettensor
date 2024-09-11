@@ -3,9 +3,9 @@ import numpy as np
 import torch
 import sqlite3
 from datetime import datetime, timezone, timedelta
-import asyncio
 import bittensor as bt
 from bettensor import __spec_version__
+import time
 
 class WeightSetter:
     def __init__(self, metagraph, wallet, subtensor, neuron_config, db_path):
@@ -461,15 +461,14 @@ class WeightSetter:
         for i in range(NUM_RETRIES):
             bt.logging.info(f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}")
             try:
-                result = self.set_weights_with_timeout(
+                result = self.subtensor.set_weights(
                     netuid=self.neuron_config.netuid,
                     wallet=self.wallet,
                     uids=self.metagraph.uids,
                     weights=weights,
                     version_key=__spec_version__,
                     wait_for_inclusion=False,
-                    wait_for_finalization=True,
-                    timeout=90
+                    wait_for_finalization=True
                 )
                 bt.logging.trace(f"Set weights result: {result}")
                 
@@ -480,8 +479,6 @@ class WeightSetter:
                         return True
                 else:
                     bt.logging.warning(f"Unexpected result format in setting weights: {result}")
-            except TimeoutError:
-                bt.logging.error("Timeout occurred while setting weights.")
             except Exception as e:
                 bt.logging.error(f"Error setting weights: {str(e)}")
             
@@ -490,34 +487,3 @@ class WeightSetter:
         
         bt.logging.error("Failed to set weights after all attempts.")
         return False
-
-    def set_weights_with_timeout(self, netuid, wallet, uids, weights, version_key, wait_for_inclusion, wait_for_finalization, timeout):
-        result = [None]
-        exception = [None]
-
-        def target():
-            try:
-                result[0] = self.subtensor.set_weights(
-                    netuid=netuid,
-                    wallet=wallet,
-                    uids=uids,
-                    weights=weights,
-                    version_key=version_key,
-                    wait_for_inclusion=wait_for_inclusion,
-                    wait_for_finalization=wait_for_finalization
-                )
-            except Exception as e:
-                exception[0] = e
-
-        thread = threading.Thread(target=target)
-        thread.start()
-        thread.join(timeout)
-        
-        if thread.is_alive():
-            thread.join()  # Ensure the thread is properly cleaned up
-            raise TimeoutError("Operation timed out")
-        
-        if exception[0]:
-            raise exception[0]
-        
-        return result[0]

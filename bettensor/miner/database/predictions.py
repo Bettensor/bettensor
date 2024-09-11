@@ -199,7 +199,7 @@ class PredictionsHandler:
         bt.logging.trace(f"Processing game results for {len(game_results)} games")
         updated_predictions = {}
         for game_id, game in game_results.items():
-            bt.logging.debug(f"Processing prediction for game {game_id}")
+            #bt.logging.debug(f"Processing prediction for game {game_id}")
             query = """
             SELECT predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
                    teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome

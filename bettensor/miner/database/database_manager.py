@@ -4,6 +4,9 @@ from psycopg2.pool import SimpleConnectionPool
 import warnings
 from eth_utils.exceptions import ValidationError
 warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
+import warnings
+from eth_utils.exceptions import ValidationError
+warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
 import bittensor as bt
 import traceback
 import os
@@ -30,6 +33,7 @@ class DatabaseManager:
         bt.logging.debug(f"Creating tables")
         self.create_tables()
         bt.logging.debug("DatabaseManager initialization complete")
+        self.remove_default_rows()
         self.remove_default_rows()
 
     def check_root_user(self):
