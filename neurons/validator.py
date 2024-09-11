@@ -154,6 +154,7 @@ def main(validator: BettensorValidator):
                     if all_games is None:
                         bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
                     else:
+                        validator.update_prediction_outcomes()
                         validator.last_api_call = current_time
                         validator.save_state()  # Save state after updating last_api_call
                 except Exception as e:

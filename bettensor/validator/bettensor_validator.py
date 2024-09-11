@@ -989,6 +989,53 @@ class BettensorValidator(BaseNeuron):
             self.determine_winner((game_id, teamA, teamB, externalId))
 
         bt.logging.info("Recent games and predictions update process completed")
+
+    def update_prediction_outcomes(self):
+        """
+        Updates the outcomes in the predictions table based on the game_data table.
+        """
+        conn = self.connect_db()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                UPDATE predictions
+                SET outcome = (
+                    SELECT game_data.outcome
+                    FROM game_data
+                    WHERE game_data.externalId = predictions.teamGameID
+                        AND game_data.outcome != 'Unfinished'
+                )
+                WHERE predictions.outcome = 'Unfinished'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM game_data
+                        WHERE game_data.externalId = predictions.teamGameID
+                            AND game_data.outcome != 'Unfinished'
+                    )
+            """)
+
+            updated_rows = cursor.rowcount
+            conn.commit()
+            bt.logging.info(f"Updated outcomes for {updated_rows} predictions")
+
+            # Optionally, update a 'correct' column in the predictions table
+            cursor.execute("""
+                UPDATE predictions
+                SET correct = (CASE WHEN predictedOutcome = outcome THEN 1 ELSE 0 END)
+                WHERE outcome != 'Unfinished'
+                    AND correct IS NULL
+            """)
+
+            correct_updated_rows = cursor.rowcount
+            conn.commit()
+            bt.logging.info(f"Updated correctness for {correct_updated_rows} predictions")
+
+        except Exception as e:
+            bt.logging.error(f"Error updating prediction outcomes: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
     
     def recalculate_all_profits(self):
         self.weight_setter.recalculate_daily_profits()
