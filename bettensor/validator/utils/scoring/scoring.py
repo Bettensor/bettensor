@@ -16,7 +16,7 @@ Outputs:
 import numpy as np
 import torch as t
 import logging
-from bettensor.validator.utils.scoring_data import get_closed_predictions_for_day, get_closed_games_for_day
+from bettensor.validator.utils.scoring.scoring_data import get_closed_predictions_for_day, get_closed_games_for_day
 
 
 class ScoringSystem:
