@@ -993,13 +993,11 @@ class BettensorValidator(BaseNeuron):
     def update_prediction_outcomes(self):
         """
         Updates the outcomes in the predictions table based on the game_data table.
-        This method should be called periodically to keep the predictions table up-to-date.
         """
         conn = self.connect_db()
         cursor = conn.cursor()
 
         try:
-            # Update predictions with outcomes from completed games
             cursor.execute("""
                 UPDATE predictions
                 SET outcome = (
