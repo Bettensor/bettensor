@@ -148,12 +148,13 @@ def main(validator: BettensorValidator):
                 validator.last_api_call = datetime.fromtimestamp(validator.last_api_call, tz=timezone.utc)
             
             # Update games every hour
-            if current_time - validator.last_api_call >= timedelta(minutes=60):
+            if current_time - validator.last_api_call >= timedelta(minutes=0):
                 try:
                     all_games = validator.sports_data.get_multiple_game_data(sports_config)
                     if all_games is None:
                         bt.logging.warning("Failed to fetch game data. Continuing with previous data.")
                     else:
+                        validator.update_prediction_outcomes()
                         validator.last_api_call = current_time
                         validator.save_state()  # Save state after updating last_api_call
                 except Exception as e:
@@ -247,6 +248,7 @@ def main(validator: BettensorValidator):
                     timeout=validator.timeout,
                     deserialize=True,
                 )
+            print(responses)
 
             # Process blacklisted UIDs (set scores to 0)
             bt.logging.debug(f"blacklisted_uids: {blacklisted_uids}")
@@ -312,7 +314,7 @@ def main(validator: BettensorValidator):
                 except Exception as e:
                     bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
-            if current_block - validator.last_updated_block > 300:
+            if current_block - validator.last_updated_block > 0:
 
                 try:
                     bt.logging.info("Attempting to update weights")
