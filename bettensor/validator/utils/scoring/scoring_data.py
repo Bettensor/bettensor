@@ -1,11 +1,12 @@
     
+import pytz
 import bettensor as bt
 import torch as t
 import sqlite3
 from datetime import datetime, timedelta
 
 
-
+#### MINER STATS ####
 
 def initialize_miner_stats_table(self):
         '''
@@ -78,7 +79,7 @@ def load_miner_state_file(self):
 
 def initialize_new_miner(self, miner_uid: int):
     '''
-    Initializes a new miner in the database, replacing the old uid if it exists.
+    Initializes a new miner in the database, replacing the old uid if it exists. This method should be called whenever a new miner is detected in the validator loop.
     '''
     conn = self.connect_db()
     cursor = conn.cursor()
@@ -133,6 +134,16 @@ def initialize_new_miner(self, miner_uid: int):
     finally:
         conn.close()
 
+def update_miner_stats(self, miner_stats: dict):
+    '''
+    Updates the miner stats table in the database with the given miner stats, after a scoring run.
+    '''
+    #TODO: implement this method
+    
+    pass
+
+
+#### PREDICTIONS ####
 def get_closed_predictions_for_day(self, date: str):
     '''
     Gets all predictions for a given day, for games that have finished.
@@ -167,6 +178,74 @@ def get_closed_games_for_day(self, date: str):
         bt.logging.error(f"Error getting games for day: {e}")
         return None
     
+
+#### CLOSING LINE ODDS ####
+
+
+def ensure_closing_line_odds_table(self):
+    '''
+    Ensure the closing_line_odds table exists in the database.
+    '''
+    conn = sqlite3.connect(self.db_path)
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS closing_line_odds (
+                game_id INTEGER PRIMARY KEY,
+                team_a_odds REAL,
+                team_b_odds REAL,
+                tie_odds REAL,
+                event_start_date TEXT
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        bt.logging.error(f"Error ensuring closing_line_odds table: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+def fetch_closing_line_odds(self):
+    '''
+    Find games in the database that are starting within 15 minutes. Record those odds as the closing line odds. Store them in a table. This method should be run periodically in the validator loop.
+    '''
+    try:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Get current time (UTC)
+        current_time = datetime.now(pytz.utc)
+
+        #find games that are starting within 15 minutes
+        cursor.execute("""
+            SELECT id, team_a_odds, team_b_odds, tie_odds, event_start_date
+            FROM game_data
+            WHERE event_start_date BETWEEN ? AND ?
+        """, (current_time - timedelta(minutes=15), current_time + timedelta(minutes=15)))
+        games = cursor.fetchall()
+
+        #insert the games into the closing_line_odds table
+        for game in games:
+            cursor.execute("""
+                INSERT INTO closing_line_odds (game_id, team_a_odds, team_b_odds, tie_odds, event_start_date)
+                VALUES (?, ?, ?, ?, ?)
+            """, game)
+        conn.commit()
+    except Exception as e:
+        bt.logging.error(f"Error fetching closing line odds: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+    
+## Entropy System ##
+
+
+
+
+### RUN ALL PREPROCESSING FUNCTIONS ####
+
 def preprocess_for_scoring(self, date: str):
     '''
     Preprocesses all data needed for scoring. Takes a date as input and returns the necessary tensors for scoring.
@@ -220,3 +299,4 @@ def preprocess_for_scoring(self, date: str):
         results_tensor[i] = float(outcome)
 
     return predictions_tensor, closing_line_odds_tensor, results_tensor
+

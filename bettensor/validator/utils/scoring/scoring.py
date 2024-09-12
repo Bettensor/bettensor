@@ -24,25 +24,31 @@ class ScoringSystem:
         self.num_miners = num_miners
         self.max_days = max_days
         
-        # Centralized data storage
+        # Fixed size tensors for active miners
         self.clv_scores = t.zeros(num_miners, max_days)
         self.sortino_scores = t.zeros(num_miners, max_days)
         self.sharpe_scores = t.zeros(num_miners, max_days)
         self.roi_scores = t.zeros(num_miners, max_days)
+        self.entropy_scores = t.zeros(num_miners, max_days)
         self.num_predictions = t.zeros(num_miners, max_days, dtype=t.int)
         self.tiers = t.ones(num_miners, dtype=t.int)  # All miners start in tier 1
+        self.composite_scores = t.zeros(num_miners,max_days)
+        self.tier_history = t.ones(num_miners, max_days, dtype=t.int)
+        self.returns = t.zeros(num_miners, max_days, 2) # 0 is amount bet, 1 is amount won
 
 
-        # TODO: Composite score weights - should be set by a config file maybe? 
+
+
+
 
 
         # WARNING: DO NOT CHANGE THESE VALUES. THEY WILL IMPACT VTRUST SIGNIFICANTLY. 
         self.clv_weight = 0.25
         self.roi_weight = 0.25
         self.ssi_weight = 0.25
+        self.entropy_weight = 0.25
+        self.entropy_window = 30
 
-
-        
         # Tier configurations
         self.tier_configs = [
             {'window': 3, 'min_predictions': 0, 'capacity': int(num_miners * 1.0), 'incentive': 0.1},
@@ -52,9 +58,6 @@ class ScoringSystem:
             {'window': 45, 'min_predictions': 100, 'capacity': int(num_miners * 0.05), 'incentive': 0.3}
         ]
 
-        # Set up logging
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-        self.logger = logging.getLogger(__name__)
 
     def update_daily_scores(self, day: int, predictions: t.Tensor, closing_line_odds: t.Tensor, results: t.Tensor, debug: bool = True):
         """
@@ -94,14 +97,7 @@ class ScoringSystem:
         self.logger.info(f"Daily scores updated for day {day}")
         self.log_score_summary(day)
 
-    def log_score_summary(self, day: int):
-        """Log a summary of the scores for the current day."""
-        self.logger.info(f"Score summary for day {day}:")
-        self.logger.info(f"CLV scores - Mean: {self.clv_scores[:, day].mean():.4f}, Max: {self.clv_scores[:, day].max():.4f}")
-        self.logger.info(f"ROI scores - Mean: {self.roi_scores[:, day].mean():.4f}, Max: {self.roi_scores[:, day].max():.4f}")
-        self.logger.info(f"Sharpe scores - Mean: {self.sharpe_scores[:, day].mean():.4f}, Max: {self.sharpe_scores[:, day].max():.4f}")
-        self.logger.info(f"Sortino scores - Mean: {self.sortino_scores[:, day].mean():.4f}, Max: {self.sortino_scores[:, day].max():.4f}")
-        self.logger.info(f"Total predictions: {self.num_predictions[:, day].sum()}")
+
 
     def calculate_composite_scores(self):
         """
@@ -285,9 +281,9 @@ class ScoringSystem:
         
         return (predictions[:, :, 2] > 0).sum(dim=1)
 
-    def register_miner(self, miner_uid: int):
+    def reset_miner(self, miner_uid: int):
         """
-        Register a new miner, replacing any existing miner at the same UID.
+        Initialize a new miner, replacing any existing miner at the same UID. This should be called when the validator discovers a new miner in the metagraph.
         """
         # Reset scores for the miner
         self.clv_scores[miner_uid] = 0
@@ -314,7 +310,8 @@ class ScoringSystem:
             self.clv_scores[miner_uid, -window:].mean() +
             self.roi_scores[miner_uid, -window:].mean() +
             self.sharpe_scores[miner_uid, -window:].mean() +
-            self.sortino_scores[miner_uid, -window:].mean()
+            self.sortino_scores[miner_uid, -window:].mean() +
+            self.entropy_scores[miner_uid, -window:].mean() 
         )
         return scores.item()
 
@@ -521,64 +518,28 @@ class ScoringSystem:
         
         return weights
 
-    def log_weight_summary(self, weights: t.Tensor):
-        """Log a summary of the final weights."""
-        self.logger.info("Final weight summary:")
-        for tier, config in enumerate(self.tier_configs, 1):
-            tier_mask = self.tiers == tier
-            tier_weights = weights[tier_mask]
-            self.logger.info(f"Tier {tier}:")
-            self.logger.info(f"  Miners: {tier_mask.sum()}")
-            self.logger.info(f"  Total weight: {tier_weights.sum():.4f}")
-            self.logger.info(f"  Mean weight: {tier_weights.mean():.4f}")
-            self.logger.info(f"  Max weight: {tier_weights.max():.4f}")
 
-    # def run_epoch(self, predictions: t.Tensor, closing_line_odds: t.Tensor, results: t.Tensor, debug: bool = True):
-    #     """
-    #     Run a full epoch of scoring and tier management.
-        
-    #     Args:
-    #     predictions: Tensor of shape (num_miners, num_days, num_predictions, 3)
-    #     closing_line_odds: Tensor of shape (num_days, num_games, 2)
-    #     results: Tensor of shape (num_days, num_games)
-    #     debug: If True, perform input validation checks (default: True)
-        
-    #     Returns:
-    #     Tensor of shape (num_miners,) containing the final weights for each miner
-    #     """
-    #     self.logger.info("Starting new epoch")
-        
-    #     if debug:
-    #         if not isinstance(predictions, t.Tensor) or predictions.dim() != 4 or predictions.size(3) != 3:
-    #             raise ValueError("predictions must be a 4D tensor with shape (num_miners, num_days, num_predictions, 3)")
-    #         if not isinstance(closing_line_odds, t.Tensor) or closing_line_odds.dim() != 3 or closing_line_odds.size(2) != 2:
-    #             raise ValueError("closing_line_odds must be a 3D tensor with shape (num_days, num_games, 2)")
-    #         if not isinstance(results, t.Tensor) or results.dim() != 2:
-    #             raise ValueError("results must be a 2D tensor with shape (num_days, num_games)")
-    #         if predictions.size(0) != self.num_miners or predictions.size(1) != self.max_days:
-    #             raise ValueError(f"predictions must have shape ({self.num_miners}, {self.max_days}, num_predictions, 3)")
-    #         if closing_line_odds.size(0) != self.max_days or results.size(0) != self.max_days:
-    #             raise ValueError(f"closing_line_odds and results must have {self.max_days} days")
-        
-    #     try:
-    #         for day in range(predictions.size(1)):
-    #             self.update_daily_scores(day, predictions[:, day], closing_line_odds[day], results[day], debug=debug)
-            
-    #         self.manage_tiers(debug=debug)
-    #         final_weights = self.calculate_final_weights(debug=debug)
-        
-    #     except Exception as e:
-    #         self.logger.error(f"Error running epoch: {str(e)}")
-    #         raise
-        
-    #     self.logger.info("Epoch completed")
-    #     return final_weights
-    def preprocess_data(self, date: str):
+    def scoring_run(self):
         '''
-        Preprocesses the data for a given day.
+        Perform a full scoring run, called from the main validator loop before setting weights.
         '''
-        predictions = self.get_closed_predictions_for_day(date)
-        games = self.get_closed_games_for_day(date)
+
+        #TODO: preprocess data (scoring_data.py)
+
+        #TODO: calculate component score updates with new predictions
+
+        #TODO: calculate composite score updates 
+
+        #TODO: manage tier changes 
+
+        #TODO: calculate final weights
+
+        #TODO: return final weights for weight setting.
+
+        pass
+
+
+
 
 
 
