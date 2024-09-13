@@ -193,7 +193,14 @@ class DatabaseManager:
             fuzzy_match_percentage INTEGER,
             minimum_wager_amount FLOAT,
             max_wager_amount FLOAT,
-            top_n_games INTEGER
+            top_n_games INTEGER,
+            nfl_model_on BOOLEAN,
+            nfl_minimum_wager_amount FLOAT,
+            nfl_max_wager_amount FLOAT,
+            nfl_top_n_games INTEGER,
+            nfl_kelly_fraction_multiplier FLOAT,
+            nfl_edge_threshold FLOAT,
+            nfl_max_bet_percentage FLOAT
         )
         """
         self.execute_query(query)
@@ -205,7 +212,14 @@ class DatabaseManager:
             'fuzzy_match_percentage': 80,
             'minimum_wager_amount': 1.0,
             'max_wager_amount': 100.0,
-            'top_n_games': 10
+            'top_n_games': 10,
+            'nfl_model_on': False,
+            'nfl_minimum_wager_amount': 1.0,
+            'nfl_max_wager_amount': 100.0,
+            'nfl_top_n_games': 5,
+            'nfl_kelly_fraction_multiplier': 1,
+            'nfl_edge_threshold': 0.02,
+            'nfl_max_bet_percentage': 0.7
         }
         
         query = "SELECT * FROM model_params WHERE id = %s"
@@ -215,8 +229,11 @@ class DatabaseManager:
             insert_query = """
             INSERT INTO model_params (
                 id, model_on, wager_distribution_steepness, fuzzy_match_percentage,
-                minimum_wager_amount, max_wager_amount, top_n_games
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                minimum_wager_amount, max_wager_amount, top_n_games,
+                nfl_model_on, nfl_minimum_wager_amount, nfl_max_wager_amount,
+                nfl_top_n_games, nfl_kelly_fraction_multiplier, nfl_edge_threshold,
+                nfl_max_bet_percentage
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             self.execute_query(insert_query, (miner_uid, *default_params.values()))
 
@@ -233,7 +250,14 @@ class DatabaseManager:
             fuzzy_match_percentage = %s,
             minimum_wager_amount = %s,
             max_wager_amount = %s,
-            top_n_games = %s
+            top_n_games = %s,
+            nfl_model_on = %s,
+            nfl_minimum_wager_amount = %s,
+            nfl_max_wager_amount = %s,
+            nfl_top_n_games = %s,
+            nfl_kelly_fraction_multiplier = %s,
+            nfl_edge_threshold = %s,
+            nfl_max_bet_percentage = %s
         WHERE id = %s
         """
         self.execute_query(query, (*params.values(), miner_uid))

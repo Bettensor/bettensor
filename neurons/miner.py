@@ -133,15 +133,16 @@ def main(miner: BettensorMiner):
                 bt.logging.info("Checking and resetting daily cash if necessary")
                 miner.stats_handler.check_and_reset_daily_cash()
                 bt.logging.info(f"Miner UID: {miner.miner_uid}")
-                bt.logging.info(f"Model on: {miner.predictions_handler.models['soccer'].model_on}")
+
+                bt.logging.info(f"Soccer Model on: {miner.predictions_handler.models['soccer'].model_on}")
                 if miner.predictions_handler.models['soccer'].model_on:
                     soccer_games = miner.games_handler.get_games_by_sport("soccer")
                     bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
                     miner_cash = miner.stats_handler.get_miner_cash()
                     bt.logging.info(f"Miner cash: {miner_cash}")
-                    bt.logging.info(f"Made daily predictions: {miner.predictions_handler.models['soccer'].made_daily_predictions}")
+                    bt.logging.info(f"Made daily soccer predictions: {miner.predictions_handler.models['soccer'].made_daily_predictions}")
                     if miner_cash < miner.predictions_handler.models['soccer'].minimum_wager_amount or miner_cash/len(soccer_games) < miner.predictions_handler.models['soccer'].minimum_wager_amount and not miner.predictions_handler.models['soccer'].made_daily_predictions:
-                        bt.logging.warn(f"Miner cash is insufficient for model predictions. Skipping this step.")
+                        bt.logging.warn(f"Miner cash is insufficient for soccer model predictions. Skipping this step.")
                     else:
                         if soccer_games:
                             processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
@@ -149,8 +150,24 @@ def main(miner: BettensorMiner):
                         else:
                             bt.logging.info("No soccer games to process")
 
-            miner.step += 1
-            time.sleep(1)
+                bt.logging.info(f"NFL Model on: {miner.predictions_handler.models['nfl'].nfl_model_on}")
+                if miner.predictions_handler.models['nfl'].nfl_model_on:
+                    nfl_games = miner.games_handler.get_games_by_sport("nfl")
+                    bt.logging.info(f"Retrieved {len(nfl_games)} active NFL games")
+                    miner_cash = miner.stats_handler.get_miner_cash()
+                    bt.logging.info(f"Miner cash: {miner_cash}")
+                    bt.logging.info(f"Made daily NFL predictions: {miner.predictions_handler.models['nfl'].made_daily_predictions}")
+                    if miner_cash < miner.predictions_handler.models['nfl'].nfl_minimum_wager_amount or miner_cash/len(nfl_games) < miner.predictions_handler.models['nfl'].nfl_minimum_wager_amount and not miner.predictions_handler.models['nfl'].made_daily_predictions:
+                        bt.logging.warn(f"Miner cash is insufficient for NFL model predictions. Skipping this step.")
+                    else:
+                        if nfl_games:
+                            processed_games = miner.predictions_handler.process_model_predictions(nfl_games, "nfl")
+                            bt.logging.info(f"Processed {len(processed_games)} NFL games")
+                        else:
+                            bt.logging.info("No NFL games to process")
+
+                miner.step += 1
+                time.sleep(1)
 
         # If someone intentionally stops the miner, it'll safely terminate operations.
         except KeyboardInterrupt:
