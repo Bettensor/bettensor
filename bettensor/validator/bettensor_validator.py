@@ -23,7 +23,7 @@ import numpy as np
 import torch
 from bettensor.utils.weights_functions import WeightSetter
 from bettensor.utils.api_client import APIClient
-from bettensor.utils.sports_data import SportsData
+from bettensor.validator.utils.sports_data import SportsData
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -836,20 +836,20 @@ class BettensorValidator(BaseNeuron):
             bt.logging.error(f"No game found with externalId {external_id}")
             return
 
-        bt.logging.trace(f"Fetching {sport} game data for externalId: {externalId}")
+        bt.logging.trace(f"Fetching {sport} game data for externalId: {external_id}")
 
         if sport == "baseball":
-            game_data = self.api_client.get_baseball_game(str(externalId))
+            game_data = self.api_client.get_baseball_game(str(external_id))
         elif sport == "soccer":
-            game_data = self.api_client.get_soccer_game(str(externalId))
+            game_data = self.api_client.get_soccer_game(str(external_id))
         elif sport.lower() == "nfl":
-            game_data = self.api_client.get_nfl_result(str(externalId))
+            game_data = self.api_client.get_nfl_result(str(external_id))
         else:
             bt.logging.error(f"Unsupported sport: {sport}")
             return
 
         if not game_data or "results" not in game_data or not game_data["results"]:
-            bt.logging.error(f"Invalid or empty game data for {externalId}")
+            bt.logging.error(f"Invalid or empty game data for {external_id}")
             return
 
         # For NFL, we directly process from 'results'
@@ -857,7 +857,7 @@ class BettensorValidator(BaseNeuron):
             game_response = game_data["results"][0]
             status = game_response.get("time_status")
             if status != "3":  # 3 means the game has finished
-                bt.logging.trace(f"NFL game {externalId} is not finished yet. Current status: {status}")
+                bt.logging.trace(f"NFL game {external_id} is not finished yet. Current status: {status}")
                 return
         else:
             game_response = game_data["response"][0]
@@ -866,18 +866,18 @@ class BettensorValidator(BaseNeuron):
         if sport == "baseball":
             status = game_response.get("status", {}).get("long")
             if status != "Finished":
-                bt.logging.trace(f"Baseball game {externalId} is not finished yet. Current status: {status}")
+                bt.logging.trace(f"Baseball game {external_id} is not finished yet. Current status: {status}")
                 return
         elif sport == "soccer":
             status = game_response.get("fixture", {}).get("status", {}).get("long")
             if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
-                bt.logging.trace(f"Soccer game {externalId} is not finished yet. Current status: {status}")
+                bt.logging.trace(f"Soccer game {external_id} is not finished yet. Current status: {status}")
                 return
 
         # Process scores and update game outcome
         self.process_game_result(sport, game_response, external_id, team_a, team_b)
 
-    def process_game_result(self, sport, game_response, externalId, teamA, teamB):
+    def process_game_result(self, sport, game_response, external_id, team_a, team_b):
         # Handle NFL scores
         if sport.lower() == "nfl":
             # The NFL score is provided as a string like "20-27"
@@ -885,7 +885,7 @@ class BettensorValidator(BaseNeuron):
             if len(scores) == 2:
                 home_score, away_score = map(int, scores)
             else:
-                bt.logging.error(f"Invalid score format for NFL game {externalId}")
+                bt.logging.error(f"Invalid score format for NFL game {external_id}")
                 return
         # Handle baseball and soccer scores
         elif sport == "baseball":
@@ -922,15 +922,15 @@ class BettensorValidator(BaseNeuron):
         else:
             numeric_outcome = 2
 
-        bt.logging.trace(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
+        bt.logging.trace(f"Game {external_id} result: {team_a} {home_score} - {away_score} {team_b}")
 
         # Update the game outcome in the database
-        self.update_game_outcome(externalId, numeric_outcome)
+        self.update_game_outcome(external_id, numeric_outcome)
 
     def get_sport_from_db(self, external_id):
         conn = self.connect_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT sport FROM game_data WHERE externalId = ?", (external_id,))
+        cursor.execute("SELECT sport FROM game_data WHERE external_id = ?", (external_id,))
         result = cursor.fetchone()
         conn.close()
         return result[0] if result else None
@@ -946,8 +946,8 @@ class BettensorValidator(BaseNeuron):
         cursor.execute("""
             SELECT id, team_a, team_b, external_id, event_start_date, sport
             FROM game_data
-            WHERE eventStartDate <= ? AND outcome = 'Unfinished'
-            ORDER BY eventStartDate
+            WHERE event_start_date <= ? AND outcome = 'Unfinished'
+            ORDER BY event_start_date
         """, (four_hours_ago.isoformat(),))
         
         recent_games = cursor.fetchall()
@@ -956,15 +956,15 @@ class BettensorValidator(BaseNeuron):
         bt.logging.info(f"Checking {len(recent_games)} games for updates")
 
         for game in recent_games:
-            game_id, teamA, teamB, externalId, start_time, sport = game
+            game_id, team_a, team_b, external_id, start_time, sport = game
             start_time = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
             
             # Additional check to ensure the game has indeed started
             if start_time > current_time:
                 continue
 
-            bt.logging.trace(f"Checking {sport} game {externalId} for results")
-            self.determine_winner((game_id, teamA, teamB, externalId))
+            bt.logging.trace(f"Checking {sport} game {external_id} for results")
+            self.determine_winner((game_id, team_a, team_b, external_id))
 
         bt.logging.info("Recent games and predictions update process completed")
     
