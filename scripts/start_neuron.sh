@@ -28,6 +28,9 @@ AXON_PORT=""
 VALIDATOR_MIN_STAKE=""
 FLASK_SERVER=""
 
+# Vali-specific variables
+USE_BT_API_CHOICE=""
+
 # Function to prompt for user input if not provided as an argument
 prompt_for_input() {
     local prompt="$1"
@@ -72,8 +75,8 @@ while [[ $# -gt 0 ]]; do
         --validator_min_stake) VALIDATOR_MIN_STAKE="$2"; shift 2 ;;
         --disable_auto_update) DISABLE_AUTO_UPDATE="$2"; shift 2 ;;
         --start_flask_server) FLASK_SERVER="$2"; shift 2 ;;
+        --use_bt_api) USE_BT_API_CHOICE="$2"; shift 2 ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
-        --use_bt_api) USE_BT_API="--use_bt_api"; shift ;;
     esac
 done
 
