@@ -8,7 +8,7 @@ warnings.filterwarnings("ignore", message="Network .* does not have a valid Chai
 import bittensor as bt
 from datetime import datetime, timezone, timedelta
 import psycopg2
-from bettensor.miner.models.model_utils import SoccerPredictor
+from bettensor.miner.models.model_utils import SoccerPredictor, NFLPredictor
 from fuzzywuzzy import process
 from psycopg2.extras import RealDictCursor
 from bettensor.miner.stats.miner_stats import MinerStatsHandler
@@ -22,10 +22,12 @@ class PredictionsHandler:
         self.miner_hotkey = miner_hotkey
         self.miner_uid = state_manager.miner_uid if state_manager else None
         self.new_prediction_window = timedelta(hours=24)
-        self.stats_handler = MinerStatsHandler(state_manager) if state_manager else None
-        self.models = {'soccer': SoccerPredictor(model_name='podos_soccer_model', id=self.miner_uid, db_manager=self.db_manager, miner_stats_handler=self.stats_handler)}
-        if self.miner_uid:
-            self.update_predictions_with_minerid()
+        self.stats_handler = MinerStatsHandler(state_manager)
+        self.models = {
+            'soccer': SoccerPredictor(model_name='podos_soccer_model', id=self.miner_uid, db_manager=self.db_manager, miner_stats_handler=self.stats_handler),
+            'nfl': NFLPredictor(model_name='nfl_wager_model', id=self.miner_uid, db_manager=self.db_manager, miner_stats_handler=self.stats_handler)
+        }
+        self.update_predictions_with_minerid()
         bt.logging.trace("PredictionsHandler initialization complete")
 
     def update_predictions_with_minerid(self):
@@ -140,13 +142,20 @@ class PredictionsHandler:
         model = self.models[sport]
         predictions = {}
 
-        encoded_teams = set(model.le.classes_)
+        if sport == 'soccer':
+            encoded_teams = set(model.le.classes_)
+        else:  # NFL
+            encoded_teams = model.bet365_teams
 
         matched_games = []
         for game_id, game in games.items():
-            home_match = self.get_best_match(game.teamA, encoded_teams, sport)
-            away_match = self.get_best_match(game.teamB, encoded_teams, sport)
-            
+            if sport == 'soccer':
+                home_match = self.get_best_match(game.teamA, encoded_teams, sport)
+                away_match = self.get_best_match(game.teamB, encoded_teams, sport)
+            else:
+                home_match = model.db_manager.predictions_handler.get_best_match(game.teamA, encoded_teams, sport)
+                away_match = model.db_manager.predictions_handler.get_best_match(game.teamB, encoded_teams, sport)
+
             if home_match and away_match:
                 matched_games.append({
                     'game_id': game_id,

@@ -33,13 +33,21 @@ class ModelParamsTUI:
         self.edit_value = ""
         self.error_message = ""
         self.explanations = {
-            'model_on': "Toggle the model on or off.",
+            'model_on': "Toggle the soccer model on or off.",
             'wager_distribution_steepness': "Controls the steepness of the wager distribution.",
             'fuzzy_match_percentage': "Sets the percentage for fuzzy matching.",
             'minimum_wager_amount': "Sets the minimum wager amount (0-1000).",
             'max_wager_amount': "Sets the maximum wager amount (0-1000).",
             'top_n_games': "Sets the number of top games to consider.",
+            'nfl_model_on': "Toggle the NFL model on or off.",
+            'nfl_minimum_wager_amount': "Sets the minimum wager amount for NFL (0-1000).",
+            'nfl_max_wager_amount': "Sets the maximum wager amount for NFL (0-1000).",
+            'nfl_top_n_games': "Sets the number of most confident NFL games to consider.",
+            'nfl_kelly_fraction_multiplier': "Sets the multiplier for the fractional kelly criterion.",
+            'nfl_edge_threshold': "Sets the minimum betting edge threshold for NFL.",
+            'nfl_max_bet_percentage': "Sets the maximum bet percentage of total bankroll for NFL."
         }
+
         self.setup_keybindings()
         self.cursor_position = 0
         self.update_view()
@@ -90,7 +98,14 @@ class ModelParamsTUI:
                     fuzzy_match_percentage = %s,
                     minimum_wager_amount = %s,
                     max_wager_amount = %s,
-                    top_n_games = %s
+                    top_n_games = %s,
+                    nfl_model_on = %s,
+                    nfl_minimum_wager_amount = %s,
+                    nfl_max_wager_amount = %s,
+                    nfl_top_n_games = %s,
+                    nfl_kelly_fraction_multiplier = %s,
+                    nfl_edge_threshold = %s,
+                    nfl_max_bet_percentage = %s
                 WHERE id = %s
                 """, (
                     self.params['model_on'],
@@ -99,6 +114,13 @@ class ModelParamsTUI:
                     self.params['minimum_wager_amount'],
                     self.params['max_wager_amount'],
                     self.params['top_n_games'],
+                    self.params['nfl_model_on'],
+                    self.params['nfl_minimum_wager_amount'],
+                    self.params['nfl_max_wager_amount'],
+                    self.params['nfl_top_n_games'],
+                    self.params['nfl_kelly_fraction_multiplier'],
+                    self.params['nfl_edge_threshold'],
+                    self.params['nfl_max_bet_percentage'],
                     self.miner_id
                 ))
             conn.commit()
