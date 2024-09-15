@@ -10,7 +10,17 @@ import os
 import time
 
 class DatabaseManager:
-    def __init__(self, db_name, db_user, db_password, db_host='localhost', db_port=5432, max_connections=10):
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(DatabaseManager, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self, db_name, db_user, db_password, db_host='localhost', db_port=5432, max_connections=25):
+        if self._initialized:
+            return
         self.db_name = db_name
         self.db_user = db_user
         self.db_password = db_password
@@ -31,6 +41,7 @@ class DatabaseManager:
         self.create_tables()
         bt.logging.debug("DatabaseManager initialization complete")
         self.remove_default_rows()
+        self._initialized = True
 
     def check_root_user(self):
         return self.db_user == 'root'

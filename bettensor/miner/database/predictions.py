@@ -239,7 +239,20 @@ class PredictionsHandler:
                 bt.logging.info(f"Updated prediction {prediction.predictionID} outcome to {new_outcome}")
                 
                 self.update_prediction_outcome(prediction.predictionID, new_outcome)
-                updated_predictions[prediction.predictionID] = prediction._replace(outcome=new_outcome)
+                updated_predictions[prediction.predictionID] = TeamGamePrediction(
+                    predictionID=prediction.predictionID,
+                    teamGameID=prediction.teamGameID,
+                    minerID=prediction.minerID,
+                    predictionDate=prediction.predictionDate,
+                    predictedOutcome=prediction.predictedOutcome,
+                    teamA=prediction.teamA,
+                    teamB=prediction.teamB,
+                    wager=prediction.wager,
+                    teamAodds=prediction.teamAodds,
+                    teamBodds=prediction.teamBodds,
+                    tieOdds=prediction.tieOdds,
+                    outcome=new_outcome
+                )
                 
                 # Calculate earnings
                 self._calculate_earnings(prediction, game)
