@@ -4,7 +4,7 @@ import bettensor as bt
 import torch as t
 import sqlite3
 from datetime import datetime, timedelta
-
+from typing import List, Tuple, Dict
 
 #### MINER STATS ####
 
@@ -134,13 +134,77 @@ def initialize_new_miner(self, miner_uid: int):
     finally:
         conn.close()
 
-def update_miner_stats(self, miner_stats: dict):
+def update_miner_stats(self, miner_stats: Dict[int, Dict]):
     '''
     Updates the miner stats table in the database with the given miner stats, after a scoring run.
-    '''
-    #TODO: implement this method
     
-    pass
+    Args:
+    miner_stats (Dict[int, Dict]): A dictionary with miner UIDs as keys and their updated stats as values.
+    '''
+    conn = self.connect_db()
+    cursor = conn.cursor()
+
+    try:
+        for miner_uid, stats in miner_stats.items():
+            cursor.execute("""
+                UPDATE miner_stats
+                SET miner_status = ?,
+                    miner_cash = ?,
+                    miner_current_incentive = ?,
+                    miner_current_tier = ?,
+                    miner_current_scoring_window = ?,
+                    miner_current_composite_score = ?,
+                    miner_current_sharpe_ratio = ?,
+                    miner_current_sortino_ratio = ?,
+                    miner_current_roi = ?,
+                    miner_current_clv_avg = ?,
+                    miner_last_prediction_date = ?,
+                    miner_lifetime_earnings = miner_lifetime_earnings + ?,
+                    miner_lifetime_wager_amount = miner_lifetime_wager_amount + ?,
+                    miner_lifetime_profit = miner_lifetime_profit + ?,
+                    miner_lifetime_predictions = miner_lifetime_predictions + ?,
+                    miner_lifetime_wins = miner_lifetime_wins + ?,
+                    miner_lifetime_losses = miner_lifetime_losses + ?,
+                    miner_win_loss_ratio = CASE 
+                        WHEN (miner_lifetime_wins + ?) > 0 THEN 
+                            (miner_lifetime_wins + ?) * 1.0 / NULLIF((miner_lifetime_losses + ?), 0)
+                        ELSE 0 
+                    END
+                WHERE miner_uid = ?
+            """, (
+                stats['status'],
+                stats['cash'],
+                stats['current_incentive'],
+                stats['current_tier'],
+                stats['current_scoring_window'],
+                stats['current_composite_score'],
+                stats['current_sharpe_ratio'],
+                stats['current_sortino_ratio'],
+                stats['current_roi'],
+                stats['current_clv_avg'],
+                stats['last_prediction_date'],
+                stats['earnings'],
+                stats['wager_amount'],
+                stats['profit'],
+                stats['predictions'],
+                stats['wins'],
+                stats['losses'],
+                stats['wins'],
+                stats['wins'],
+                stats['losses'],
+                miner_uid
+            ))
+        
+        conn.commit()
+        bt.logging.info(f"Successfully updated miner stats for {len(miner_stats)} miners.")
+    except Exception as e:
+        bt.logging.error(f"Error updating miner stats: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+
 
 
 #### PREDICTIONS ####
@@ -228,7 +292,7 @@ def fetch_closing_line_odds(self):
         #insert the games into the closing_line_odds table
         for game in games:
             cursor.execute("""
-                INSERT INTO closing_line_odds (game_id, team_a_odds, team_b_odds, tie_odds, event_start_date)
+                INSERT OR REPLACE INTO closing_line_odds (game_id, team_a_odds, team_b_odds, tie_odds, event_start_date)
                 VALUES (?, ?, ?, ?, ?)
             """, game)
         conn.commit()
@@ -246,57 +310,113 @@ def fetch_closing_line_odds(self):
 
 ### RUN ALL PREPROCESSING FUNCTIONS ####
 
-def preprocess_for_scoring(self, date: str):
+def preprocess_for_scoring(self, date: str) -> Tuple[List[t.Tensor], t.Tensor, t.Tensor]:
     '''
-    Preprocesses all data needed for scoring. Takes a date as input and returns the necessary tensors for scoring.
+    Preprocesses all data needed for scoring. Takes a date as input and returns the necessary data for scoring.
     '''
-    conn = sqlite3.connect(self.db_path)
-    cursor = conn.cursor()
+    try:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
 
-    # Fetch predictions for the given date
-    cursor.execute("""
-        SELECT miner_uid, game_id, predicted_outcome, predicted_odds, wager
-        FROM predictions
-        WHERE DATE(prediction_date) = DATE(?)
-    """, (date,))
-    predictions_data = cursor.fetchall()
+        # Validate input date
+        try:
+            scoring_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise ValueError(f"Invalid date format. Expected YYYY-MM-DD, got {date}")
 
-    # Fetch games that have finished
-    cursor.execute("""
-        SELECT id, team_a_odds, team_b_odds, tie_odds, outcome
-        FROM game_data
-        WHERE DATE(event_start_date) = DATE(?) AND outcome != 'Unfinished'
-    """, (date,))
-    games_data = cursor.fetchall()
+        # Fetch predictions for the given date
+        cursor.execute("""
+            SELECT miner_uid, game_id, predicted_outcome, predicted_odds, wager
+            FROM predictions
+            WHERE DATE(prediction_date) = DATE(?)
+        """, (date,))
+        predictions_data = cursor.fetchall()
 
-    conn.close()
+        # Fetch games that have finished
+        cursor.execute("""
+            SELECT id, team_a_odds, team_b_odds, tie_odds, outcome
+            FROM game_data
+            WHERE DATE(event_start_date) = DATE(?) AND outcome IS NOT NULL
+        """, (date,))
+        games_data = cursor.fetchall()
 
-    # Create dictionaries for faster lookup
-    games_dict = {game[0]: game[1:] for game in games_data}
+        conn.close()
+
+        # Validate fetched data
+        if not predictions_data:
+            bt.logging.warning(f"No predictions found for date {date}")
+        if not games_data:
+            bt.logging.warning(f"No finished games found for date {date}")
+
+        # Process and validate game data
+        games_dict = self._process_game_data(games_data)
+
+        # Process and validate prediction data
+        miner_predictions = self._process_prediction_data(predictions_data, games_dict)
+
+        # Prepare data in the format expected by ScoringSystem
+        predictions, closing_line_odds, results = self._prepare_tensors(miner_predictions, games_dict)
+
+        return predictions, closing_line_odds, results
+
+    except Exception as e:
+        bt.logging.error(f"Error in preprocess_for_scoring: {str(e)}")
+        raise
+
+def _process_game_data(self, games_data: List[Tuple]) -> Dict[int, Tuple]:
+    games_dict = {}
+    for game in games_data:
+        game_id, team_a_odds, team_b_odds, tie_odds, outcome = game
+        
+        # Validate game data
+        if not all(isinstance(x, (int, float)) for x in [team_a_odds, team_b_odds, tie_odds]):
+            bt.logging.warning(f"Invalid odds for game {game_id}. Skipping.")
+            continue
+        
+        if outcome not in [0, 1, 2]:  # Assuming 0: team_a win, 1: team_b win, 2: tie
+            bt.logging.warning(f"Invalid outcome for game {game_id}. Skipping.")
+            continue
+        
+        games_dict[game_id] = (team_a_odds, team_b_odds, tie_odds, outcome)
+    
+    return games_dict
+
+def _process_prediction_data(self, predictions_data: List[Tuple], games_dict: Dict[int, Tuple]) -> Dict[int, List[Tuple]]:
     miner_predictions = {}
-
     for pred in predictions_data:
         miner_uid, game_id, predicted_outcome, predicted_odds, wager = pred
-        if game_id in games_dict:
-            if miner_uid not in miner_predictions:
-                miner_predictions[miner_uid] = []
-            miner_predictions[miner_uid].append((game_id, predicted_outcome, predicted_odds, wager))
+        
+        # Validate prediction data
+        if game_id not in games_dict:
+            bt.logging.warning(f"Prediction for non-existent game {game_id}. Skipping.")
+            continue
+        
+        if predicted_outcome not in [0, 1, 2]:
+            bt.logging.warning(f"Invalid predicted outcome for game {game_id}. Skipping.")
+            continue
+        
+        if not isinstance(predicted_odds, (int, float)) or predicted_odds <= 1:
+            bt.logging.warning(f"Invalid predicted odds for game {game_id}. Skipping.")
+            continue
+        
+        if not isinstance(wager, (int, float)) or wager <= 0:
+            bt.logging.warning(f"Invalid wager for game {game_id}. Skipping.")
+            continue
+        
+        if miner_uid not in miner_predictions:
+            miner_predictions[miner_uid] = []
+        miner_predictions[miner_uid].append((game_id, predicted_outcome, predicted_odds, wager))
+    
+    return miner_predictions
 
-    # Create tensors
-    num_miners = len(miner_predictions)
-    max_predictions = max(len(preds) for preds in miner_predictions.values())
+def _prepare_tensors(self, miner_predictions: Dict[int, List[Tuple]], games_dict: Dict[int, Tuple]) -> Tuple[List[t.Tensor], t.Tensor, t.Tensor]:
+    predictions = []
+    for miner_uid, preds in miner_predictions.items():
+        miner_tensor = t.tensor([[game_id, predicted_outcome, predicted_odds] for game_id, predicted_outcome, predicted_odds, _ in preds])
+        predictions.append(miner_tensor)
 
-    predictions_tensor = t.zeros((num_miners, max_predictions, 3))
-    closing_line_odds_tensor = t.zeros((len(games_dict), 2))
-    results_tensor = t.zeros(len(games_dict))
+    closing_line_odds = t.tensor([[game_id, game_data[0]] for game_id, game_data in games_dict.items()])
+    results = t.tensor([game_data[3] for game_data in games_dict.values()])
 
-    for i, (miner_uid, preds) in enumerate(miner_predictions.items()):
-        for j, (game_id, predicted_outcome, predicted_odds, wager) in enumerate(preds):
-            predictions_tensor[i, j] = t.tensor([float(game_id), float(predicted_outcome), predicted_odds])
-
-    for i, (game_id, (team_a_odds, team_b_odds, tie_odds, outcome)) in enumerate(games_dict.items()):
-        closing_line_odds_tensor[i] = t.tensor([float(game_id), team_a_odds])
-        results_tensor[i] = float(outcome)
-
-    return predictions_tensor, closing_line_odds_tensor, results_tensor
+    return predictions, closing_line_odds, results
 

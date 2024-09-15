@@ -17,24 +17,38 @@ import numpy as np
 import torch as t
 import logging
 from bettensor.validator.utils.scoring.scoring_data import get_closed_predictions_for_day, get_closed_games_for_day
+from typing import List, Tuple
+from datetime import datetime, timezone
 
 
 class ScoringSystem:
     def __init__(self, num_miners=256, max_days=45):
-        self.num_miners = num_miners
-        self.max_days = max_days
+
+        self.num_miners = num_miners # we'll just initialize this with the maximum slots for the subnet, with the assumption that we'll always have validators taking 10-20 slots. 
+        self.max_days = max_days #maximum scoring window is 45 days. 
         
         # Fixed size tensors for active miners
+
+        #Score Component Tensors up to max_days length, which is the maximum scoring window. These operate like a circular buffer, tracking the history over max_days. 
         self.clv_scores = t.zeros(num_miners, max_days)
         self.sortino_scores = t.zeros(num_miners, max_days)
         self.sharpe_scores = t.zeros(num_miners, max_days)
+        self.returns = t.zeros(num_miners, max_days, 2) # 0 is amount bet, 1 is amount won 
         self.roi_scores = t.zeros(num_miners, max_days)
+        
         self.entropy_scores = t.zeros(num_miners, max_days)
-        self.num_predictions = t.zeros(num_miners, max_days, dtype=t.int)
-        self.tiers = t.ones(num_miners, dtype=t.int)  # All miners start in tier 1
         self.composite_scores = t.zeros(num_miners,max_days)
-        self.tier_history = t.ones(num_miners, max_days, dtype=t.int)
-        self.returns = t.zeros(num_miners, max_days, 2) # 0 is amount bet, 1 is amount won
+        
+
+        # Change num_predictions to amount_wagered
+        self.amount_wagered = t.zeros(num_miners, max_days)
+
+        self.tiers = t.ones(num_miners, dtype=t.int)  # All miners start in tier 1
+        
+        self.tier_history = t.ones(num_miners, max_days, dtype=t.int) # 45 day history of tiers. 
+
+
+        
 
 
 
@@ -49,55 +63,151 @@ class ScoringSystem:
         self.entropy_weight = 0.25
         self.entropy_window = 30
 
-        # Tier configurations
+        # Update tier configurations
         self.tier_configs = [
-            {'window': 3, 'min_predictions': 0, 'capacity': int(num_miners * 1.0), 'incentive': 0.1},
-            {'window': 7, 'min_predictions': 10, 'capacity': int(num_miners * 0.2), 'incentive': 0.15},
-            {'window': 15, 'min_predictions': 30, 'capacity': int(num_miners * 0.2), 'incentive': 0.2},
-            {'window': 30, 'min_predictions': 65, 'capacity': int(num_miners * 0.1), 'incentive': 0.25},
-            {'window': 45, 'min_predictions': 100, 'capacity': int(num_miners * 0.05), 'incentive': 0.3}
+            {'window': 3, 'min_wager': 0, 'capacity': int(num_miners * 1.0), 'incentive': 0.1},
+            {'window': 7, 'min_wager': 4000, 'capacity': int(num_miners * 0.2), 'incentive': 0.15},
+            {'window': 15, 'min_wager': 10000, 'capacity': int(num_miners * 0.2), 'incentive': 0.2},
+            {'window': 30, 'min_wager': 20000, 'capacity': int(num_miners * 0.1), 'incentive': 0.25},
+            {'window': 45, 'min_wager': 35000, 'capacity': int(num_miners * 0.05), 'incentive': 0.3}
         ]
 
+        # Change predictions storage to handle variable-length data
+        self.daily_predictions = [[] for _ in range(max_days)]  # List of lists to store daily predictions
 
-    def update_daily_scores(self, day: int, predictions: t.Tensor, closing_line_odds: t.Tensor, results: t.Tensor, debug: bool = True):
+        self.last_update_date = None  # Store the date of the last update
+
+    def _get_current_date(self):
+        """Get the current date in UTC."""
+        return datetime.now(timezone.utc).date()
+
+    def _should_shift(self, current_date):
+        """Check if we should shift the tensors based on the current date."""
+        if self.last_update_date is None:
+            return False
+        return current_date > self.last_update_date
+
+    def _shift_tensors(self):
+        """Shift all score tensors to the left by one position."""
+        self.clv_scores = t.roll(self.clv_scores, shifts=-1, dims=1)
+        self.sortino_scores = t.roll(self.sortino_scores, shifts=-1, dims=1)
+        self.sharpe_scores = t.roll(self.sharpe_scores, shifts=-1, dims=1)
+        self.returns = t.roll(self.returns, shifts=-1, dims=1)
+        self.roi_scores = t.roll(self.roi_scores, shifts=-1, dims=1)
+        self.entropy_scores = t.roll(self.entropy_scores, shifts=-1, dims=1)
+        self.composite_scores = t.roll(self.composite_scores, shifts=-1, dims=1)
+        self.amount_wagered = t.roll(self.amount_wagered, shifts=-1, dims=1)
+        self.tier_history = t.roll(self.tier_history, shifts=-1, dims=1)
+
+    def update_daily_scores(self, predictions: List[t.Tensor], closing_line_odds: t.Tensor, results: t.Tensor, debug: bool = True):
         """
         Updates the daily scores for all miners.
         
         Args:
-        day: The current day index
-        predictions: Tensor of shape (num_miners, num_predictions, 3) where the last dimension contains
+        predictions: List of tensors, each of shape (num_predictions, 3) where the last dimension contains
                      [game_id, prediction, submitted_odds]
         closing_line_odds: Tensor of shape (num_games, 2) where the last dimension contains
                            [game_id, closing_odds]
         results: Tensor of shape (num_games,) containing the actual results (0 or 1)
         debug: If True, perform input validation checks (default: True)
         """
+        current_date = self._get_current_date()
+        
         if debug:
-            if not isinstance(day, int) or day < 0 or day >= self.max_days:
-                raise ValueError(f"day must be an integer between 0 and {self.max_days-1}")
-            if not isinstance(predictions, t.Tensor) or predictions.dim() != 3 or predictions.size(2) != 3:
-                raise ValueError("predictions must be a 3D tensor with shape (num_miners, num_predictions, 3)")
-            if not isinstance(closing_line_odds, t.Tensor) or closing_line_odds.dim() != 2 or closing_line_odds.size(1) != 2:
-                raise ValueError("closing_line_odds must be a 2D tensor with shape (num_games, 2)")
-            if not isinstance(results, t.Tensor) or results.dim() != 1:
-                raise ValueError("results must be a 1D tensor")
+            self._validate_inputs(predictions, closing_line_odds, results)
 
-        self.logger.info(f"Updating daily scores for day {day}")
+        self.logger.info(f"Updating daily scores for date {current_date}")
         
         try:
-            self.clv_scores[:, day] = self.calculate_clv(predictions, closing_line_odds, debug=debug)
-            self.roi_scores[:, day] = self.calculate_roi(predictions, results, debug=debug)
-            self.sharpe_scores[:, day] = self.calculate_sharpe(self.roi_scores[:, :day+1], debug=debug)
-            self.sortino_scores[:, day] = self.calculate_sortino(self.roi_scores[:, :day+1], debug=debug)
-            self.num_predictions[:, day] = self.count_predictions(predictions, debug=debug)
+            if not predictions or closing_line_odds.numel() == 0 or results.numel() == 0:
+                self.logger.warning(f"No valid data for scoring on date {current_date}")
+                return
+
+            if self._should_shift(current_date):
+                self._shift_tensors()
+                self.last_update_date = current_date
+            
+            self.daily_predictions[-1] = predictions
+            
+            new_clv_scores = self._update_clv(predictions, closing_line_odds)
+            new_roi_scores = self._update_roi(predictions, results)
+            new_sharpe_scores = self._update_sharpe()
+            new_sortino_scores = self._update_sortino()
+            new_amount_wagered = self._calculate_amount_wagered(predictions)
+            
+            # Update the last position of each tensor
+            self.clv_scores[:, -1] = new_clv_scores
+            self.roi_scores[:, -1] = new_roi_scores
+            self.sharpe_scores[:, -1] = new_sharpe_scores
+            self.sortino_scores[:, -1] = new_sortino_scores
+            self.amount_wagered[:, -1] = new_amount_wagered
+            
+            # Update composite scores
+            new_composite_scores = self._update_composite_scores()
+            self.composite_scores[:, -1] = new_composite_scores
+
+            # Update tier history
+            self.tier_history[:, -1] = self.tiers
+
         except Exception as e:
-            self.logger.error(f"Error updating scores for day {day}: {str(e)}")
+            self.logger.error(f"Error updating scores for date {current_date}: {str(e)}")
             raise
         
-        self.logger.info(f"Daily scores updated for day {day}")
-        self.log_score_summary(day)
+        self.logger.info(f"Daily scores updated for date {current_date}")
+        self.log_score_summary()
 
+    def _validate_inputs(self, predictions: List[t.Tensor], closing_line_odds: t.Tensor, results: t.Tensor):
+        if not isinstance(predictions, list) or not all(isinstance(p, t.Tensor) and p.dim() == 2 and p.size(1) == 3 for p in predictions):
+            raise ValueError("predictions must be a list of 2D tensors with shape (num_predictions, 3)")
+        if not isinstance(closing_line_odds, t.Tensor) or closing_line_odds.dim() != 2 or closing_line_odds.size(1) != 2:
+            raise ValueError("closing_line_odds must be a 2D tensor with shape (num_games, 2)")
+        if not isinstance(results, t.Tensor) or results.dim() != 1:
+            raise ValueError("results must be a 1D tensor")
 
+    def _update_clv(self, predictions: List[t.Tensor], closing_line_odds: t.Tensor) -> t.Tensor:
+        clv_scores = t.zeros(self.num_miners)
+        for i, miner_predictions in enumerate(predictions):
+            if miner_predictions.size(0) > 0:
+                submitted_odds = miner_predictions[:, 2]
+                game_ids = miner_predictions[:, 0].long()
+                closing_odds = closing_line_odds[game_ids, 1]
+                clv = (1 / submitted_odds - 1 / closing_odds) * 100
+                clv_scores[i] = clv.mean()
+        return clv_scores
+
+    def _update_roi(self, predictions: List[t.Tensor], results: t.Tensor) -> t.Tensor:
+        roi_scores = t.zeros(self.num_miners)
+        for i, miner_predictions in enumerate(predictions):
+            if miner_predictions.size(0) > 0:
+                game_ids = miner_predictions[:, 0].long()
+                miner_predictions = miner_predictions[:, 1]
+                submitted_odds = miner_predictions[:, 2]
+                prediction_results = results[game_ids]
+                returns = t.where(prediction_results == miner_predictions, submitted_odds - 1, -1)
+                roi_scores[i] = returns.mean()
+        return roi_scores
+
+    def _update_sharpe(self) -> t.Tensor:
+        returns = self.roi_scores
+        return (returns.mean(dim=1) / returns.std(dim=1)).nan_to_num(0)
+
+    def _update_sortino(self) -> t.Tensor:
+        returns = self.roi_scores
+        negative_returns = t.where(returns < 0, returns, t.zeros_like(returns))
+        downside_deviation = t.sqrt((negative_returns ** 2).mean(dim=1))
+        return (returns.mean(dim=1) / downside_deviation).nan_to_num(0)
+
+    def _calculate_amount_wagered(self, predictions: List[t.Tensor]) -> t.Tensor:
+        return t.tensor([p.size(0) for p in predictions]).float()
+
+    def _update_composite_scores(self) -> t.Tensor:
+        return (
+            self.clv_scores.mean(dim=1) * self.clv_weight +
+            self.roi_scores.mean(dim=1) * self.roi_weight +
+            self.sharpe_scores.mean(dim=1) * self.ssi_weight +
+            self.sortino_scores.mean(dim=1) * self.ssi_weight +
+            self.entropy_scores.mean(dim=1) * self.entropy_weight
+        )
 
     def calculate_composite_scores(self):
         """
@@ -120,167 +230,6 @@ class ScoringSystem:
         
         return composite_scores
 
-    def calculate_clv(self, predictions: t.Tensor, closing_line_odds: t.Tensor, debug: bool = True) -> t.Tensor:
-        """
-        Calculate Closing Line Value (CLV) for all miners.
-        
-        Args:
-        predictions: Tensor of shape (num_miners, num_predictions, 3) where the last dimension contains
-                     [game_id, prediction, submitted_odds]
-        closing_line_odds: Tensor of shape (num_games, 2) where the last dimension contains
-                           [game_id, closing_odds]
-        debug: If True, perform input validation checks (default: True)
-        
-        Returns:
-        Tensor of shape (num_miners,) containing the average CLV for each miner
-        """
-        if debug:
-            if not isinstance(predictions, t.Tensor) or not isinstance(closing_line_odds, t.Tensor):
-                raise TypeError("Both predictions and closing_line_odds must be PyTorch tensors")
-            
-            if predictions.dim() != 3 or predictions.size(2) != 3:
-                raise ValueError("predictions must have shape (num_miners, num_predictions, 3)")
-            
-            if closing_line_odds.dim() != 2 or closing_line_odds.size(1) != 2:
-                raise ValueError("closing_line_odds must have shape (num_games, 2)")
-            
-            if predictions[:, :, 0].long().max() >= closing_line_odds.size(0):
-                raise ValueError("Game ID in predictions is out of range for closing_line_odds")
-        
-        submitted_odds = predictions[:, :, 2]
-        game_ids = predictions[:, :, 0].long()
-        
-        closing_odds = closing_line_odds[game_ids]
-        clv = (1 / submitted_odds - 1 / closing_odds) * 100
-        
-        return clv.mean(dim=1)
-
-    def calculate_roi(self, predictions: t.Tensor, results: t.Tensor, debug: bool = True) -> t.Tensor:
-        """
-        Calculate Return on Investment (ROI) for all miners.
-        
-        Args:
-        predictions: Tensor of shape (num_miners, num_predictions, 3) where the last dimension contains
-                     [game_id, prediction, submitted_odds]
-        results: Tensor of shape (num_games,) containing the actual results (0 or 1)
-        debug: If True, perform input validation checks (default: True)
-        
-        Returns:
-        Tensor of shape (num_miners,) containing the ROI for each miner
-        """
-        if debug:
-            if not isinstance(predictions, t.Tensor) or not isinstance(results, t.Tensor):
-                raise TypeError("Both predictions and results must be PyTorch tensors")
-            
-            if predictions.dim() != 3 or predictions.size(2) != 3:
-                raise ValueError("predictions must have shape (num_miners, num_predictions, 3)")
-            
-            if results.dim() != 1:
-                raise ValueError("results must be a 1-dimensional tensor")
-            
-            if predictions[:, :, 0].long().max() >= results.size(0):
-                raise ValueError("Game ID in predictions is out of range for results")
-        
-        game_ids = predictions[:, :, 0].long()
-        miner_predictions = predictions[:, :, 1]
-        submitted_odds = predictions[:, :, 2]
-        
-        prediction_results = results[game_ids]
-        returns = t.where(prediction_results == miner_predictions, submitted_odds - 1, -1)
-        
-        total_returns = returns.sum(dim=1)
-        num_bets = (submitted_odds > 0).sum(dim=1)
-        
-        roi = t.where(num_bets > 0, total_returns / num_bets, t.zeros_like(total_returns))
-        
-        return roi
-
-    def calculate_sharpe(self, daily_returns: t.Tensor, risk_free_rate: float = 0.0, debug: bool = True) -> t.Tensor:
-        """
-        Calculate Sharpe Ratio for all miners.
-        
-        Args:
-        daily_returns: Tensor of shape (num_miners, num_days) containing daily returns
-        risk_free_rate: The risk-free rate of return (default: 0.0)
-        debug: If True, perform input validation checks (default: True)
-        
-        Returns:
-        Tensor of shape (num_miners,) containing the Sharpe Ratio for each miner
-        """
-        if debug:
-            if not isinstance(daily_returns, t.Tensor):
-                raise TypeError("daily_returns must be a PyTorch tensor")
-            
-            if daily_returns.dim() != 2:
-                raise ValueError("daily_returns must have shape (num_miners, num_days)")
-            
-            if not isinstance(risk_free_rate, (int, float)):
-                raise TypeError("risk_free_rate must be a number")
-        
-        excess_returns = daily_returns - risk_free_rate
-        mean_excess_returns = excess_returns.mean(dim=1)
-        std_excess_returns = excess_returns.std(dim=1)
-        
-        sharpe_ratio = t.where(std_excess_returns != 0, 
-                               mean_excess_returns / std_excess_returns,
-                               t.zeros_like(mean_excess_returns))
-        
-        return sharpe_ratio
-
-    def calculate_sortino(self, daily_returns: t.Tensor, risk_free_rate: float = 0.0, debug: bool = True) -> t.Tensor:
-        """
-        Calculate Sortino Ratio for all miners.
-        
-        Args:
-        daily_returns: Tensor of shape (num_miners, num_days) containing daily returns
-        risk_free_rate: The risk-free rate of return (default: 0.0)
-        debug: If True, perform input validation checks (default: True)
-        
-        Returns:
-        Tensor of shape (num_miners,) containing the Sortino Ratio for each miner
-        """
-        if debug:
-            if not isinstance(daily_returns, t.Tensor):
-                raise TypeError("daily_returns must be a PyTorch tensor")
-            
-            if daily_returns.dim() != 2:
-                raise ValueError("daily_returns must have shape (num_miners, num_days)")
-            
-            if not isinstance(risk_free_rate, (int, float)):
-                raise TypeError("risk_free_rate must be a number")
-        
-        excess_returns = daily_returns - risk_free_rate
-        mean_excess_returns = excess_returns.mean(dim=1)
-        
-        negative_returns = t.where(excess_returns < 0, excess_returns, t.zeros_like(excess_returns))
-        downside_deviation = t.sqrt((negative_returns ** 2).mean(dim=1))
-        
-        sortino_ratio = t.where(downside_deviation != 0, 
-                                mean_excess_returns / downside_deviation,
-                                t.zeros_like(mean_excess_returns))
-        
-        return sortino_ratio
-
-    def count_predictions(self, predictions: t.Tensor, debug: bool = True) -> t.Tensor:
-        """
-        Count the number of predictions for each miner.
-        
-        Args:
-        predictions: Tensor of shape (num_miners, num_predictions, 3)
-        debug: If True, perform input validation checks (default: True)
-        
-        Returns:
-        Tensor of shape (num_miners,) containing the count of predictions for each miner
-        """
-        if debug:
-            if not isinstance(predictions, t.Tensor):
-                raise TypeError("predictions must be a PyTorch tensor")
-            
-            if predictions.dim() != 3 or predictions.size(2) != 3:
-                raise ValueError("predictions must have shape (num_miners, num_predictions, 3)")
-        
-        return (predictions[:, :, 2] > 0).sum(dim=1)
-
     def reset_miner(self, miner_uid: int):
         """
         Initialize a new miner, replacing any existing miner at the same UID. This should be called when the validator discovers a new miner in the metagraph.
@@ -290,10 +239,13 @@ class ScoringSystem:
         self.sortino_scores[miner_uid] = 0
         self.sharpe_scores[miner_uid] = 0
         self.roi_scores[miner_uid] = 0
-        self.num_predictions[miner_uid] = 0
+        self.amount_wagered[miner_uid] = 0
+        self.composite_scores[miner_uid] = 0
+        self.entropy_scores[miner_uid] = 0
         
         # Set miner to tier 1
         self.tiers[miner_uid] = 1
+        self.tier_history[miner_uid] = 1
 
     def calculate_composite_score(self, miner_uid: int, window: int) -> float:
         """
@@ -334,24 +286,19 @@ class ScoringSystem:
         # Calculate composite scores for all miners
         composite_scores = self.calculate_composite_scores()
 
-        # Calculate prediction counts for all miners and tiers at once
-        # This creates a tensor of shape (num_miners, num_tiers)
-        prediction_counts = t.stack([
-            self.num_predictions[:, -config['window']:].sum(dim=1)
+        # Calculate wager amounts for all miners and tiers at once
+        wager_amounts = t.stack([
+            self.amount_wagered[:, -config['window']:].sum(dim=1)
             for config in self.tier_configs
         ], dim=1)
 
-        # Create a tensor of minimum prediction requirements for each tier
-        min_predictions = t.tensor([config['min_predictions'] for config in self.tier_configs])
+        # Create a tensor of minimum wager requirements for each tier
+        min_wagers = t.tensor([config['min_wager'] for config in self.tier_configs])
 
-        # Check minimum prediction requirements for all tiers simultaneously
-        # This creates a boolean mask of shape (num_miners, num_tiers)
-        # where True indicates the miner doesn't meet the minimum predictions for that tier
-        demotion_mask = prediction_counts < min_predictions.unsqueeze(0)
+        # Check minimum wager requirements for all tiers simultaneously
+        demotion_mask = wager_amounts < min_wagers.unsqueeze(0)
 
         # Identify miners eligible for demotion
-        # These are miners who are not in the lowest tier (tier > 1)
-        # and don't meet the minimum predictions for their current tier
         demotion_candidates = t.where((current_tiers > 1) & demotion_mask[current_tiers - 1])[0]
 
         # Process each demotion candidate
@@ -403,11 +350,11 @@ class ScoringSystem:
             tier_mask = current_tiers == tier
             next_tier = tier + 1
             window = self.tier_configs[next_tier - 1]['window']
-            min_predictions = self.tier_configs[next_tier - 1]['min_predictions']
+            min_wager = self.tier_configs[next_tier - 1]['min_wager']
             
-            # Check minimum prediction requirement
-            prediction_counts = self.num_predictions[:, -window:].sum(dim=1)
-            eligible_mask = (prediction_counts >= min_predictions) & tier_mask
+            # Check minimum wager requirement
+            wager_amounts = self.amount_wagered[:, -window:].sum(dim=1)
+            eligible_mask = (wager_amounts >= min_wager) & tier_mask
             
             # Check if next tier is at capacity
             next_tier_count = (current_tiers == next_tier).sum()
@@ -525,8 +472,12 @@ class ScoringSystem:
         '''
 
         #TODO: preprocess data (scoring_data.py)
+        # Get tensors of miner predictions, closing line odds, and results for a given day. 
+
+
 
         #TODO: calculate component score updates with new predictions
+        # CLV, ROI, SSI, Entropy over the appropriate windows.
 
         #TODO: calculate composite score updates 
 
