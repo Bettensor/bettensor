@@ -254,9 +254,6 @@ class PredictionsHandler:
                     outcome=new_outcome
                 )
                 
-                # Calculate earnings
-                self._calculate_earnings(prediction, game)
-        
         return updated_predictions
 
     def process_game_outcome(self, prediction: TeamGamePrediction, game_data: TeamGame) -> Optional[TeamGamePrediction]:
