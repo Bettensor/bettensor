@@ -10,13 +10,13 @@ import os
 
 from .api_client import APIClient
 from .bettensor_api import BettensorAPIClient
+from .scoring.entropy_system import EntropySystem
 
 from .api_client import APIClient
 from .bettensor_api import BettensorAPIClient
 
 
 class SportsData:
-    def __init__(self, db_name="data/validator.db", use_bt_api=False):
     def __init__(self, db_name="data/validator.db", use_bt_api=False):
         self.db_name = db_name
         self.use_bt_api = use_bt_api
@@ -35,8 +35,8 @@ class SportsData:
             "baseball": "api-baseball.p.rapidapi.com",
             "soccer": "api-football-v1.p.rapidapi.com",
             "nfl": "api.b365api.com"
-            "nfl": "api.b365api.com"
         }
+        self.entropy_system = EntropySystem(max_capacity=256, max_days=45)
 
     def create_database(self):
         conn = sqlite3.connect(self.db_name)
@@ -86,7 +86,7 @@ class SportsData:
                     teamAodds,
                     teamBodds,
                     tieOdds,
-                    datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                     externalId,
                 ),
             )
@@ -98,7 +98,7 @@ class SportsData:
                 (
                     teamAodds,
                     teamBodds,
-                    datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                     externalId,
                 ),
             )
@@ -176,7 +176,7 @@ class SportsData:
             team_b = game['away']
             sport = game['sport']
             league = game['league']
-            create_date = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+            create_date = datetime.now(timezone.utc).isoformat()
             last_update_date = create_date
             event_start_date = game['date']
             active = 1
@@ -215,6 +215,24 @@ class SportsData:
         conn.close()
         bt.logging.info(f"Inserted or updated {len(games)} games in the database")
 
+        # After inserting/updating games, update entropy scores
+        game_data = self.prepare_game_data_for_entropy(games)
+        self.entropy_system.update_ebdr_scores(game_data)
+
+    def prepare_game_data_for_entropy(self, games):
+        game_data = []
+        for game in games:
+            game_data.append({
+                'id': game['id'],
+                'predictions': {},  # No predictions yet for new games
+                'current_odds': [
+                    game['odds']['average_home_odds'],
+                    game['odds']['average_away_odds'],
+                    game['odds'].get('average_tie_odds', 0.0)
+                ]
+            })
+        return game_data
+
     def get_game_data(self, sport, league="1", season="2024"):
         bt.logging.trace(f"Getting game data for sport: {sport}, league: {league}, season: {season}")
         
@@ -255,40 +273,7 @@ class SportsData:
 
         return filtered_games
 
-        if self.use_bt_api:
-            bt.logging.info("Fetching games from BettensorAPI. This will take a while on first run.")
-            games = self.bettensor_api_client.get_games()
-            if games:
-                all_games = [self.bettensor_api_client.transform_game_data(game) for game in games]
-            else:
-                bt.logging.info("No games to update.")
-        else:
-            for sport, leagues in sports_config.items():
-                for league_info in leagues:
-                    league = league_info['id']
-                    season = league_info.get('season', '2024')
-                    try:
-                        if sport == "nfl":
-                            games = self.api_client.process_nfl_games()
-                        else:
-                            games = self.get_game_data(sport=sport, league=league, season=season)
-                        all_games.extend(games)
-                        
-                        # Insert or update games in the database
-                        self.insert_or_update_games(games)
-                        
-                    except Exception as e:
-                        bt.logging.error(f"Error fetching data for {sport}, league {league}: {e}")
-
-
-        bt.logging.debug(f"Initially fetched {len(all_games)} games")
         
-        filtered_games = self.filter_games(all_games)
-
-        bt.logging.info(f"Filtered {len(all_games) - len(filtered_games)} games out of {len(all_games)} total games")
-        self.all_games = filtered_games
-
-        return filtered_games
 
     def filter_games(self, games):
         return [
@@ -313,7 +298,7 @@ class SportsData:
             team_b = game['away']
             sport = game['sport']
             league = game['league']
-            create_date = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+            create_date = datetime.now(timezone.utc).isoformat()
             last_update_date = create_date
             event_start_date = game['date']
             active = 1
@@ -352,6 +337,24 @@ class SportsData:
         conn.close()
         bt.logging.info(f"Inserted or updated {len(games)} games in the database")
 
+        # After inserting/updating games, update entropy scores
+        game_data = self.prepare_game_data_for_entropy(games)
+        self.entropy_system.update_ebdr_scores(game_data)
+
+    def prepare_game_data_for_entropy(self, games):
+        game_data = []
+        for game in games:
+            game_data.append({
+                'id': game['id'],
+                'predictions': {},  # No predictions yet for new games
+                'current_odds': [
+                    game['odds']['average_home_odds'],
+                    game['odds']['average_away_odds'],
+                    game['odds'].get('average_tie_odds', 0.0)
+                ]
+            })
+        return game_data
+
     def get_game_data(self, sport, league="1", season="2024"):
         bt.logging.trace(f"Getting game data for sport: {sport}, league: {league}, season: {season}")
         
@@ -391,7 +394,6 @@ class SportsData:
         self.insert_or_update_games(filtered_games)
 
         return filtered_games
-
 
     def get_upcoming_events(self):
         url = f"https://api.b365api.com/v1/bet365/upcoming?sport_id=12&token={self.bet365_api_key}"

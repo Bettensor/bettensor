@@ -21,9 +21,10 @@ import concurrent.futures
 import math
 import numpy as np
 import torch
-from bettensor.utils.weights_functions import WeightSetter
-from bettensor.utils.api_client import APIClient
+from bettensor.validator.utils.weights_functions import WeightSetter
+from bettensor.validator.utils.api_client import APIClient
 from bettensor.validator.utils.sports_data import SportsData
+from .utils.scoring.entropy_system import EntropySystem
 
 # Get the current file's directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -276,6 +277,9 @@ class BettensorValidator(BaseNeuron):
         )
 
         self.weight_setter.update_all_daily_stats()
+
+        self.entropy_system = EntropySystem(max_capacity=self.max_targets, max_days=45)
+
         return True
 
     def _parse_args(self, parser):
@@ -447,6 +451,51 @@ class BettensorValidator(BaseNeuron):
         # Commit changes and close the connection
         conn.commit()
         conn.close()
+
+        # After inserting predictions, update entropy scores
+        game_data = self.prepare_game_data_for_entropy(predictions)
+        self.entropy_system.update_ebdr_scores(game_data)
+
+    def prepare_game_data_for_entropy(self, predictions):
+        game_data = []
+        for game_id, game_predictions in predictions.items():
+            current_odds = self.get_current_odds(game_id)
+            game_data.append({
+                'id': game_id,
+                'predictions': game_predictions,
+                'current_odds': current_odds
+            })
+        return game_data
+
+    def get_current_odds(self, game_id):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Query to fetch the current odds for the given game_id
+            query = """
+            SELECT team_a_odds, team_b_odds, tie_odds
+            FROM game_data
+            WHERE id = ? OR external_id = ?
+            """
+            
+            cursor.execute(query, (game_id, game_id))
+            result = cursor.fetchone()
+
+            if result:
+                home_odds, away_odds, tie_odds = result
+                return [home_odds, away_odds, tie_odds]
+            else:
+                bt.logging.warning(f"No odds found for game_id: {game_id}")
+                return [0.0, 0.0, 0.0]  # Return default values if no odds are found
+
+        except sqlite3.Error as e:
+            bt.logging.error(f"Database error in get_current_odds: {e}")
+            return [0.0, 0.0, 0.0]  # Return default values in case of database error
+
+        finally:
+            if conn:
+                conn.close()
 
     def connect_db(self):
         """connects to the sqlite database"""
@@ -848,18 +897,23 @@ class BettensorValidator(BaseNeuron):
             bt.logging.error(f"Unsupported sport: {sport}")
             return
 
-        if not game_data or "results" not in game_data or not game_data["results"]:
+        if not game_data:
             bt.logging.error(f"Invalid or empty game data for {external_id}")
             return
 
-        # For NFL, we directly process from 'results'
         if sport.lower() == "nfl":
+            if "results" not in game_data or not game_data["results"]:
+                bt.logging.error(f"Invalid or empty game data for NFL game {external_id}")
+                return
             game_response = game_data["results"][0]
             status = game_response.get("time_status")
             if status != "3":  # 3 means the game has finished
                 bt.logging.trace(f"NFL game {external_id} is not finished yet. Current status: {status}")
                 return
         else:
+            if "response" not in game_data or not game_data["response"]:
+                bt.logging.error(f"Invalid or empty game data for {sport} game {external_id}")
+                return
             game_response = game_data["response"][0]
 
         # Check if the game has finished
