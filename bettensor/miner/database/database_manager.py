@@ -3,24 +3,35 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 import warnings
 from eth_utils.exceptions import ValidationError
+
 warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
 import warnings
 from eth_utils.exceptions import ValidationError
+
 warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
 import bittensor as bt
 import traceback
 import os
 import time
 
+
 class DatabaseManager:
-    def __init__(self, db_name, db_user, db_password, db_host='localhost', db_port=5432, max_connections=10):
+    def __init__(
+        self,
+        db_name,
+        db_user,
+        db_password,
+        db_host="localhost",
+        db_port=5432,
+        max_connections=10,
+    ):
         self.db_name = db_name
         self.db_user = db_user
         self.db_password = db_password
         self.db_host = db_host
         self.db_port = db_port
         self.max_connections = max_connections
-        
+
         bt.logging.debug("Initializing DatabaseManager")
         bt.logging.debug(f"Checking root user")
         self.is_root = self.check_root_user()
@@ -37,26 +48,29 @@ class DatabaseManager:
         self.remove_default_rows()
 
     def check_root_user(self):
-        return self.db_user == 'root'
+        return self.db_user == "root"
 
     def ensure_database_exists(self):
         conn = None
         try:
             # Connect to the default 'postgres' database
             conn = psycopg2.connect(
-                dbname='postgres',
+                dbname="postgres",
                 user=self.db_user,
                 password=self.db_password,
                 host=self.db_host,
-                port=self.db_port
+                port=self.db_port,
             )
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-            
+
             with conn.cursor() as cur:
                 # Check if the database exists
-                cur.execute(f"SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (self.db_name,))
+                cur.execute(
+                    f"SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s",
+                    (self.db_name,),
+                )
                 exists = cur.fetchone()
-                
+
                 if not exists:
                     bt.logging.debug(f"Creating database {self.db_name}")
                     # Create the database
@@ -64,7 +78,7 @@ class DatabaseManager:
                     bt.logging.debug(f"Database {self.db_name} created successfully")
                 else:
                     bt.logging.debug(f"Database {self.db_name} already exists")
-        
+
         except psycopg2.Error as e:
             bt.logging.error(f"Error ensuring database exists: {e}")
             raise
@@ -75,7 +89,7 @@ class DatabaseManager:
     def wait_for_database(self):
         max_retries = 5
         retry_delay = 5  # seconds
-        
+
         for attempt in range(max_retries):
             try:
                 with psycopg2.connect(
@@ -83,7 +97,7 @@ class DatabaseManager:
                     port=self.db_port,
                     user=self.db_user,
                     password=self.db_password,
-                    database=self.db_name
+                    database=self.db_name,
                 ) as conn:
                     with conn.cursor() as cur:
                         cur.execute("SELECT 1")
@@ -91,25 +105,32 @@ class DatabaseManager:
                         return
             except psycopg2.OperationalError:
                 if attempt < max_retries - 1:
-                    bt.logging.warning(f"Database not ready (attempt {attempt + 1}/{max_retries}). Retrying in {retry_delay} seconds...")
+                    bt.logging.warning(
+                        f"Database not ready (attempt {attempt + 1}/{max_retries}). Retrying in {retry_delay} seconds..."
+                    )
                     time.sleep(retry_delay)
                 else:
-                    bt.logging.error("Failed to connect to the database after multiple attempts.")
+                    bt.logging.error(
+                        "Failed to connect to the database after multiple attempts."
+                    )
                     raise
 
     def create_connection_pool(self):
         return SimpleConnectionPool(
-            1, self.max_connections,
+            1,
+            self.max_connections,
             host=self.db_host,
             port=self.db_port,
             database=self.db_name,
             user=self.db_user,
-            password=self.db_password
+            password=self.db_password,
         )
 
     def create_tables(self):
         tables = [
-            ("predictions", """
+            (
+                "predictions",
+                """
             CREATE TABLE IF NOT EXISTS predictions (
                 prediction_id TEXT PRIMARY KEY,
                 game_id TEXT,
@@ -128,8 +149,11 @@ class DatabaseManager:
                 payout REAL,
                 sent_to_site INTEGER DEFAULT 0
             )
-            """),
-            ("games", """
+            """,
+            ),
+            (
+                "games",
+                """
             CREATE TABLE IF NOT EXISTS games (
                 game_id TEXT PRIMARY KEY,
                 team_a TEXT,
@@ -146,8 +170,11 @@ class DatabaseManager:
                 tie_odds REAL,
                 can_tie BOOLEAN
             )
-            """),
-            ("miner_stats", """
+            """,
+            ),
+            (
+                "miner_stats",
+                """
             CREATE TABLE IF NOT EXISTS miner_stats (
                 miner_hotkey TEXT PRIMARY KEY,
                 miner_coldkey TEXT,
@@ -172,8 +199,11 @@ class DatabaseManager:
                 miner_lifetime_losses INTEGER,
                 miner_win_loss_ratio REAL
             )
-            """),
-            ("model_params", """
+            """,
+            ),
+            (
+                "model_params",
+                """
             CREATE TABLE IF NOT EXISTS model_params (
                 miner_uid TEXT PRIMARY KEY,
                 model_on BOOLEAN,
@@ -183,15 +213,19 @@ class DatabaseManager:
                 max_wager_amount FLOAT,
                 top_n_games INTEGER
             )
-            """),
-            ("miner_active", """
+            """,
+            ),
+            (
+                "miner_active",
+                """
             CREATE TABLE IF NOT EXISTS miner_active (
                 miner_uid TEXT PRIMARY KEY,
                 last_active_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            """)
+            """,
+            ),
         ]
-        
+
         for table_name, create_query in tables:
             try:
                 self.execute_query(create_query)
@@ -202,7 +236,7 @@ class DatabaseManager:
     def initialize_default_model_params(self, miner_uid):
         if not miner_uid or miner_uid == "default":
             return
-        
+
         bt.logging.info(f"Initializing default model params for miner: {miner_uid}")
         self.ensure_model_params_table_exists()
         self.ensure_miner_params_exist(miner_uid)
@@ -231,26 +265,26 @@ class DatabaseManager:
     def ensure_miner_params_exist(self, miner_uid):
         if not miner_uid or miner_uid == "default":
             return
-        
+
         default_params = {
-            'model_on': False,
-            'wager_distribution_steepness': 1,
-            'fuzzy_match_percentage': 80,
-            'minimum_wager_amount': 1.0,
-            'max_wager_amount': 100.0,
-            'top_n_games': 10,
-            'nfl_model_on': False,
-            'nfl_minimum_wager_amount': 1.0,
-            'nfl_max_wager_amount': 100.0,
-            'nfl_top_n_games': 5,
-            'nfl_kelly_fraction_multiplier': 1,
-            'nfl_edge_threshold': 0.02,
-            'nfl_max_bet_percentage': 0.7
+            "model_on": False,
+            "wager_distribution_steepness": 1,
+            "fuzzy_match_percentage": 80,
+            "minimum_wager_amount": 1.0,
+            "max_wager_amount": 100.0,
+            "top_n_games": 10,
+            "nfl_model_on": False,
+            "nfl_minimum_wager_amount": 1.0,
+            "nfl_max_wager_amount": 100.0,
+            "nfl_top_n_games": 5,
+            "nfl_kelly_fraction_multiplier": 1,
+            "nfl_edge_threshold": 0.02,
+            "nfl_max_bet_percentage": 0.7,
         }
-        
+
         query = "SELECT * FROM model_params WHERE id = %s"
         result = self.execute_query(query, (miner_uid,))
-        
+
         if not result:
             insert_query = """
             INSERT INTO model_params (
@@ -316,7 +350,7 @@ class DatabaseManager:
             cur = conn.cursor(cursor_factory=RealDictCursor)
             bt.logging.debug(f"Executing batch query: {query}")
             bt.logging.debug(f"Number of parameter sets: {len(params_list)}")
-            
+
             cur.executemany(query, params_list)
             conn.commit()
             bt.logging.debug("Batch query executed successfully")
@@ -345,6 +379,7 @@ class DatabaseManager:
         )
         """
         self.execute_query(query)
+
     def update_miner_activity(self, miner_uid):
         query = """
         INSERT INTO miner_active (miner_uid, last_active_timestamp)
@@ -360,20 +395,20 @@ class DatabaseManager:
         WHERE miner_uid = %s AND last_active_timestamp > NOW() - INTERVAL '5 minutes'
         """
         result = self.execute_query(query, (miner_uid,))
-        return result[0]['count'] > 0 if result else False
+        return result[0]["count"] > 0 if result else False
 
     def ensure_miner_model_params(self, miner_uid):
         query = "SELECT * FROM model_params WHERE id = %s"
         result = self.execute_query(query, (miner_uid,))
-        
+
         if not result:
             default_params = {
-                'model_on': False,
-                'wager_distribution_steepness': 1,
-                'fuzzy_match_percentage': 80,
-                'minimum_wager_amount': 1.0,
-                'max_wager_amount': 100.0,
-                'top_n_games': 10
+                "model_on": False,
+                "wager_distribution_steepness": 1,
+                "fuzzy_match_percentage": 80,
+                "minimum_wager_amount": 1.0,
+                "max_wager_amount": 100.0,
+                "top_n_games": 10,
             }
             insert_query = """
             INSERT INTO model_params (
@@ -387,19 +422,19 @@ class DatabaseManager:
     def remove_default_rows(self):
         bt.logging.info("Checking and removing default rows from all tables")
         tables = {
-            'predictions': 'minerID',
-            'games': 'gameID',
-            'miner_stats': 'miner_hotkey',
-            'model_params': 'id',
-            'miner_active': 'miner_uid'
+            "predictions": "minerID",
+            "games": "gameID",
+            "miner_stats": "miner_hotkey",
+            "model_params": "id",
+            "miner_active": "miner_uid",
         }
-        
+
         for table, id_column in tables.items():
             query = f"""
             DELETE FROM {table}
             WHERE {id_column} = 'default' OR {id_column} IS NULL
             """
-            if table == 'miner_stats':
+            if table == "miner_stats":
                 query = f"""
                 DELETE FROM {table}
                 WHERE {id_column} = 'default'
@@ -407,6 +442,10 @@ class DatabaseManager:
             try:
                 rows_deleted = self.execute_query(query)
                 if rows_deleted > 0:
-                    bt.logging.info(f"Removed {rows_deleted} default or NULL row(s) from {table}")
+                    bt.logging.info(
+                        f"Removed {rows_deleted} default or NULL row(s) from {table}"
+                    )
             except Exception as e:
-                bt.logging.error(f"Error removing default or NULL rows from {table}: {str(e)}")
+                bt.logging.error(
+                    f"Error removing default or NULL rows from {table}: {str(e)}"
+                )

@@ -4,10 +4,12 @@ import subprocess
 import json
 import bittensor as bt
 
+
 class Watchdog:
     """
     Handles random hanging issues by restarting the PM2 process.
     """
+
     def __init__(self, timeout):
         self.timeout = timeout
         self.timer = None
@@ -16,14 +18,14 @@ class Watchdog:
     def get_pm2_process_name(self):
         try:
             # Fetch the list of PM2 processes in JSON format
-            result = subprocess.run(['pm2', 'jlist'], capture_output=True, text=True)
+            result = subprocess.run(["pm2", "jlist"], capture_output=True, text=True)
             processes = json.loads(result.stdout)
             current_pid = os.getpid()
 
             # Search for the process that matches the current PID
             for process in processes:
-                if process['pid'] == current_pid:
-                    return process['name']
+                if process["pid"] == current_pid:
+                    return process["name"]
             bt.logging.error("Failed to find the PM2 process name.")
             return None
         except Exception as e:
@@ -47,8 +49,10 @@ class Watchdog:
 
         try:
             # Restart the PM2 process by name
-            bt.logging.info(f"Attempting to restart PM2 process: {self.pm2_process_name}")
-            subprocess.run(['pm2', 'restart', self.pm2_process_name], check=True)
+            bt.logging.info(
+                f"Attempting to restart PM2 process: {self.pm2_process_name}"
+            )
+            subprocess.run(["pm2", "restart", self.pm2_process_name], check=True)
             bt.logging.info(f"PM2 process {self.pm2_process_name} restart initiated")
 
             # Exit current process to prevent duplication
@@ -56,4 +60,3 @@ class Watchdog:
         except Exception as e:
             bt.logging.error(f"Failed to restart PM2 process: {str(e)}")
             os._exit(1)
-

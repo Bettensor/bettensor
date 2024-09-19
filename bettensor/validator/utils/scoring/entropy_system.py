@@ -2,6 +2,7 @@ import torch as t
 import math
 import bittensor as bt
 
+
 class EntropySystem:
     def __init__(self, max_capacity: int, max_days: int):
         """
@@ -36,8 +37,10 @@ class EntropySystem:
             bt.logging.warning("No predictions provided. Skipping EBDR score update.")
             return self.ebdr_scores
 
-        entropy_scores = self.ebdr_scores[:, self.current_day, self.current_hour].clone()
-        
+        entropy_scores = self.ebdr_scores[
+            :, self.current_day, self.current_hour
+        ].clone()
+
         bt.logging.debug(f"Number of predictions: {len(predictions)}")
         bt.logging.debug(f"Closing line odds shape: {closing_line_odds.shape}")
         bt.logging.debug(f"Results shape: {results.shape}")
@@ -45,9 +48,13 @@ class EntropySystem:
         # Initialize game entropies if not already present
         for game_id in range(closing_line_odds.shape[0]):
             if game_id not in self.game_entropies:
-                initial_entropy = self.calculate_initial_entropy(closing_line_odds[game_id])
+                initial_entropy = self.calculate_initial_entropy(
+                    closing_line_odds[game_id]
+                )
                 self.game_entropies[game_id] = initial_entropy
-                bt.logging.debug(f"Initialized entropy for game {game_id}: {initial_entropy}")
+                bt.logging.debug(
+                    f"Initialized entropy for game {game_id}: {initial_entropy}"
+                )
 
         # Update entropy scores based on predictions
         for i, miner_predictions in enumerate(predictions):
@@ -58,11 +65,15 @@ class EntropySystem:
                     game_id, outcome, odds, wager = pred
                     game_id = int(game_id.item())
                     if game_id < closing_line_odds.shape[0]:
-                        new_entropy = self.update_game_entropy(game_id, outcome, odds, wager)
+                        new_entropy = self.update_game_entropy(
+                            game_id, outcome, odds, wager
+                        )
                         miner_entropy += new_entropy
                         valid_predictions += 1
-                        bt.logging.debug(f"Miner {i}, Game {game_id}: New entropy {new_entropy}")
-                
+                        bt.logging.debug(
+                            f"Miner {i}, Game {game_id}: New entropy {new_entropy}"
+                        )
+
                 if valid_predictions > 0:
                     entropy_scores[i] = miner_entropy / valid_predictions
                 else:
@@ -75,12 +86,12 @@ class EntropySystem:
 
         # Normalize scores using softmax instead of min-max normalization
         entropy_scores = t.softmax(entropy_scores, dim=0)
-        
+
         # Update the current time slot with new scores
         self.ebdr_scores[:, self.current_day, self.current_hour] = entropy_scores
-        
+
         self._increment_time()
-        
+
         return self.ebdr_scores
 
     def calculate_initial_entropy(self, odds):
@@ -117,7 +128,9 @@ class EntropySystem:
         new_entropy = -prob * math.log2(prob + self.epsilon)
         updated_entropy = max((current_entropy + new_entropy) / 2, self.epsilon)
         self.game_entropies[game_id] = updated_entropy
-        bt.logging.debug(f"Updating game {game_id} entropy: current={current_entropy}, new={new_entropy}, updated={updated_entropy}")
+        bt.logging.debug(
+            f"Updating game {game_id} entropy: current={current_entropy}, new={new_entropy}, updated={updated_entropy}"
+        )
         return updated_entropy
 
     def calculate_bookmaker_probabilities(self, odds):
@@ -144,16 +157,18 @@ class EntropySystem:
             tuple: Miner entropy and bookmaker entropy.
         """
         miner_probs = []
-        for pred in event['predictions'].values():
-            if pred['odds'] > 0:
-                miner_probs.append(1 / pred['odds'])
+        for pred in event["predictions"].values():
+            if pred["odds"] > 0:
+                miner_probs.append(1 / pred["odds"])
             else:
-                bt.logging.warning(f"Invalid miner odd ({pred['odds']}) encountered. Using default probability.")
+                bt.logging.warning(
+                    f"Invalid miner odd ({pred['odds']}) encountered. Using default probability."
+                )
                 miner_probs.append(0.01)  # Use a small default probability
         miner_probs = t.tensor(miner_probs)
         miner_probs = miner_probs / miner_probs.sum()
 
-        bookmaker_probs = self.calculate_bookmaker_probabilities(event['current_odds'])
+        bookmaker_probs = self.calculate_bookmaker_probabilities(event["current_odds"])
 
         miner_entropy = -t.sum(miner_probs * t.log2(miner_probs + 1e-10))
         bookmaker_entropy = -t.sum(bookmaker_probs * t.log2(bookmaker_probs + 1e-10))
@@ -171,7 +186,7 @@ class EntropySystem:
         Returns:
             float: Entropy contribution of the miner.
         """
-        miner_prob = 1 / event['predictions'][miner_id]['odds']
+        miner_prob = 1 / event["predictions"][miner_id]["odds"]
         return -miner_prob * math.log2(miner_prob + 1e-10)
 
     def calculate_consensus_prediction(self, event):
@@ -184,14 +199,14 @@ class EntropySystem:
         Returns:
             dict: Consensus prediction containing outcome and odds.
         """
-        consensus = {'outcome': 0, 'odds': 0}
-        total_wager = sum(pred['wager_size'] for pred in event['predictions'].values())
-        
-        for pred in event['predictions'].values():
-            weight = pred['wager_size'] / total_wager
-            consensus['outcome'] += weight * pred['outcome']
-            consensus['odds'] += weight * pred['odds']
-        
+        consensus = {"outcome": 0, "odds": 0}
+        total_wager = sum(pred["wager_size"] for pred in event["predictions"].values())
+
+        for pred in event["predictions"].values():
+            weight = pred["wager_size"] / total_wager
+            consensus["outcome"] += weight * pred["outcome"]
+            consensus["odds"] += weight * pred["odds"]
+
         return consensus
 
     def calculate_uniqueness_score(self, prediction, consensus):
@@ -205,8 +220,10 @@ class EntropySystem:
         Returns:
             float: Uniqueness score.
         """
-        outcome_diff = abs(prediction['outcome'] - consensus['outcome'])
-        odds_diff = abs(prediction['odds'] - consensus['odds']) / max(prediction['odds'], consensus['odds'])
+        outcome_diff = abs(prediction["outcome"] - consensus["outcome"])
+        odds_diff = abs(prediction["odds"] - consensus["odds"]) / max(
+            prediction["odds"], consensus["odds"]
+        )
         return (outcome_diff + odds_diff) / 2
 
     def update_prediction_history(self, miner_id, prediction):
@@ -233,18 +250,25 @@ class EntropySystem:
         Returns:
             float: Historical uniqueness score.
         """
-        if miner_id not in self.prediction_history or not self.prediction_history[miner_id]:
+        if (
+            miner_id not in self.prediction_history
+            or not self.prediction_history[miner_id]
+        ):
             return 0.0
-        
+
         miner_history = self.prediction_history[miner_id]
         all_histories = list(self.prediction_history.values())
         if not all_histories:
             return 0.0
-        
-        uniqueness = sum(1 for h in all_histories if h != miner_history) / len(all_histories)
+
+        uniqueness = sum(1 for h in all_histories if h != miner_history) / len(
+            all_histories
+        )
         return uniqueness
 
-    def calculate_contrarian_bonus(self, miner_prediction, consensus_prediction, actual_outcome):
+    def calculate_contrarian_bonus(
+        self, miner_prediction, consensus_prediction, actual_outcome
+    ):
         """
         Calculate the contrarian bonus for a miner's prediction.
 
@@ -256,7 +280,10 @@ class EntropySystem:
         Returns:
             float: Contrarian bonus.
         """
-        if miner_prediction['outcome'] != consensus_prediction['outcome'] and miner_prediction['outcome'] == actual_outcome:
+        if (
+            miner_prediction["outcome"] != consensus_prediction["outcome"]
+            and miner_prediction["outcome"] == actual_outcome
+        ):
             return 1.5
         return 1.0
 
@@ -287,7 +314,9 @@ class EntropySystem:
         """
         uniqueness_scores = t.zeros(self.max_capacity)
         for miner_id in range(self.max_capacity):
-            uniqueness_scores[miner_id] = self.calculate_historical_uniqueness(str(miner_id))
+            uniqueness_scores[miner_id] = self.calculate_historical_uniqueness(
+                str(miner_id)
+            )
         return uniqueness_scores
 
     def get_contrarian_bonuses(self):

@@ -8,6 +8,7 @@ from bettensor.miner.database.predictions import PredictionsHandler
 import json
 import uuid
 
+
 class GamesHandler:
     def __init__(self, db_manager, predictions_handler):
         bt.logging.trace("Initializing GamesHandler")
@@ -23,17 +24,25 @@ class GamesHandler:
         current_time = datetime.now(timezone.utc)
 
         try:
-            self._batch_add_or_update_games(changed_games, current_time, updated_games, new_games)
-            bt.logging.trace(f"Processed games: {len(updated_games)} updated, {len(new_games)} new")
+            self._batch_add_or_update_games(
+                changed_games, current_time, updated_games, new_games
+            )
+            bt.logging.trace(
+                f"Processed games: {len(updated_games)} updated, {len(new_games)} new"
+            )
         except Exception as e:
             bt.logging.error(f"Error processing games: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
         return updated_games, new_games
 
-    def _batch_add_or_update_games(self, game_data_dict, current_time, updated_games, new_games):
+    def _batch_add_or_update_games(
+        self, game_data_dict, current_time, updated_games, new_games
+    ):
         bt.logging.trace(f"Batch adding or updating {len(game_data_dict)} games")
-        game_data_dict_by_external_id = {game.externalId: game for game in game_data_dict.values()}
+        game_data_dict_by_external_id = {
+            game.externalId: game for game in game_data_dict.values()
+        }
 
         upsert_query = """
         INSERT INTO games (
@@ -56,50 +65,76 @@ class GamesHandler:
             canTie = EXCLUDED.canTie
         RETURNING externalID, (xmax = 0) AS is_new, outcome
         """
-        
+
         params_list = []
         for game_data in game_data_dict_by_external_id.values():
             event_start_date = self._ensure_timezone_aware(game_data.eventStartDate)
-            is_active = 1 if current_time <= datetime.fromisoformat(event_start_date) else 0
+            is_active = (
+                1 if current_time <= datetime.fromisoformat(event_start_date) else 0
+            )
             params = (
-                game_data.id, game_data.teamA, game_data.teamAodds, game_data.teamB, game_data.teamBodds,
-                game_data.sport, game_data.league, game_data.externalId, self._ensure_timezone_aware(game_data.createDate),
-                self._ensure_timezone_aware(game_data.lastUpdateDate), event_start_date, is_active,
-                game_data.outcome, game_data.tieOdds, game_data.canTie
+                game_data.id,
+                game_data.teamA,
+                game_data.teamAodds,
+                game_data.teamB,
+                game_data.teamBodds,
+                game_data.sport,
+                game_data.league,
+                game_data.externalId,
+                self._ensure_timezone_aware(game_data.createDate),
+                self._ensure_timezone_aware(game_data.lastUpdateDate),
+                event_start_date,
+                is_active,
+                game_data.outcome,
+                game_data.tieOdds,
+                game_data.canTie,
             )
             params_list.append(params)
-        
+
         try:
             self.db_manager.execute_batch(upsert_query, params_list)
-            
+
             # Fetch the results of the upsert operation
             select_query = "SELECT externalID, (xmax = 0) AS is_new, outcome FROM games WHERE externalID = ANY(%s)"
-            results = self.db_manager.execute_query(select_query, ([game.externalId for game in game_data_dict_by_external_id.values()],))
-            
+            results = self.db_manager.execute_query(
+                select_query,
+                ([game.externalId for game in game_data_dict_by_external_id.values()],),
+            )
+
             for result in results:
-                external_id, is_new, outcome = result['externalid'], result['is_new'], result['outcome']
+                external_id, is_new, outcome = (
+                    result["externalid"],
+                    result["is_new"],
+                    result["outcome"],
+                )
                 game_data = game_data_dict_by_external_id[external_id]
                 if is_new:
                     new_games[external_id] = game_data
-                    #bt.logging.debug(f"New game added: {external_id}")
+                    # bt.logging.debug(f"New game added: {external_id}")
                 else:
                     updated_games[external_id] = game_data
-                    #bt.logging.debug(f"Game updated: {external_id}")
-                
+                    # bt.logging.debug(f"Game updated: {external_id}")
+
                 if outcome != game_data.outcome:
-                    bt.logging.info(f"Game {external_id} outcome changed from {outcome} to {game_data.outcome}")
-                    self.predictions_handler.process_game_results({external_id: game_data})
-            
-            bt.logging.info(f"Processed {len(results)} games: {len(new_games)} new, {len(updated_games)} updated")
+                    bt.logging.info(
+                        f"Game {external_id} outcome changed from {outcome} to {game_data.outcome}"
+                    )
+                    self.predictions_handler.process_game_results(
+                        {external_id: game_data}
+                    )
+
+            bt.logging.info(
+                f"Processed {len(results)} games: {len(new_games)} new, {len(updated_games)} updated"
+            )
         except Exception as e:
             bt.logging.error(f"Error in batch add/update games: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
             raise
 
     def _ensure_timezone_aware(self, dt):
-        #bt.logging.trace(f"Ensuring timezone awareness for datetime: {dt}")
+        # bt.logging.trace(f"Ensuring timezone awareness for datetime: {dt}")
         if isinstance(dt, str):
-            dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.isoformat()
@@ -125,23 +160,23 @@ class GamesHandler:
         active_games = {}
         for row in results:
             team_game = TeamGame(
-                id=row['gameid'],
-                teamA=row['teama'],
-                teamAodds=float(row['teamaodds']),
-                teamB=row['teamb'],
-                teamBodds=float(row['teambodds']),
-                sport=row['sport'],
-                league=row['league'],
-                externalId=row['externalid'],
-                createDate=self._ensure_iso_format(row['createdate']),
-                lastUpdateDate=self._ensure_iso_format(row['lastupdatedate']),
-                eventStartDate=self._ensure_iso_format(row['eventstartdate']),
-                active=bool(row['active']),
-                outcome=row['outcome'],
-                tieOdds=float(row['tieodds']) if row['tieodds'] is not None else None,
-                canTie=bool(row['cantie'])
+                id=row["gameid"],
+                teamA=row["teama"],
+                teamAodds=float(row["teamaodds"]),
+                teamB=row["teamb"],
+                teamBodds=float(row["teambodds"]),
+                sport=row["sport"],
+                league=row["league"],
+                externalId=row["externalid"],
+                createDate=self._ensure_iso_format(row["createdate"]),
+                lastUpdateDate=self._ensure_iso_format(row["lastupdatedate"]),
+                eventStartDate=self._ensure_iso_format(row["eventstartdate"]),
+                active=bool(row["active"]),
+                outcome=row["outcome"],
+                tieOdds=float(row["tieodds"]) if row["tieodds"] is not None else None,
+                canTie=bool(row["cantie"]),
             )
-            active_games[row['externalid']] = team_game
+            active_games[row["externalid"]] = team_game
         bt.logging.trace(f"Retrieved {len(active_games)} active games")
         return active_games
 
@@ -155,25 +190,29 @@ class GamesHandler:
 
     def game_exists(self, external_id):
         if not external_id:
-            bt.logging.warning("Attempted to check game existence with None or empty external_id")
+            bt.logging.warning(
+                "Attempted to check game existence with None or empty external_id"
+            )
             return False
-        
+
         # Ensure external_id is a string
         external_id = str(external_id)
-        
+
         query = "SELECT COUNT(*) FROM games WHERE externalID = %s"
         bt.logging.info(f"Executing query: {query} with external_id: {external_id}")
         try:
             result = self.db_manager.execute_query(query, (external_id,))
             bt.logging.info(f"Query result: {result}")
-            
+
             if result and isinstance(result, list) and len(result) > 0:
-                count = result[0]['count'] if isinstance(result[0], dict) else result[0][0]
+                count = (
+                    result[0]["count"] if isinstance(result[0], dict) else result[0][0]
+                )
                 exists = int(count) > 0
             else:
                 bt.logging.warning(f"Unexpected result format: {result}")
                 exists = False
-            
+
             bt.logging.info(f"Game exists: {exists}")
             return exists
         except Exception as e:
@@ -199,18 +238,15 @@ class GamesHandler:
         current_time = datetime.now(timezone.utc)
         try:
             result = self.db_manager.execute_query(query, (current_time,))
-            return [row['externalid'] for row in result] if result else []
+            return [row["externalid"] for row in result] if result else []
         except Exception as e:
             bt.logging.error(f"Error fetching upcoming game IDs: {str(e)}")
             return []
 
     def request_upcoming_game_ids(self, redis_client):
         message_id = str(uuid.uuid4())
-        message = {
-            'action': 'get_upcoming_game_ids',
-            'message_id': message_id
-        }
-        redis_client.publish('game_requests', json.dumps(message))
+        message = {"action": "get_upcoming_game_ids", "message_id": message_id}
+        redis_client.publish("game_requests", json.dumps(message))
         return message_id
 
     def get_games_by_sport(self, sport: str) -> Dict[str, TeamGame]:
@@ -224,21 +260,21 @@ class GamesHandler:
         games = {}
         for row in results:
             team_game = TeamGame(
-                id=row['gameid'],
-                teamA=row['teama'],
-                teamB=row['teamb'],
-                sport=row['sport'],
-                league=row['league'],
-                externalId=row['externalid'],
-                createDate=self._ensure_iso_format(row['createdate']),
-                lastUpdateDate=self._ensure_iso_format(row['lastupdatedate']),
-                eventStartDate=self._ensure_iso_format(row['eventstartdate']),
-                active=bool(row['active']),
-                outcome=row['outcome'],
-                teamAodds=float(row['teamaodds']),
-                teamBodds=float(row['teambodds']),
-                tieOdds=float(row['tieodds']) if row['tieodds'] is not None else None,
-                canTie=bool(row['cantie'])
+                id=row["gameid"],
+                teamA=row["teama"],
+                teamB=row["teamb"],
+                sport=row["sport"],
+                league=row["league"],
+                externalId=row["externalid"],
+                createDate=self._ensure_iso_format(row["createdate"]),
+                lastUpdateDate=self._ensure_iso_format(row["lastupdatedate"]),
+                eventStartDate=self._ensure_iso_format(row["eventstartdate"]),
+                active=bool(row["active"]),
+                outcome=row["outcome"],
+                teamAodds=float(row["teamaodds"]),
+                teamBodds=float(row["teambodds"]),
+                tieOdds=float(row["tieodds"]) if row["tieodds"] is not None else None,
+                canTie=bool(row["cantie"]),
             )
-            games[row['externalid']] = team_game
+            games[row["externalid"]] = team_game
         return games

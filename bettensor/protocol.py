@@ -29,6 +29,7 @@ class MinerStats(BaseModel):
     """
     This class defines the miner stats object.
     """
+
     # Identifier Stats
     miner_hotkey: str = Field(..., description="Hotkey of the miner")
     miner_coldkey: str = Field(..., description="Coldkey of the miner")
@@ -38,26 +39,53 @@ class MinerStats(BaseModel):
 
     # Current Scoring Stats
     miner_cash: float = Field(..., description="Current cash of the miner")
-    miner_current_incentive: float = Field(..., description="Current incentive of the miner")
+    miner_current_incentive: float = Field(
+        ..., description="Current incentive of the miner"
+    )
     miner_current_tier: int = Field(..., description="Current tier of the miner")
-    miner_current_scoring_window: int = Field(..., description="Current scoring window of the miner")
-    miner_current_composite_score: float = Field(..., description="Current composite score of the miner, as calculated over the current scoring window")
-    miner_current_sharpe_ratio: float = Field(..., description="Current sharpe ratio of the miner, as calculated over the current scoring window")
-    miner_current_sortino_ratio: float = Field(..., description="Current sortino ratio of the miner, as calculated over the current scoring window")
-    miner_current_roi: float = Field(..., description="Current roi of the miner, as calculated over the current scoring window")
-    miner_current_clv_avg: float = Field(..., description="Current clv avg of the miner, as calculated over the current scoring window")
+    miner_current_scoring_window: int = Field(
+        ..., description="Current scoring window of the miner"
+    )
+    miner_current_composite_score: float = Field(
+        ...,
+        description="Current composite score of the miner, as calculated over the current scoring window",
+    )
+    miner_current_sharpe_ratio: float = Field(
+        ...,
+        description="Current sharpe ratio of the miner, as calculated over the current scoring window",
+    )
+    miner_current_sortino_ratio: float = Field(
+        ...,
+        description="Current sortino ratio of the miner, as calculated over the current scoring window",
+    )
+    miner_current_roi: float = Field(
+        ...,
+        description="Current roi of the miner, as calculated over the current scoring window",
+    )
+    miner_current_clv_avg: float = Field(
+        ...,
+        description="Current clv avg of the miner, as calculated over the current scoring window",
+    )
 
     # Lifetime Stats
-    miner_last_prediction_date: Optional[str] = Field(None, description="Date of the last prediction of the miner")
-    miner_lifetime_earnings: float = Field(..., description="Lifetime earnings of the miner")
-    miner_lifetime_wager_amount: float = Field(..., description="Lifetime wager amount of the miner")
-    miner_lifetime_profit: float = Field(..., description="Lifetime profit of the miner")
-    miner_lifetime_predictions: int = Field(..., description="Lifetime predictions of the miner")
+    miner_last_prediction_date: Optional[str] = Field(
+        None, description="Date of the last prediction of the miner"
+    )
+    miner_lifetime_earnings: float = Field(
+        ..., description="Lifetime earnings of the miner"
+    )
+    miner_lifetime_wager_amount: float = Field(
+        ..., description="Lifetime wager amount of the miner"
+    )
+    miner_lifetime_profit: float = Field(
+        ..., description="Lifetime profit of the miner"
+    )
+    miner_lifetime_predictions: int = Field(
+        ..., description="Lifetime predictions of the miner"
+    )
     miner_lifetime_wins: int = Field(..., description="Lifetime wins of the miner")
     miner_lifetime_losses: int = Field(..., description="Lifetime losses of the miner")
     miner_win_loss_ratio: float = Field(..., description="Win loss ratio of the miner")
-    
-
 
     @classmethod
     def create(cls, row):
@@ -157,19 +185,31 @@ class TeamGamePrediction(BaseModel):
 
     prediction_id: str = Field(..., description="UUID of the prediction")
     game_id: str = Field(..., description="Game ID - Not Unique (External ID from API)")
-    miner_uid: str = Field(..., description="UUID or UID of the miner that made the prediction")
+    miner_uid: str = Field(
+        ..., description="UUID or UID of the miner that made the prediction"
+    )
     prediction_date: str = Field(..., description="Prediction date of the prediction")
     predicted_outcome: str = Field(..., description="Predicted outcome")
-    predicted_odds: float = Field(..., description="Predicted outcome odds at the time of prediction")
+    predicted_odds: float = Field(
+        ..., description="Predicted outcome odds at the time of prediction"
+    )
     team_a: Optional[str] = Field(None, description="Team A, typically the home team")
     team_b: Optional[str] = Field(None, description="Team B, typically the away team")
     wager: float = Field(..., description="Wager of the prediction")
     team_a_odds: float = Field(..., description="Team A odds at the time of prediction")
     team_b_odds: float = Field(..., description="Team B odds at the time of prediction")
-    tie_odds: Optional[float] = Field(None, description="Tie odds at the time of prediction")
-    model_name: Optional[str] = Field(None, description="Name of the model that made the prediction - null if submitted by a human")
+    tie_odds: Optional[float] = Field(
+        None, description="Tie odds at the time of prediction"
+    )
+    model_name: Optional[str] = Field(
+        None,
+        description="Name of the model that made the prediction - null if submitted by a human",
+    )
     outcome: str = Field(..., description="Outcome of prediction")
-    payout: float = Field(..., description="Payout of prediction - for local tracking, not used in scoring")
+    payout: float = Field(
+        ...,
+        description="Payout of prediction - for local tracking, not used in scoring",
+    )
 
 
 class TeamGame(BaseModel):
@@ -177,7 +217,10 @@ class TeamGame(BaseModel):
     Data class from json. May need to be modified in the future for more complex prediction types
     """
 
-    game_id: str = Field(..., description="ID of the team game - Formerly 'externalId' (No need for unique ID here)")
+    game_id: str = Field(
+        ...,
+        description="ID of the team game - Formerly 'externalId' (No need for unique ID here)",
+    )
     team_a: str = Field(..., description="Team A (Typically the home team)")
     team_b: str = Field(..., description="Team B (Typically the away team)")
     sport: str = Field(..., description="Sport")
@@ -234,6 +277,7 @@ class GameData(bt.Synapse):
     def deserialize(self):
         return self.gamedata_dict, self.prediction_dict, self.metadata
 
+
 class Confirmation(bt.Synapse):
     """
     This class defines the confirmation object for a prediction. Sent to specific neurons for confirmation of predictions.
@@ -244,7 +288,14 @@ class Confirmation(bt.Synapse):
     error: Optional[str]
 
     @classmethod
-    def create(cls, wallet: bt.wallet, subnet_version: str, neuron_uid: int, synapse_type: str, confirmation_dict: Dict[str, TeamGamePrediction] = None):
+    def create(
+        cls,
+        wallet: bt.wallet,
+        subnet_version: str,
+        neuron_uid: int,
+        synapse_type: str,
+        confirmation_dict: Dict[str, TeamGamePrediction] = None,
+    ):
         metadata = Metadata.create(
             wallet=wallet,
             subnet_version=subnet_version,

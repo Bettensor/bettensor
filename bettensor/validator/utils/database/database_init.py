@@ -1,9 +1,10 @@
-'''
+"""
 database_init.py
 
 This file contains the code for initializing the database for the validator.
 
-'''
+"""
+
 
 def initialize_database():
     return [
@@ -93,6 +94,5 @@ def initialize_database():
             total_wager REAL,
             total_earnings REAL
         )
-        """
+        """,
     ]
-

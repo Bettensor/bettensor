@@ -6,9 +6,11 @@ from rich.table import Table
 import sys
 import os
 
+
 @dataclass
 class MinerConfig:
     model_prediction: bool = False
+
 
 def create_table(config):
     table = Table(title="Miner Configuration")
@@ -17,8 +19,10 @@ def create_table(config):
     table.add_row("Model Prediction", "ON" if config.model_prediction else "OFF")
     return table
 
+
 def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
+    os.system("cls" if os.name == "nt" else "clear")
+
 
 def run_interface(config, redis_client):
     console = Console()
@@ -30,19 +34,21 @@ def run_interface(config, redis_client):
         console.print(panel)
 
         key = console.input(">").lower()
-        if key == 'm':
+        if key == "m":
             config.model_prediction = not config.model_prediction
-            redis_client.set('model_prediction', str(config.model_prediction))
-        elif key == 'q':
+            redis_client.set("model_prediction", str(config.model_prediction))
+        elif key == "q":
             break
 
     console.print("Exiting...")
 
+
 def main():
     config = MinerConfig()
-    redis_client = redis.Redis(host='localhost', port=6379, db=0)
-    
+    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+
     run_interface(config, redis_client)
+
 
 if __name__ == "__main__":
     main()

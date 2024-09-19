@@ -92,16 +92,40 @@ def main(miner: BettensorMiner):
             # Below: Periodically update our knowledge of the network graph.
             if miner.step % 20 == 0:
                 miner.db_manager.update_miner_activity(miner.miner_uid)
-                
+
                 miner.metagraph.sync(subtensor=miner.subtensor)
                 miner.metagraph = miner.subtensor.metagraph(miner.neuron_config.netuid)
                 miner_uid_int = int(miner.miner_uid)
-                stake = miner.metagraph.S[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.S) else 0
-                rank = miner.metagraph.R[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.R) else 0
-                trust = miner.metagraph.T[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.T) else 0
-                consensus = miner.metagraph.C[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.C) else 0
-                incentive = miner.metagraph.I[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.I) else 0
-                emission = miner.metagraph.E[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.E) else 0
+                stake = (
+                    miner.metagraph.S[miner_uid_int].item()
+                    if miner_uid_int < len(miner.metagraph.S)
+                    else 0
+                )
+                rank = (
+                    miner.metagraph.R[miner_uid_int].item()
+                    if miner_uid_int < len(miner.metagraph.R)
+                    else 0
+                )
+                trust = (
+                    miner.metagraph.T[miner_uid_int].item()
+                    if miner_uid_int < len(miner.metagraph.T)
+                    else 0
+                )
+                consensus = (
+                    miner.metagraph.C[miner_uid_int].item()
+                    if miner_uid_int < len(miner.metagraph.C)
+                    else 0
+                )
+                incentive = (
+                    miner.metagraph.I[miner_uid_int].item()
+                    if miner_uid_int < len(miner.metagraph.I)
+                    else 0
+                )
+                emission = (
+                    miner.metagraph.E[miner_uid_int].item()
+                    if miner_uid_int < len(miner.metagraph.E)
+                    else 0
+                )
 
                 log = (
                     f"Version:{version} | "
@@ -120,49 +144,102 @@ def main(miner: BettensorMiner):
                 bt.logging.info(f"Miner UID: {miner.miner_uid}")
 
             if miner.step % 600 == 0:
-                    bt.logging.debug(
-                        f"Syncing metagraph: {miner.metagraph} with subtensor: {miner.subtensor}"
-                    )
+                bt.logging.debug(
+                    f"Syncing metagraph: {miner.metagraph} with subtensor: {miner.subtensor}"
+                )
                 # Update the current incentive
-                    current_incentive = miner.metagraph.I[miner_uid_int].item() if miner_uid_int < len(miner.metagraph.I) else 0
-                    if current_incentive is not None:
-                        miner.stats_handler.update_current_incentive(current_incentive)
-
+                current_incentive = (
+                    miner.metagraph.I[miner_uid_int].item()
+                    if miner_uid_int < len(miner.metagraph.I)
+                    else 0
+                )
+                if current_incentive is not None:
+                    miner.stats_handler.update_current_incentive(current_incentive)
 
             if miner.step % 10800 == 0:
                 bt.logging.info("Checking and resetting daily cash if necessary")
                 miner.stats_handler.check_and_reset_daily_cash()
                 bt.logging.info(f"Miner UID: {miner.miner_uid}")
 
-                bt.logging.info(f"Soccer Model on: {miner.predictions_handler.models['soccer'].model_on}")
-                if miner.predictions_handler.models['soccer'].model_on:
+                bt.logging.info(
+                    f"Soccer Model on: {miner.predictions_handler.models['soccer'].model_on}"
+                )
+                if miner.predictions_handler.models["soccer"].model_on:
                     soccer_games = miner.games_handler.get_games_by_sport("soccer")
-                    bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
+                    bt.logging.info(
+                        f"Retrieved {len(soccer_games)} active soccer games"
+                    )
                     miner_cash = miner.stats_handler.get_miner_cash()
                     bt.logging.info(f"Miner cash: {miner_cash}")
-                    bt.logging.info(f"Made daily soccer predictions: {miner.predictions_handler.models['soccer'].made_daily_predictions}")
-                    if miner_cash < miner.predictions_handler.models['soccer'].minimum_wager_amount or miner_cash/len(soccer_games) < miner.predictions_handler.models['soccer'].minimum_wager_amount and not miner.predictions_handler.models['soccer'].made_daily_predictions:
-                        bt.logging.warn(f"Miner cash is insufficient for soccer model predictions. Skipping this step.")
+                    bt.logging.info(
+                        f"Made daily soccer predictions: {miner.predictions_handler.models['soccer'].made_daily_predictions}"
+                    )
+                    if (
+                        miner_cash
+                        < miner.predictions_handler.models[
+                            "soccer"
+                        ].minimum_wager_amount
+                        or miner_cash / len(soccer_games)
+                        < miner.predictions_handler.models[
+                            "soccer"
+                        ].minimum_wager_amount
+                        and not miner.predictions_handler.models[
+                            "soccer"
+                        ].made_daily_predictions
+                    ):
+                        bt.logging.warn(
+                            f"Miner cash is insufficient for soccer model predictions. Skipping this step."
+                        )
                     else:
                         if soccer_games:
-                            processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
-                            bt.logging.info(f"Processed {len(processed_games)} soccer games")
+                            processed_games = (
+                                miner.predictions_handler.process_model_predictions(
+                                    soccer_games, "soccer"
+                                )
+                            )
+                            bt.logging.info(
+                                f"Processed {len(processed_games)} soccer games"
+                            )
                         else:
                             bt.logging.info("No soccer games to process")
 
-                bt.logging.info(f"NFL Model on: {miner.predictions_handler.models['nfl'].nfl_model_on}")
-                if miner.predictions_handler.models['nfl'].nfl_model_on:
+                bt.logging.info(
+                    f"NFL Model on: {miner.predictions_handler.models['nfl'].nfl_model_on}"
+                )
+                if miner.predictions_handler.models["nfl"].nfl_model_on:
                     nfl_games = miner.games_handler.get_games_by_sport("nfl")
                     bt.logging.info(f"Retrieved {len(nfl_games)} active NFL games")
                     miner_cash = miner.stats_handler.get_miner_cash()
                     bt.logging.info(f"Miner cash: {miner_cash}")
-                    bt.logging.info(f"Made daily NFL predictions: {miner.predictions_handler.models['nfl'].made_daily_predictions}")
-                    if miner_cash < miner.predictions_handler.models['nfl'].nfl_minimum_wager_amount or miner_cash/len(nfl_games) < miner.predictions_handler.models['nfl'].nfl_minimum_wager_amount and not miner.predictions_handler.models['nfl'].made_daily_predictions:
-                        bt.logging.warn(f"Miner cash is insufficient for NFL model predictions. Skipping this step.")
+                    bt.logging.info(
+                        f"Made daily NFL predictions: {miner.predictions_handler.models['nfl'].made_daily_predictions}"
+                    )
+                    if (
+                        miner_cash
+                        < miner.predictions_handler.models[
+                            "nfl"
+                        ].nfl_minimum_wager_amount
+                        or miner_cash / len(nfl_games)
+                        < miner.predictions_handler.models[
+                            "nfl"
+                        ].nfl_minimum_wager_amount
+                        and not miner.predictions_handler.models[
+                            "nfl"
+                        ].made_daily_predictions
+                    ):
+                        bt.logging.warn(
+                            f"Miner cash is insufficient for NFL model predictions. Skipping this step."
+                        )
                     else:
                         if nfl_games:
-                            processed_games = miner.predictions_handler.process_model_predictions(nfl_games, "nfl")
-                            bt.logging.info(f"Processed {len(processed_games)} NFL games")
+                            processed_games = (
+                                miner.predictions_handler.process_model_predictions(
+                                    nfl_games, "nfl"
+                                )
+                            )
+                            bt.logging.info(
+                                f"Processed {len(processed_games)} NFL games"
+                            )
                         else:
                             bt.logging.info("No NFL games to process")
 
@@ -203,7 +280,9 @@ if __name__ == "__main__":
         default=10000.0,
         help="Determine the minimum stake the validator should have to accept requests",
     )
-    parser.add_argument("--REDIS_HOST", type=str, default="localhost", help="Redis host")
+    parser.add_argument(
+        "--REDIS_HOST", type=str, default="localhost", help="Redis host"
+    )
     parser.add_argument("--REDIS_PORT", type=int, default=6379, help="Redis port")
 
     # Create a miner based on the Class definitions

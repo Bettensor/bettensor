@@ -10,20 +10,24 @@ from argparse import ArgumentParser
 parser = ArgumentParser()
 validator = BettensorValidator(parser=parser)
 
+
 def create_keys_table(db_path: str):
     """
     Creates keys table in db
     """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS keys (
             hotkey TEXT PRIMARY KEY,
             coldkey TEXT
         )
-    """)
+    """
+    )
     conn.commit()
     conn.close()
+
 
 def get_or_update_coldkey(db_path: str, hotkey: str) -> str:
     """
@@ -47,16 +51,23 @@ def get_or_update_coldkey(db_path: str, hotkey: str) -> str:
         for neuron in validator.metagraph.neurons:
             if neuron.hotkey == hotkey:
                 coldkey = neuron.coldkey
-                cursor.execute("INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)", (hotkey, coldkey))
+                cursor.execute(
+                    "INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)",
+                    (hotkey, coldkey),
+                )
                 conn.commit()
                 conn.close()
                 return coldkey
 
         # If coldkey is not found, insert "dummy_coldkey"
-        cursor.execute("INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)", (hotkey, "dummy_coldkey"))
+        cursor.execute(
+            "INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)",
+            (hotkey, "dummy_coldkey"),
+        )
         conn.commit()
         conn.close()
         return "dummy_coldkey"
+
 
 def fetch_predictions_from_db(db_path):
     """
@@ -95,7 +106,7 @@ def fetch_predictions_from_db(db_path):
             "is_model_prediction",
             "outcome",
             "payout",
-            "sent_to_site"
+            "sent_to_site",
         ]
         if col in available_columns
     ]
@@ -114,14 +125,15 @@ def fetch_predictions_from_db(db_path):
     finally:
         conn.close()
 
+
 def update_sent_status(db_path, prediction_ids):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
+
     try:
         cursor.executemany(
             "UPDATE predictions SET sent_to_site = 1 WHERE predictionID = ?",
-            [(pid,) for pid in prediction_ids]
+            [(pid,) for pid in prediction_ids],
         )
         conn.commit()
         print(f"Updated sent_to_site status for {len(prediction_ids)} predictions")
@@ -129,6 +141,7 @@ def update_sent_status(db_path, prediction_ids):
         print(f"Error updating sent_to_site status: {e}")
     finally:
         conn.close()
+
 
 def send_predictions(predictions, db_path):
     """
@@ -144,10 +157,10 @@ def send_predictions(predictions, db_path):
 
     for prediction in predictions:
         hotkey = prediction["minerId"]
-        #try:
-            #coldkey = get_or_update_coldkey(db_path, hotkey)
-        #except ValueError as e:
-            #bt.logging.error(e)
+        # try:
+        # coldkey = get_or_update_coldkey(db_path, hotkey)
+        # except ValueError as e:
+        # bt.logging.error(e)
         coldkey = "dummy_coldkey"
         # Newer Schema will be sent as metadata for now
         metadata = {
@@ -167,15 +180,14 @@ def send_predictions(predictions, db_path):
         }
 
         transformed_prediction = {
-            "externalGameId": prediction["game_id"], # external id
+            "externalGameId": prediction["game_id"],  # external id
             "minerHotkey": hotkey,
             "minerColdkey": coldkey,
             "predictionDate": prediction["prediction_date"],
             "predictedOutcome": prediction["predicted_outcome"],
             "wager": prediction["wager"],
             "predictionOdds": prediction["predicted_odds"],
-            "metaData": metadata
-            
+            "metaData": metadata,
         }
 
         try:
@@ -200,7 +212,7 @@ def send_predictions(predictions, db_path):
             url, data=json.dumps(transformed_data), headers=headers
         )
         if response.status_code == 200 or response.status_code == 201:
-            update_sent_status(db_path, [p['prediction_id'] for p in predictions])
+            update_sent_status(db_path, [p["prediction_id"] for p in predictions])
         bt.logging.info(f"Response status code: {response.status_code}")
         bt.logging.debug(f"Response content: {response.text}")
         return response.status_code
@@ -208,6 +220,7 @@ def send_predictions(predictions, db_path):
     except requests.exceptions.RequestException as e:
         bt.logging.error(f"Error sending predictions: {e}")
         return None, str(e)
+
 
 def fetch_and_send_predictions(db_path):
     """

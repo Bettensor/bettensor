@@ -8,6 +8,7 @@ import os
 from ..database.database_manager import DatabaseManager
 from .base_api_client import BaseAPIClient
 
+
 class BettensorAPIClient(BaseAPIClient):
     def __init__(self, db_manager: DatabaseManager):
         super().__init__()
@@ -16,13 +17,11 @@ class BettensorAPIClient(BaseAPIClient):
         self.db_manager = db_manager
         self.games = []
 
-
     def fetch_game_data(self):
-
-        '''
+        """
         fetch and update game data from bettensor API. overridden from BaseAPIClient
 
-        '''
+        """
 
         # Get the last update date from the database
         last_update_date = self.load_last_update_date()
@@ -42,10 +41,14 @@ class BettensorAPIClient(BaseAPIClient):
 
         all_games = []
         page_index = 0
-        start_date = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat() # 15 days ago
+        start_date = (
+            datetime.now(timezone.utc) - timedelta(days=15)
+        ).isoformat()  # 15 days ago
 
         while True:
-            games = self._get_games_page(start_date, items_per_page, page_index, last_update_date)
+            games = self._get_games_page(
+                start_date, items_per_page, page_index, last_update_date
+            )
             if not games:
                 break
             all_games.extend(games)
@@ -59,16 +62,15 @@ class BettensorAPIClient(BaseAPIClient):
             "SortOrder": "StartDate",
             "LastUpdateDate": last_update_date.isoformat(),
             "StartDate": start_date,
-            "LeagueFilter": "true"
+            "LeagueFilter": "true",
         }
-        
+
         try:
             data = self.get_data("Games/TeamGames/Search", params)
             return data
         except Exception as e:
             bt.logging.error(f"Error fetching games from API: {e}")
             return None
-
 
     def transform_game_data(self, game):
         # Existing implementation
@@ -80,10 +82,10 @@ class BettensorAPIClient(BaseAPIClient):
             "odds": {
                 "average_home_odds": game.get("team_a_odds"),
                 "average_away_odds": game.get("team_b_odds"),
-                "average_tie_odds": game.get("tie_odds")
+                "average_tie_odds": game.get("tie_odds"),
             },
             "sport": game.get("sport").lower(),
-            "league": game.get("league")
+            "league": game.get("league"),
         }
 
     def get_data(self, endpoint, params):

@@ -27,15 +27,17 @@ from bettensor.validator.utils.database.database_manager import DatabaseManager
 from bettensor.validator.utils.io.miner_data import MinerDataMixin
 from bettensor.validator.utils.io.bettensor_api_client import BettensorAPIClient
 from bettensor.validator.utils.io.base_api_client import BaseAPIClient
+
 DEFAULT_DB_PATH = "data/validator.db"
 
+
 class BettensorValidator(BaseNeuron, MinerDataMixin):
-    '''
+    """
     Bettensor Validator Class, Extends the BaseNeuron Class and MinerDataMixin Class
 
     Contains top-level methods for validator operations.
-    
-    '''
+
+    """
 
     def __init__(self, parser: ArgumentParser):
         super().__init__(parser=parser, profile="validator")
@@ -46,24 +48,44 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             help="Path to the validator database",
         )
         # Check if the arguments are already defined before adding them
-        if not any(arg.dest == 'subtensor.network' for arg in parser._actions):
-            parser.add_argument('--subtensor.network', type=str, help="The subtensor network to connect to")
-        if not any(arg.dest == 'netuid' for arg in parser._actions):
-            parser.add_argument('--netuid', type=int, help="The network UID")
-        if not any(arg.dest == 'wallet.name' for arg in parser._actions):
-            parser.add_argument('--wallet.name', type=str, help="The name of the wallet to use")
-        if not any(arg.dest == 'wallet.hotkey' for arg in parser._actions):
-            parser.add_argument('--wallet.hotkey', type=str, help="The hotkey of the wallet to use")
-        if not any(arg.dest == 'logging.trace' for arg in parser._actions):
-            parser.add_argument('--logging.trace', action='store_true', help="Enable trace logging")
-        if not any(arg.dest == 'logging.debug' for arg in parser._actions):
-            parser.add_argument('--logging.debug', action='store_true', help="Enable debug logging")
-        if not any(arg.dest == 'logging.info' for arg in parser._actions):
-            parser.add_argument('--logging.info', action='store_true', help="Enable info logging")
-        if not any(arg.dest == 'subtensor.chain_endpoint' for arg in parser._actions):
-            parser.add_argument('--subtensor.chain_endpoint', type=str, help="subtensor endpoint")
-        if not any(arg.dest == 'use_bt_api' for arg in parser._actions):
-            parser.add_argument('--use_bt_api', action='store_true', help="Use the Bettensor API for fetching game data")
+        if not any(arg.dest == "subtensor.network" for arg in parser._actions):
+            parser.add_argument(
+                "--subtensor.network",
+                type=str,
+                help="The subtensor network to connect to",
+            )
+        if not any(arg.dest == "netuid" for arg in parser._actions):
+            parser.add_argument("--netuid", type=int, help="The network UID")
+        if not any(arg.dest == "wallet.name" for arg in parser._actions):
+            parser.add_argument(
+                "--wallet.name", type=str, help="The name of the wallet to use"
+            )
+        if not any(arg.dest == "wallet.hotkey" for arg in parser._actions):
+            parser.add_argument(
+                "--wallet.hotkey", type=str, help="The hotkey of the wallet to use"
+            )
+        if not any(arg.dest == "logging.trace" for arg in parser._actions):
+            parser.add_argument(
+                "--logging.trace", action="store_true", help="Enable trace logging"
+            )
+        if not any(arg.dest == "logging.debug" for arg in parser._actions):
+            parser.add_argument(
+                "--logging.debug", action="store_true", help="Enable debug logging"
+            )
+        if not any(arg.dest == "logging.info" for arg in parser._actions):
+            parser.add_argument(
+                "--logging.info", action="store_true", help="Enable info logging"
+            )
+        if not any(arg.dest == "subtensor.chain_endpoint" for arg in parser._actions):
+            parser.add_argument(
+                "--subtensor.chain_endpoint", type=str, help="subtensor endpoint"
+            )
+        if not any(arg.dest == "use_bt_api" for arg in parser._actions):
+            parser.add_argument(
+                "--use_bt_api",
+                action="store_true",
+                help="Use the Bettensor API for fetching game data",
+            )
 
         args = parser.parse_args()
 
@@ -76,8 +98,8 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.scores = None
         self.hotkeys = None
         self.subtensor = None
-        self.axon_port = getattr(args, 'axon.port', None) 
-        
+        self.axon_port = getattr(args, "axon.port", None)
+
         self.max_targets = None
         self.target_group = None
         self.blacklisted_miner_hotkeys = None
@@ -85,16 +107,18 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.data_entry = None
         self.uid = None
         self.miner_responses = None
-        
-        
+
         self.db_path = DEFAULT_DB_PATH
-        
+
         self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
         self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
-        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
+        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(
+            minutes=30
+        )
         self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
-        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
-
+        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(
+            minutes=30
+        )
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -109,16 +133,16 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         return True
 
-
     def initialize_connection(self):
         try:
             self.subtensor = bt.subtensor(config=self.neuron_config)
-            bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+            bt.logging.info(
+                f"Connected to {self.neuron_config.subtensor.network} network"
+            )
         except Exception as e:
             bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
             self.subtensor = None
         return self.subtensor
-
 
     def print_chain_endpoint(self):
         if self.subtensor:
@@ -126,18 +150,15 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         else:
             bt.logging.info("Subtensor is not initialized yet.")
 
-
     def get_subtensor(self):
         if self.subtensor is None:
             self.subtensor = self.initialize_connection()
         return self.subtensor
 
-
     def sync_metagraph(self):
         subtensor = self.get_subtensor()
         self.metagraph.sync(subtensor=subtensor, lite=True)
         return self.metagraph
-
 
     def check_vali_reg(self, metagraph, wallet, subtensor) -> bool:
         """validates the validator has registered correctly"""
@@ -148,7 +169,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             return False
 
         return True
-
 
     def setup_bittensor_objects(
         self, neuron_config
@@ -167,15 +187,13 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         return wallet, subtensor, dendrite, metagraph
 
-
     def serve_axon(self):
         """Serve the axon to the network"""
         bt.logging.info("Serving axon...")
-        
+
         self.axon = bt.axon(wallet=self.wallet)
 
         self.axon.serve(netuid=self.neuron_config.netuid, subtensor=self.subtensor)
-
 
     def initialize_neuron(self) -> bool:
         """initializes the neuron
@@ -224,7 +242,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         if self.metagraph is not None:
             self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
 
-        # 
+        #
         args = self._parse_args(parser=self.parser)
 
         if args:
@@ -256,28 +274,26 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         self.db_manager = DatabaseManager(self.db_path)
 
-        self.sports_data = SportsData(db_manager=self.db_manager, api_client=self.api_client)
+        self.sports_data = SportsData(
+            db_manager=self.db_manager, api_client=self.api_client
+        )
 
-        self.entropy_system = EntropySystem(max_capacity=self.max_targets, max_days=45) 
+        self.entropy_system = EntropySystem(max_capacity=self.max_targets, max_days=45)
 
         self.weight_setter = WeightSetter(
             metagraph=self.metagraph,
             wallet=self.wallet,
             subtensor=self.subtensor,
             neuron_config=self.neuron_config,
-            db_path=self.db_path
+            db_path=self.db_path,
         )
         self.weight_setter.update_all_daily_stats()
 
-        
-
         return True
-
 
     def _parse_args(self, parser):
         """parses the command line arguments"""
         return parser.parse_args()
-
 
     def validator_validation(self, metagraph, wallet, subtensor) -> bool:
         """this method validates the validator has registered correctly"""
@@ -288,7 +304,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             return False
 
         return True
-
 
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
@@ -308,10 +323,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                             f"index '{i}' has mismatching hotkey. old hotkey: '{self.hotkeys[i]}', new hotkey: '{hotkey}. resetting score to 0.0"
                         )
                         self.scores[i] = 0.0
-                        #TODO: CALL scoring.register_miner() to update the scores.
-                        #TODO: CALL miner_tracking.update_miner_state() to update the miner's stats.
+                        # TODO: CALL scoring.register_miner() to update the scores.
+                        # TODO: CALL miner_tracking.update_miner_state() to update the miner's stats.
             else:
-                
                 bt.logging.info(
                     f"init default scores because of state and metagraph hotkey length mismatch. expected: {len(self.metagraph.hotkeys)} had: {len(self.hotkeys)}"
                 )
@@ -321,13 +335,12 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         else:
             self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
-
     def init_default_scores(self):
         """Initialize default scores for all miners in the network. This method is
         used to reset the scores in case of an internal error"""
 
         bt.logging.info("initiating validator with default scores for all miners")
-        
+
         if self.metagraph is None or self.metagraph.S is None:
             bt.logging.error("Metagraph or metagraph.S is not initialized")
             self.scores = torch.zeros(1, dtype=torch.float32)
@@ -338,12 +351,15 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             elif isinstance(self.metagraph.S, torch.Tensor):
                 metagraph_S_tensor = self.metagraph.S.float()
             else:
-                bt.logging.error(f"Unexpected type for metagraph.S: {type(self.metagraph.S)}")
-                metagraph_S_tensor = torch.zeros(len(self.metagraph.hotkeys), dtype=torch.float32)
+                bt.logging.error(
+                    f"Unexpected type for metagraph.S: {type(self.metagraph.S)}"
+                )
+                metagraph_S_tensor = torch.zeros(
+                    len(self.metagraph.hotkeys), dtype=torch.float32
+                )
                 self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
-        
-        bt.logging.info(f"validation weights have been initialized: {self.scores}")
 
+        bt.logging.info(f"validation weights have been initialized: {self.scores}")
 
     def save_state(self):
         """saves the state of the validator to a file"""
@@ -378,7 +394,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {last_api_call_timestamp}, last_update_recent_games: {last_update_recent_games_timestamp}"
         )
 
-
     def reset_validator_state(self, state_path):
         """inits the default validator state. should be invoked only
         when an exception occurs and the state needs to reset"""
@@ -395,7 +410,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.hotkeys = None
         self.blacklisted_miner_hotkeys = None
 
-
     def load_state(self):
         """loads the state of the validator from a file"""
         state_path = self.base_path + "/state.pt"
@@ -410,14 +424,46 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 self.last_updated_block = state["last_updated_block"]
                 if "blacklisted_miner_hotkeys" in state.keys():
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
-                
+
                 # Convert timestamps back to datetime
-                self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
-                self.last_update_recent_games = datetime.fromtimestamp(state.get("last_update_recent_games", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
-                
+                self.last_api_call = datetime.fromtimestamp(
+                    state.get(
+                        "last_api_call",
+                        (
+                            datetime.now(timezone.utc) - timedelta(minutes=30)
+                        ).timestamp(),
+                    ),
+                    tz=timezone.utc,
+                )
+                self.last_update_recent_games = datetime.fromtimestamp(
+                    state.get(
+                        "last_update_recent_games",
+                        (
+                            datetime.now(timezone.utc) - timedelta(minutes=30)
+                        ).timestamp(),
+                    ),
+                    tz=timezone.utc,
+                )
+
                 # Convert timestamps back to datetime
-                self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
-                self.last_update_recent_games = datetime.fromtimestamp(state.get("last_update_recent_games", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
+                self.last_api_call = datetime.fromtimestamp(
+                    state.get(
+                        "last_api_call",
+                        (
+                            datetime.now(timezone.utc) - timedelta(minutes=30)
+                        ).timestamp(),
+                    ),
+                    tz=timezone.utc,
+                )
+                self.last_update_recent_games = datetime.fromtimestamp(
+                    state.get(
+                        "last_update_recent_games",
+                        (
+                            datetime.now(timezone.utc) - timedelta(minutes=30)
+                        ).timestamp(),
+                    ),
+                    tz=timezone.utc,
+                )
 
             except Exception as e:
                 bt.logging.error(
@@ -426,7 +472,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 self.reset_validator_state(state_path=state_path)
         else:
             self.init_default_scores()
-
 
     def _get_local_miner_blacklist(self) -> list:
         """returns the blacklisted miners hotkeys from the local file"""
@@ -458,7 +503,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             bt.logging.trace(f"no local miner blacklist file in path: {blacklist_file}")
 
         return []
-
 
     def get_uids_to_query(self, all_axons) -> list:
         """returns the list of uids to query"""
@@ -566,10 +610,11 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
-
     def set_weights(self):
         try:
             return self.weight_setter.set_weights(self.db_path)
         except StopIteration:
-            bt.logging.warning("StopIteration encountered in set_weights. Handling gracefully.")
+            bt.logging.warning(
+                "StopIteration encountered in set_weights. Handling gracefully."
+            )
             return None

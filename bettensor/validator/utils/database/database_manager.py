@@ -3,6 +3,7 @@ import threading
 from queue import Queue, Empty
 from bettensor.validator.utils.database.database_init import initialize_database
 
+
 class DatabaseManager:
     _instance = None
     _lock = threading.Lock()
@@ -15,7 +16,7 @@ class DatabaseManager:
         return cls._instance
 
     def __init__(self, db_path):
-        if not hasattr(self, 'initialized'):
+        if not hasattr(self, "initialized"):
             self.db_path = db_path
             self.queue = Queue()
             self.lock = threading.Lock()
@@ -35,7 +36,10 @@ class DatabaseManager:
                     cursor = conn.cursor()
                     try:
                         result = func(cursor, *args, **kwargs)
-                        if func.__name__ not in ['begin_transaction', 'rollback_transaction']:
+                        if func.__name__ not in [
+                            "begin_transaction",
+                            "rollback_transaction",
+                        ]:
                             conn.commit()
                         result_queue.put(result)
                     except Exception as e:
@@ -68,26 +72,31 @@ class DatabaseManager:
                 return cursor.fetchall()
             else:
                 return cursor.rowcount  # Return the number of affected rows
+
         return self.execute(_execute_query)
 
     def executemany(self, query, params_list):
         def _executemany(cursor):
             cursor.executemany(query, params_list)
+
         self.execute(_executemany)
 
     def begin_transaction(self):
         def _begin_transaction(cursor):
             cursor.execute("BEGIN TRANSACTION")
+
         self.execute(_begin_transaction)
 
     def commit_transaction(self):
         def _commit_transaction(cursor):
             cursor.execute("COMMIT")
+
         self.execute(_commit_transaction)
 
     def rollback_transaction(self):
         def _rollback_transaction(cursor):
             cursor.execute("ROLLBACK")
+
         self.execute(_rollback_transaction)
 
     def _initialize_database(self):
