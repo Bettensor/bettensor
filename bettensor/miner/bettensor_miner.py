@@ -8,7 +8,7 @@ from typing import Tuple
 import bittensor as bt
 import sqlite3
 from bettensor.base.neuron import BaseNeuron
-from bettensor.protocol import Metadata, GameData, TeamGame, TeamGamePrediction
+from bettensor.protocol import Confirmation, Metadata, GameData, TeamGame, TeamGamePrediction
 from bettensor.miner.stats.miner_stats import MinerStateManager, MinerStatsHandler
 import datetime
 import os
@@ -153,7 +153,7 @@ class BettensorMiner(BaseNeuron):
         # Initialize MinerConfig
         self.miner_config = MinerConfig()
 
-    def forward(self, synapse: GameData) -> GameData:
+    def forward(self, synapse: GameData | Confirmation) -> GameData | Confirmation:
         bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
 
         print(f"Synapse version: {synapse.metadata.subnet_version}, our version: {self.subnet_version}")

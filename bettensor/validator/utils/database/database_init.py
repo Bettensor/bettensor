@@ -23,6 +23,7 @@ def initialize_database():
             miner_current_sortino_ratio REAL,
             miner_current_roi REAL,
             miner_current_clv_avg REAL,
+            
             miner_last_prediction_date TEXT,
             miner_lifetime_earnings REAL,
             miner_lifetime_wager_amount REAL,

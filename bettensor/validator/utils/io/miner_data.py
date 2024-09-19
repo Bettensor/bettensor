@@ -404,9 +404,9 @@ def get_sport_from_db(self, external_id):
 
 def recalculate_all_profits(self):
     self.weight_setter.recalculate_daily_profits()
-    
 
-def fetch_game_data(self, current_timestamp: str) -> Dict[str, TeamGame]:
+
+def fetch_local_game_data(self, current_timestamp: str) -> Dict[str, TeamGame]:
 
     # Calculate timestamp for 15 days ago
     fifteen_days_ago = (datetime.fromisoformat(current_timestamp) - datetime.timedelta(days=15)).isoformat()

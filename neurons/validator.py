@@ -38,6 +38,7 @@ from bettensor.validator.utils.scoring.watchdog import Watchdog
 from bettensor.validator.utils.io.website_handler import fetch_and_send_predictions
 
 def main(validator: BettensorValidator):
+
     initialize(validator)
     watchdog = Watchdog(timeout=900)  # 15 minutes timeout
 
@@ -62,6 +63,7 @@ def main(validator: BettensorValidator):
             collect_and_process_responses(validator, uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query, synapse)
             
             current_block = validator.subtensor.block
+            
             # Send data to website server every 15 blocks
             if (current_block - validator.last_updated_block) % 15 == 0:
                 send_data_to_website_server(validator)
@@ -88,6 +90,10 @@ def initialize(validator):
         validator.last_updated_block = validator.subtensor.block - 301
 
 def update_game_data(validator, current_time):
+    '''
+    Calls SportsData to update game data in the database
+    
+    '''
     try:
         all_games = validator.sports_data.get_multiple_game_data()
         if all_games is None:
@@ -242,6 +248,12 @@ def set_weights(validator):
         bt.logging.info("Successfully updated weights")
     else:
         bt.logging.warning("Failed to set weights or encountered an error, continuing with next iteration.")
+
+def scoring_run(validator):
+    '''
+    calls the scoring system to update miner scores before setting weights
+    '''
+
 
 def end_of_loop_processes(validator, watchdog):
     validator.step += 1
