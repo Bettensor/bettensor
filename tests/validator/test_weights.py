@@ -4,7 +4,7 @@ import torch
 import tempfile
 import os
 from datetime import datetime, timedelta, timezone
-from bettensor.utils.weights_functions import WeightSetter
+from bettensor.validator.utils.scoring.weights_functions import WeightSetter
 import random
 
 class MockMetagraph:

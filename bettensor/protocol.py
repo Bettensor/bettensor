@@ -211,6 +211,7 @@ class GameData(bt.Synapse):
         subnet_version: str,
         neuron_uid: int,  # Note: This is an int
         synapse_type: str,
+        gamedata_dict: Dict[str, TeamGame] = None,
         prediction_dict: Dict[str, TeamGamePrediction] = None,
     ):
         metadata = Metadata.create(
@@ -229,46 +230,6 @@ class GameData(bt.Synapse):
             prediction_dict=prediction_dict,
             synapse_type=synapse_type,
         )
-
-    @staticmethod
-    def fetch_game_data(current_timestamp, db_path) -> Dict[str, TeamGame]:
-        connection = sqlite3.connect(db_path)
-        cursor = connection.cursor()
-
-        # Calculate timestamp for 5 days ago
-        fifteen_days_ago = (datetime.fromisoformat(current_timestamp) - timedelta(days=15)).isoformat()
-
-        query = """
-            SELECT id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie
-            FROM game_data
-            WHERE eventStartDate > ? OR (eventStartDate BETWEEN ? AND ?)
-        """
-
-        cursor.execute(query, (current_timestamp, fifteen_days_ago, current_timestamp))
-        rows = cursor.fetchall()
-
-        gamedata_dict = {}
-        for row in rows:
-            team_game = TeamGame(
-                game_id=row[0],   # External ID from API
-                team_a=row[1],
-                team_b=row[2],
-                sport=row[3],
-                league=row[4],
-                create_date=row[6],
-                last_update_date=row[7],
-                event_start_date=row[8],
-                active=bool(row[9]),
-                outcome=row[10],
-                team_a_odds=row[11],
-                team_b_odds=row[12],
-                tie_odds=row[13],
-                can_tie=bool(row[14]),
-            )
-            gamedata_dict[row[0]] = team_game
-
-        connection.close()
-        return gamedata_dict
 
     def deserialize(self):
         return self.gamedata_dict, self.prediction_dict, self.metadata

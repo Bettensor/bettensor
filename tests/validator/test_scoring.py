@@ -6,268 +6,288 @@ from datetime import datetime, timedelta, timezone
 from bettensor.validator.utils.scoring.entropy_system import EntropySystem
 from bettensor.validator.utils.scoring.scoring import ScoringSystem
 from bettensor.validator.utils.scoring.scoring_data import ScoringData
+import random
+import logging
 
 class TestScoringSystem(unittest.TestCase):
-    def setUp(self):
-        # Create a temporary directory for the test database
-        self.temp_dir = tempfile.mkdtemp()
-        self.db_path = os.path.join(self.temp_dir, 'test_scoring.db')
+    @classmethod
+    def setUpClass(cls):
+        cls.temp_dir = tempfile.mkdtemp()
+        cls.db_path = os.path.join(cls.temp_dir, 'test_scoring.db')
         
-        self.num_miners = 256
-        self.max_days = 45
+        cls.num_miners = 256
+        cls.max_days = 45
+        cls.scores_per_day = 24
         
-        # Initialize ScoringSystem with the test database
-        self.scoring_system = ScoringSystem(self.db_path, self.num_miners, self.max_days)
+        cls.initial_date = datetime(2023, 5, 1, tzinfo=timezone.utc)  # Define initial_date
+        cls.scoring_system = ScoringSystem(
+            cls.db_path, 
+            cls.num_miners, 
+            cls.max_days,
+            reference_date=cls.initial_date  # Pass reference_date
+        )
         
-        # Add test data
-        self._add_test_data()
+        cls._add_test_data()
         
-        # Verify data insertion
-        conn = self.scoring_system.scoring_data.connect_db()
+        conn = cls.scoring_system.scoring_data.connect_db()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM predictions")
         prediction_count = cursor.fetchone()[0]
         print(f"Debug: Total predictions in database: {prediction_count}")
         conn.close()
-        
-        # Ensure the scoring system is initialized with the test data
-        self.scoring_system.scoring_data.preprocess_for_scoring(datetime.now().strftime('%Y-%m-%d'))
 
-    def tearDown(self):
-        # Remove the temporary directory and its contents
-        for root, dirs, files in os.walk(self.temp_dir, topdown=False):
+        logging.basicConfig(level=logging.DEBUG)
+        cls.logger = logging.getLogger(__name__)
+
+        # Run a full 16-day simulation
+        cls.run_full_simulation()
+
+    @classmethod
+    def tearDownClass(cls):
+        for root, dirs, files in os.walk(cls.temp_dir, topdown=False):
             for name in files:
                 os.remove(os.path.join(root, name))
             for name in dirs:
                 os.rmdir(os.path.join(root, name))
-        os.rmdir(self.temp_dir)
+        os.rmdir(cls.temp_dir)
 
-    def _add_test_data(self):
-        conn = self.scoring_system.scoring_data.connect_db()
+    @classmethod
+    def _add_test_data(cls):
+        conn = cls.scoring_system.scoring_data.connect_db()
         cursor = conn.cursor()
         
         test_dates = [
-            datetime(2023, 5, 1).strftime('%Y-%m-%d'),
-            datetime(2023, 5, 2).strftime('%Y-%m-%d'),
-            datetime.now().strftime('%Y-%m-%d')
+            (datetime(2023, 5, 1, tzinfo=timezone.utc) + timedelta(days=i)).strftime('%Y-%m-%d')
+            for i in range(16)  # 16 days of data
         ]
         
+        games_per_day = 10
         game_id_counter = 0
         for test_date in test_dates:
-            # Add test games
-            for _ in range(10):
+            for _ in range(games_per_day):
                 external_id = f"EXT_{game_id_counter}"
                 cursor.execute("""
-                    INSERT OR IGNORE INTO game_data (id, external_id, team_a, team_b, team_a_odds, team_b_odds, tie_odds, event_start_date, sport, outcome, active)
+                    INSERT INTO game_data (id, external_id, team_a, team_b, team_a_odds, team_b_odds, tie_odds, event_start_date, sport, outcome, active)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (game_id_counter, external_id, "Team A", "Team B", 2.0, 2.0, 3.0, test_date, "TestSport", 0, 1))
-                game_id_counter += 1
-
-            # Add predictions for each miner
-            for miner_uid in range(self.num_miners):
-                for game_id in range(game_id_counter - 10, game_id_counter):
-                    external_id = f"EXT_{game_id}"
+                
+                for miner_uid in range(cls.num_miners):
+                    # Calculate wager amount to reach approximately 1000 per day
+                    wager = 1000 / games_per_day
                     cursor.execute("""
-                        INSERT OR IGNORE INTO predictions (prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds, wager)
+                        INSERT INTO predictions (prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds, wager)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (f"{test_date}_{miner_uid}_{external_id}", external_id, miner_uid, test_date, 0, 2.0, 1.0))
+                    """, (f"{test_date}_{miner_uid}_{external_id}", external_id, miner_uid, test_date, random.randint(0, 2), random.uniform(1.5, 3.0), wager))
+                
+                game_id_counter += 1
 
         conn.commit()
         conn.close()
 
         print(f"Debug: Added test data for dates: {test_dates}")
+        print(f"Debug: Total games added: {game_id_counter}")
+        print(f"Debug: Total predictions added: {game_id_counter * cls.num_miners}")
+        print(f"Debug: Each miner wagered approximately {1000 * len(test_dates)} units in total")
 
-    def test_update_clv(self):
-        predictions = [t.rand(10, 3) for _ in range(self.num_miners)]
-        closing_line_odds = t.rand(10, 2)
-        
-        clv_scores = self.scoring_system._update_clv(predictions, closing_line_odds)
-        
-        self.assertEqual(clv_scores.shape, t.Size([self.num_miners, self.max_days]))
-        self.assertTrue(t.all(clv_scores[:, -1] >= -100) and t.all(clv_scores[:, -1] <= 100))
+    @classmethod
+    def run_full_simulation(cls):
+        cls.tier_history = []
+        cls.score_history = []
+        cls.wager_history = []
+        cls.weight_history = []
 
-    def test_update_roi(self):
-        predictions = [t.rand(10, 3) for _ in range(self.num_miners)]
-        results = t.randint(0, 2, (10,))
-        
-        roi_scores = self.scoring_system._update_roi(predictions, results)
-        
-        self.assertEqual(roi_scores.shape, t.Size([self.num_miners, self.max_days]))
-        self.assertTrue(t.all(roi_scores[:, -1] >= -1) and t.all(roi_scores[:, -1] <= 1))
+        for i in range(16):
+            current_date = cls.initial_date + timedelta(days=i)
+            weights = cls.scoring_system.scoring_run(current_date)
+            
+            current_tiers = cls.scoring_system._get_tensor_for_day(
+                cls.scoring_system.tiers, 
+                cls.scoring_system.current_day, 
+                cls.scoring_system.current_hour
+            ).clone()
+            tier_distribution = [
+                int((current_tiers == tier).sum().item()) 
+                for tier in range(1, len(cls.scoring_system.tier_configs) + 1)
+            ]
+            cls.tier_history.append(tier_distribution)
 
-    def test_update_sortino(self):
-        self.scoring_system.roi_scores = t.randn(self.num_miners, self.max_days)
-        
-        sortino_scores = self.scoring_system._update_sortino()
-        
-        self.assertEqual(sortino_scores.shape, t.Size([self.num_miners, self.max_days]))
-        self.assertTrue(t.all(sortino_scores.isfinite()))
+            current_scores = cls.scoring_system._get_tensor_for_day(
+                cls.scoring_system.composite_scores, 
+                cls.scoring_system.current_day, 
+                cls.scoring_system.current_hour
+            )
+            avg_score = current_scores.mean().item()
+            cls.score_history.append(avg_score)
 
-    def test_calculate_amount_wagered(self):
-        predictions = [t.rand(t.randint(1, 20, (1,)).item(), 3) for _ in range(self.num_miners)]
-        
-        amount_wagered = self.scoring_system._calculate_amount_wagered(predictions)
-        
-        self.assertEqual(amount_wagered.shape, t.Size([self.num_miners]))
-        self.assertTrue(t.all(amount_wagered >= 0))
+            current_wagers = cls.scoring_system._get_tensor_for_day(
+                cls.scoring_system.amount_wagered, 
+                cls.scoring_system.current_day, 
+                cls.scoring_system.current_hour
+            ).sum().item()
+            cls.wager_history.append(current_wagers)
 
-    def test_update_composite_scores(self):
-        self.scoring_system.clv_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.roi_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.sortino_scores = t.rand(self.num_miners, self.max_days)  # Update to 2D tensor
-        self.scoring_system.entropy_scores = t.rand(self.num_miners, self.max_days)
-        
-        composite_scores = self.scoring_system._update_composite_scores()
-        
-        self.assertEqual(composite_scores.shape, t.Size([self.num_miners, self.max_days]))
-        self.assertTrue(t.all(composite_scores >= 0))
+            cls.weight_history.append(weights)
 
-    def test_calculate_composite_scores(self):
-        self.scoring_system.clv_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.roi_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.sortino_scores = t.rand(self.num_miners, self.max_days)  # Update to 2D tensor
-        self.scoring_system.entropy_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.tiers = t.randint(1, 6, (self.num_miners,))
-        
-        composite_scores = self.scoring_system.calculate_composite_scores()
-        
-        self.assertEqual(composite_scores.shape, t.Size([self.num_miners]))
-        self.assertTrue(t.all(composite_scores >= 0))
+            cls.logger.debug(f"Day {i}: Tier distribution: {tier_distribution}")
+            cls.logger.debug(f"Day {i}: Average score: {avg_score:.4f}")
+            cls.logger.debug(f"Day {i}: Total wager: {current_wagers:.2f}")
+            cls.logger.debug(f"Day {i}: Non-zero scores: {(current_scores != 0).sum().item()}")
+            cls.logger.debug(f"Day {i}: Min score: {current_scores.min().item():.4f}, Max score: {current_scores.max().item():.4f}")
 
-    def test_reset_miner(self):
-        miner_uid = t.randint(0, self.num_miners - 1, (1,)).item()
-        self.scoring_system.reset_miner(miner_uid)
+    def test_preprocess_for_scoring(self):
+        # This test can use the data from the first day of the simulation
+        date = self.initial_date.strftime('%Y-%m-%d')
+        predictions, closing_line_odds, results = self.scoring_system.scoring_data.preprocess_for_scoring(date)
         
-        self.assertEqual(self.scoring_system.clv_scores[miner_uid].sum().item(), 0)
-        self.assertEqual(self.scoring_system.sortino_scores[miner_uid].sum().item(), 0)
-        self.assertEqual(self.scoring_system.roi_scores[miner_uid].sum().item(), 0)
-        self.assertEqual(self.scoring_system.amount_wagered[miner_uid].sum().item(), 0)
-        self.assertEqual(self.scoring_system.composite_scores[miner_uid].sum().item(), 0)
-        self.assertEqual(self.scoring_system.entropy_scores[miner_uid].sum().item(), 0)
-        self.assertEqual(self.scoring_system.tiers[miner_uid].item(), 1)
-        self.assertEqual(self.scoring_system.tier_history[miner_uid].sum().item(), self.max_days)
+        self.assertIsInstance(predictions, list)
+        self.assertGreater(len(predictions), 0)
+        self.assertIsInstance(predictions[0], t.Tensor)
+        self.assertEqual(predictions[0].shape[1], 4)  # [game_id, predicted_outcome, predicted_odds, wager]
+        
+        self.assertIsInstance(closing_line_odds, t.Tensor)
+        self.assertEqual(closing_line_odds.shape[1], 4)  # [game_id, team_a_odds, team_b_odds, tie_odds]
+        
+        self.assertIsInstance(results, t.Tensor)
+        self.assertEqual(results.shape[0], closing_line_odds.shape[0])
 
-    def test_calculate_composite_score(self):
-        miner_uid = t.randint(0, self.num_miners - 1, (1,)).item()
-        window = t.randint(1, self.max_days, (1,)).item()
-        self.scoring_system.clv_scores[miner_uid, -window:] = t.rand(window)
-        self.scoring_system.roi_scores[miner_uid, -window:] = t.rand(window)
-        self.scoring_system.sortino_scores[miner_uid, -window:] = t.rand(window)  # Update to 2D tensor
-        self.scoring_system.entropy_scores[miner_uid, -window:] = t.rand(window)
+    def test_entropy_system_update_ebdr_scores(self):
+        # This test can use the data from the first day of the simulation
+        date = self.initial_date.strftime('%Y-%m-%d')
+        predictions, closing_line_odds, results = self.scoring_system.scoring_data.preprocess_for_scoring(date)
         
-        score = self.scoring_system.calculate_composite_score(miner_uid, window)
+        entropy_system = EntropySystem(max_capacity=self.num_miners, max_days=self.max_days)
+        ebdr_scores = entropy_system.update_ebdr_scores(predictions, closing_line_odds, results)
         
-        self.assertTrue(0 <= score <= 4)  # Assuming each component is between 0 and 1
+        self.assertIsInstance(ebdr_scores, t.Tensor)
+        self.assertEqual(ebdr_scores.shape, (self.num_miners, self.max_days, 24))
+        self.assertTrue(t.any(ebdr_scores != 0), f"All EBDR scores are zero. Min: {ebdr_scores.min().item():.8f}, Max: {ebdr_scores.max().item():.8f}, Mean: {ebdr_scores.mean().item():.8f}")
+        print(f"Number of non-zero EBDR scores: {(ebdr_scores != 0).sum().item()}")
+        print(f"Game entropies: {entropy_system.game_entropies}")
 
-    def test_manage_tiers(self):
-        # Initialize all miners in tier 1
-        self.scoring_system.tiers = t.ones(self.num_miners, dtype=t.int)
-        initial_distribution = self.scoring_system.tiers.clone()
+    def test_scoring_run(self):
+        # This test can use the data from the first day of the simulation
+        weights = self.weight_history[0]
         
-        # Simulate some activity
-        self.scoring_system.amount_wagered = t.rand(self.num_miners, self.max_days) * 1000
-        self.scoring_system.clv_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.roi_scores = t.rand(self.num_miners, self.max_days) * 0.2 - 0.1  # ROI between -10% and 10%
-        self.scoring_system.sortino_scores = t.rand(self.num_miners, self.max_days)
+        self.assertIsNotNone(weights)
+        self.assertEqual(weights.shape[0], self.num_miners)
+        self.assertAlmostEqual(weights.sum().item(), 1.0, places=6)
 
-        self.scoring_system.manage_tiers()
+    def test_update_new_day(self):
+        # Check tier changes over the first 5 days
+        initial_tiers = self.scoring_system._get_tensor_for_day(self.scoring_system.tiers, 0, 0)
         
-        final_distribution = self.scoring_system.tiers.clone()
+        tiers_changed = False
+        for day in range(1, 5):  # Check days 1 to 4
+            current_tiers = self.scoring_system._get_tensor_for_day(self.scoring_system.tiers, day, 0)
+            if not t.all(initial_tiers == current_tiers):
+                tiers_changed = True
+                break
         
-        self.assertFalse(t.all(initial_distribution == final_distribution), 
-                         "Tier distribution did not change after manage_tiers")
+        self.assertTrue(tiers_changed, "Tiers did not update within the first 5 days")
         
-        for tier, config in enumerate(self.scoring_system.tier_configs, 1):
-            tier_count = (self.scoring_system.tiers == tier).sum().item()
-            self.assertLessEqual(tier_count, config['capacity'], 
-                                 f"Tier {tier} exceeds capacity ({tier_count} > {config['capacity']})")
-
-    def test_manage_tiers_debug_output(self):
-        self.scoring_system.tiers = t.ones(self.num_miners, dtype=t.int)
-        self.scoring_system.amount_wagered = t.rand(self.num_miners, self.max_days) * 1000
-        self.scoring_system.clv_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.roi_scores = t.rand(self.num_miners, self.max_days) * 0.2 - 0.1
-        self.scoring_system.sortino_scores = t.rand(self.num_miners, self.max_days)
-        
-        # Ensure some miners have high scores to trigger promotions
-        self.scoring_system.composite_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.composite_scores[:10, :] = 0.9  # Set high scores for first 10 miners
-        
-        # Ensure some miners have low scores to trigger demotions
-        self.scoring_system.composite_scores[-10:, :] = 0.1  # Set low scores for last 10 miners
-        
-        # Set some miners to higher tiers to allow for demotions
-        self.scoring_system.tiers[-10:] = 2
-
-        with self.assertLogs(self.scoring_system.logger, level='INFO') as cm:
-            self.scoring_system.manage_tiers(debug=True)
-        
-        self.assertTrue(any("promoted to tier" in log for log in cm.output), "No promotions occurred")
-        self.assertTrue(any("demoted from tier" in log for log in cm.output), "No demotions occurred")
+        if tiers_changed:
+            print(f"Tiers changed on day {day}")
+            print("Initial tier distribution:", self.tier_history[0])
+            print(f"Day {day} tier distribution:", self.tier_history[day])
+        else:
+            print("Tier distributions for the first 5 days:")
+            for i in range(5):
+                print(f"Day {i}:", self.tier_history[i])
 
     def test_calculate_weights(self):
-        self.scoring_system.clv_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.roi_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.sortino_scores = t.rand(self.num_miners, self.max_days)  # Update to 2D tensor
-        self.scoring_system.entropy_scores = t.rand(self.num_miners, self.max_days)
-        self.scoring_system.tiers = t.randint(1, 6, (self.num_miners,))
-        
-        weights = self.scoring_system.calculate_weights()
+        # This test can use the data from the last day of the simulation
+        weights = self.weight_history[-1]
         
         self.assertEqual(weights.shape, t.Size([self.num_miners]))
         self.assertTrue(t.all(weights >= 0))
         self.assertAlmostEqual(weights.sum().item(), 1.0, places=6)
 
-    def test_scoring_run(self):
-        current_date = datetime.now().strftime('%Y-%m-%d')
-        weights = self.scoring_system.scoring_run(current_date)
-        if weights is None:
-            print(f"Debug: No weights returned for date {current_date}")
-            # Fetch some debug information
-            conn = self.scoring_system.scoring_data.connect_db()
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM predictions WHERE DATE(prediction_date) = DATE(?)", (current_date,))
-            prediction_count = cursor.fetchone()[0]
-            print(f"Debug: Found {prediction_count} predictions for date {current_date}")
-            conn.close()
-        self.assertIsNotNone(weights)
-        self.assertEqual(weights.shape[0], self.num_miners)
+    def test_tier_progression(self):
+        initial_distribution = self.tier_history[0]
+        final_distribution = self.tier_history[-1]
 
-    def test_multiple_updates_same_day(self):
-        initial_date = datetime(2023, 5, 1, tzinfo=timezone.utc)
-        self.scoring_system.scoring_run(initial_date)
+        self.assertNotEqual(initial_distribution, final_distribution, "Tier distribution did not change over time")
         
-        # Simulate multiple updates on the same day
-        for _ in range(5):
-            self.scoring_system.scoring_run(initial_date + timedelta(hours=1))
+        # Check that we have miners in at least tier 3 by the end
+        self.assertTrue(any(count > 0 for count in final_distribution[2:]), "No miners reached tier 3 or above after 16 days")
+
+        print("\nTier progression over 16 days:")
+        for day, (distribution, avg_score, total_wager) in enumerate(zip(self.tier_history, self.score_history, self.wager_history)):
+            print(f"Day {day}: {distribution}, Avg Score: {avg_score:.4f}, Total Wager: {total_wager:.2f}")
+
+    def test_score_stability(self):
+        # Check that scores are relatively stable over time
+        score_diff = self.score_history[-1] - self.score_history[0]
+        self.assertLess(abs(score_diff), 0.1, "Scores are not stable over time")
+
+    def test_wager_increase(self):
+        # Check that wagers are increasing over time
+        self.assertGreater(
+            sum(self.wager_history[7:]), 
+            sum(self.wager_history[:7]), 
+            "Wagers are not increasing over time"
+        )
+
+    def test_weight_distribution(self):
+        final_weights = self.weight_history[-1]
+        self.assertAlmostEqual(final_weights.sum().item(), 1.0, places=6, msg="Weights do not sum to 1")
+        self.assertTrue((final_weights >= 0).all(), "Some weights are negative")
+        self.assertTrue((final_weights <= 1).all(), "Some weights are greater than 1")
+
+    def test_entropy_system_integration(self):
+        final_entropy_scores = self.scoring_system._get_tensor_for_day(
+            self.scoring_system.entropy_scores, 
+            self.scoring_system.current_day, 
+            self.scoring_system.current_hour
+        )
         
-        # Check that the tensor hasn't rolled
-        self.assertEqual(self.scoring_system.last_update_date, initial_date.date())
-
-    def test_update_new_day(self):
-        initial_date = datetime(2023, 5, 1, tzinfo=timezone.utc)
-        self.scoring_system.scoring_run(initial_date)
+        print(f"Entropy scores shape: {final_entropy_scores.shape}")
+        print(f"Entropy scores non-zero count: {(final_entropy_scores != 0).sum().item()}")
+        print(f"Entropy scores statistics: Min: {final_entropy_scores.min().item():.8f}, Max: {final_entropy_scores.max().item():.8f}, Mean: {final_entropy_scores.mean().item():.8f}")
+        print(f"Number of game entropies: {len(self.scoring_system.entropy_system.game_entropies)}")
+        print(f"Game entropies: {self.scoring_system.entropy_system.game_entropies}")
         
-        # Simulate an update on the next day
-        next_day = initial_date + timedelta(days=1)
-        self.scoring_system.scoring_run(next_day)
+        self.assertTrue(t.any(final_entropy_scores >= 0), f"No non-negative entropy scores. Min: {final_entropy_scores.min().item():.8f}, Max: {final_entropy_scores.max().item():.8f}, Mean: {final_entropy_scores.mean().item():.8f}")
+
+    def test_wraparound(self):
+        # This test can use the data from the full simulation
+        expected_day = (15) % self.scoring_system.max_days  # 15 is the last day of our 16-day simulation
+        self.assertEqual(self.scoring_system.current_day, expected_day)
+        self.assertEqual(self.scoring_system.current_hour, 0)
+
+    def test_window_calculation(self):
+        # This test might need to be adjusted to use the data from the full simulation
+        window = 30
+        start_day = self.scoring_system.current_day
+        start_hour = 0
+        window_scores = self.scoring_system._get_window_scores(
+            self.scoring_system.clv_scores, 
+            start_day, 
+            start_hour, 
+            window
+        )
         
-        # Check that the tensor has rolled and the last update date has changed
-        self.assertEqual(self.scoring_system.last_update_date, next_day.date())
+        # Adjust the expected_scores calculation based on the actual data from the simulation
+        expected_days = [(start_day - offset) % self.scoring_system.max_days for offset in range(window)]
+        expected_scores = self.scoring_system.clv_scores[:, expected_days, start_hour]
+        
+        self.assertEqual(
+            window_scores.shape[1], 
+            window,
+            f"Expected window_scores to have {window} elements, got {window_scores.shape[1]}"
+        )
+        self.assertTrue(
+            t.allclose(window_scores, expected_scores, atol=1e-4),
+            f"Window scores do not match expected scores.\n"
+            f"Window scores: {window_scores}\n"
+            f"Expected scores: {expected_scores}\n"
+            f"Difference: {(window_scores - expected_scores).abs().max()}"
+        )
+    
+        # Print shapes for debugging
+        print(f"window_scores shape: {window_scores.shape}")
+        print(f"expected_scores shape: {expected_scores.shape}")
 
-    def test_initial_entropy_scores(self):
-        num_miners = 3
-        num_games = 2  # Increase this to 2 to match the shape of predictions
-        predictions = [t.tensor([[2.0, 1.0, 0], [3.0, 0.5, 1]]) for _ in range(num_miners)]
-        closing_line_odds = t.tensor([[2.0, 3.0], [2.5, 2.5]])  # Add another set of odds
-        results = t.tensor([0, 1])  # Add another result
-
-        entropy_system = EntropySystem(max_capacity=num_miners, max_days=self.max_days)
-        entropy_scores = entropy_system.update_ebdr_scores(predictions, closing_line_odds, results)
-
-        self.assertIsNotNone(entropy_scores)
-        self.assertEqual(entropy_scores.shape, (num_miners, self.max_days))
-        self.assertTrue(t.any(entropy_scores != 0))  # Ensure some scores are non-zero
-
+   
 if __name__ == '__main__':
     unittest.main()

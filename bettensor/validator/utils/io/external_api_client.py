@@ -3,15 +3,24 @@ import time
 from typing import Dict, Any, Optional
 import bittensor as bt
 from datetime import datetime, timezone
+from .base_api_client import BaseAPIClient
 
-class APIClient:
-    def __init__(self, rapid_api_key: str, bet365_api_key: str):
+class APIClient(BaseAPIClient):
+    def __init__(self, rapid_api_key: str, bet365_api_key: str, base_url: str):
+        super().__init__(base_url, rapid_api_key)  # We'll use rapid_api_key as the primary key for now
         self.rapid_api_key = rapid_api_key
         self.bet365_api_key = bet365_api_key
+        
+        self.api_hosts = {
+            "baseball": "api-baseball.p.rapidapi.com",
+            "soccer": "api-football-v1.p.rapidapi.com",
+            "nfl": "api.b365api.com"
+        }       
         self.last_request_time = 0
         self.min_request_interval = 1  # Minimum 1 second between requests
 
-    def _make_request(self, url: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    # Keeping the original _make_request method for reference
+    def _make_request_old(self, url: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # Implement basic rate limiting
         current_time = time.time()
         time_since_last_request = current_time - self.last_request_time
@@ -37,25 +46,49 @@ class APIClient:
             bt.logging.error(f"Request failed: {str(e)}")
             return None
 
+    # New method using BaseAPIClient
+    def _make_request_new(self, endpoint: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            return self.get_data(endpoint, params)
+        except Exception as e:
+            bt.logging.error(f"Request failed: {str(e)}")
+            return None
+
+    ################################## RapidAPI - Baseball and Soccer ##################################
+
     def get_baseball_game(self, game_id: str) -> Optional[Dict[str, Any]]:
         url = "https://api-baseball.p.rapidapi.com/games"
         params = {"id": game_id}
-        return self._make_request(url, params, "baseball")
+        return self._make_request_old(url, params)
+
+    def get_baseball_game_new(self, game_id: str) -> Optional[Dict[str, Any]]:
+        endpoint = "games"
+        params = {"id": game_id}
+        return self._make_request_new(endpoint, params)
 
     def get_soccer_game(self, game_id: str) -> Optional[Dict[str, Any]]:
         url = "https://api-football-v1.p.rapidapi.com/v3/fixtures"
         params = {"id": game_id}
-        return self._make_request(url, params, "soccer")
+        return self._make_request_old(url, params)
+
+    def get_soccer_game_new(self, game_id: str) -> Optional[Dict[str, Any]]:
+        endpoint = "v3/fixtures"
+        params = {"id": game_id}
+        return self._make_request_new(endpoint, params)
+    
+
+
+    ################################## Bet365 - NFL ##################################
 
     def get_upcoming_nfl_events(self) -> Optional[Dict[str, Any]]:
         url = "https://api.b365api.com/v1/bet365/upcoming"
         params = {"sport_id": 12, "token": self.bet365_api_key}
-        return self._make_request(url, params)
+        return self._make_request_old(url, params)
 
     def get_nfl_odds(self, event_id: str) -> Optional[Dict[str, Any]]:
         url = "https://api.b365api.com/v3/bet365/prematch"
         params = {"FI": event_id, "token": self.bet365_api_key}
-        return self._make_request(url, params)
+        return self._make_request_old(url, params)
 
     def process_nfl_games(self) -> list:
         api_response = self.get_upcoming_nfl_events()
@@ -115,4 +148,8 @@ class APIClient:
     def get_nfl_result(self, event_id: str) -> Optional[Dict[str, Any]]:
         url = "https://api.b365api.com/v1/bet365/result"
         params = {"event_id": event_id, "token": self.nfl_api_token}
-        return self._make_request(url, params)
+        return self._make_request_old(url, params)
+    
+
+
+
