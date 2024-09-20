@@ -74,10 +74,12 @@ class PredictionsHandler:
         query = """
         INSERT INTO predictions (
             predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-            teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome,
+            validators_sent_to, validators_confirmed
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0)
         RETURNING predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-            teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
+            teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome,
+            validators_sent_to, validators_confirmed
         """
         params = (
             prediction["predictionID"],
@@ -124,6 +126,25 @@ class PredictionsHandler:
             bt.logging.error(f"Error adding prediction: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
             return {"status": "error", "message": f"Error adding prediction: {str(e)}"}
+
+    def update_prediction_sent(self, prediction_id: str):
+        query = """
+        UPDATE predictions
+        SET validators_sent_to = validators_sent_to + 1
+        WHERE predictionID = %s
+        """
+        self.db_manager.execute_query(query, (prediction_id,))
+
+    def update_prediction_confirmations(self, prediction_ids: List[str], validator_hotkey: str):
+        placeholders = ','.join(['%s'] * len(prediction_ids))
+        query = f"""
+        UPDATE predictions
+        SET validators_confirmed = validators_confirmed + 1
+        WHERE predictionID IN ({placeholders})
+        AND validators_confirmed < validators_sent_to
+        """
+        params = prediction_ids
+        self.db_manager.execute_query(query, params)
 
     def get_predictions(self, miner_uid):
         query = """

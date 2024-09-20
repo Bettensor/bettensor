@@ -147,7 +147,9 @@ class DatabaseManager:
                 is_model_prediction BOOLEAN,
                 outcome TEXT,
                 payout REAL,
-                sent_to_site INTEGER DEFAULT 0
+                sent_to_site INTEGER DEFAULT 0,
+                validators_sent_to INTEGER DEFAULT 0,
+                validators_confirmed INTEGER DEFAULT 0
             )
             """,
             ),
@@ -221,6 +223,16 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS miner_active (
                 miner_uid TEXT PRIMARY KEY,
                 last_active_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            ),
+            (
+                "prediction_confirmations",
+                """
+            CREATE TABLE IF NOT EXISTS prediction_confirmations (
+                prediction_id TEXT,
+                validator_hotkey TEXT,
+                PRIMARY KEY (prediction_id, validator_hotkey)
             )
             """,
             ),

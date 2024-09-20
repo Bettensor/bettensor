@@ -8,13 +8,7 @@ from typing import Tuple
 import bittensor as bt
 import sqlite3
 from bettensor.base.neuron import BaseNeuron
-from bettensor.protocol import (
-    Confirmation,
-    Metadata,
-    GameData,
-    TeamGame,
-    TeamGamePrediction,
-)
+from bettensor.protocol import Confirmation, Metadata, GameData
 from bettensor.miner.stats.miner_stats import MinerStateManager, MinerStatsHandler
 import datetime
 import os
@@ -203,6 +197,12 @@ class BettensorMiner(BaseNeuron):
         )
         self._check_version(synapse.metadata.subnet_version)
 
+        if isinstance(synapse, GameData):
+            return self._handle_game_data(synapse)
+        elif isinstance(synapse, Confirmation):
+            return self._handle_confirmation(synapse)
+
+    def _handle_game_data(self, synapse: GameData) -> GameData:
         bt.logging.debug(f"Processing game data: {len(synapse.gamedata_dict)} games")
 
         try:
@@ -250,11 +250,24 @@ class BettensorMiner(BaseNeuron):
                 f"Number of unfinished predictions added to synapse: {len(unfinished_predictions)}"
             )
 
+            # Update validators_sent_to count for each prediction
+            for pred_id in unfinished_predictions:
+                self.predictions_handler.update_prediction_sent(pred_id)
+
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")
             return self._clean_synapse(synapse, f"Error in forward method: {e}")
 
         return synapse
+
+    def _handle_confirmation(self, synapse: Confirmation) -> None:
+        bt.logging.debug(f"Processing confirmation from {synapse.dendrite.hotkey}")
+        if synapse.confirmation_dict:
+            prediction_ids = list(synapse.confirmation_dict.keys())
+            self.predictions_handler.update_prediction_confirmations(prediction_ids, synapse.dendrite.hotkey)
+        else:
+            bt.logging.warning("Received empty confirmation dict")
+        return None
 
     def _check_version(self, synapse_version):
         if synapse_version > self.subnet_version:
