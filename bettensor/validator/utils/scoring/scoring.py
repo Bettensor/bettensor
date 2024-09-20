@@ -829,6 +829,14 @@ class ScoringSystem:
         # Log initial tier distribution
         self.log_tier_summary("Initial tier distribution")
 
+        # Add this debugging code before calculating Sortino ratios
+        current_tiers = self._get_tensor_for_day(self.tiers, self.current_day)
+        tier_distribution = [
+            int((current_tiers == tier).sum().item())
+            for tier in range(1, len(self.tier_configs) + 1)
+        ]
+        self.logger.info(f"Current tier distribution: {tier_distribution}")
+
         if predictions:
             self.logger.info("Updating scores...")
             self.update_scores(predictions, closing_line_odds, results)
@@ -935,3 +943,21 @@ class ScoringSystem:
             tensor[:, self._get_day_index(day)] = value
         else:
             tensor[:, self._get_day_index(day), tier] = value
+
+    def calculate_sortino_ratio(self, tier):
+        # Add this check at the beginning of the method
+        if (self.tiers == tier).sum() == 0:
+            self.logger.info(f"No miners in Tier {tier}, skipping Sortino ratio calculation")
+            return None
+
+        # ... rest of the method ...
+
+    def update_tiers(self):
+        # Add logging here to track tier changes
+        old_tiers = self._get_tensor_for_day(self.tiers, self.current_day).clone()
+        
+        # ... existing tier update logic ...
+
+        new_tiers = self._get_tensor_for_day(self.tiers, self.current_day)
+        changes = (old_tiers != new_tiers).sum().item()
+        self.logger.info(f"Updated tiers: {changes} miners changed tiers")

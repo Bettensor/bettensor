@@ -99,7 +99,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.hotkeys = None
         self.subtensor = None
         self.axon_port = getattr(args, "axon.port", None)
-
+        self.base_path = ("./bettensor/validator/")
         self.max_targets = None
         self.target_group = None
         self.blacklisted_miner_hotkeys = None
@@ -486,7 +486,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                     file_content = file.read()
 
                 miner_blacklist = json.loads(file_content)
-                if validate_miner_blacklist(miner_blacklist):
+                if self.validate_miner_blacklist(miner_blacklist):
                     bt.logging.trace(f"loaded miner blacklist: {miner_blacklist}")
                     return miner_blacklist
 
@@ -503,6 +503,20 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             bt.logging.trace(f"no local miner blacklist file in path: {blacklist_file}")
 
         return []
+    
+    def validate_miner_blacklist(self, miner_blacklist) -> bool:
+        """validates the miner blacklist. checks if the list is not empty and if all the hotkeys are in the metagraph"""
+        blacklist_file = f"{self.base_path}/miner_blacklist.json"
+        if not miner_blacklist:
+            return False
+        if not all(hotkey in self.metagraph.hotkeys for hotkey in miner_blacklist):
+            #update the blacklist with the valid hotkeys
+            valid_hotkeys = [hotkey for hotkey in miner_blacklist if hotkey in self.metagraph.hotkeys]
+            self.blacklisted_miner_hotkeys = valid_hotkeys
+            #overwrite the old blacklist with the new blacklist
+            with open(blacklist_file, "w", encoding="utf-8") as file:
+                json.dump(valid_hotkeys, file)
+        return True
 
     def get_uids_to_query(self, all_axons) -> list:
         """returns the list of uids to query"""

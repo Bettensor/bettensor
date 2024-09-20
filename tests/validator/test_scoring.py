@@ -136,7 +136,6 @@ class TestScoringSystem(unittest.TestCase):
             current_tiers = cls.scoring_system._get_tensor_for_day(
                 cls.scoring_system.tiers,
                 cls.scoring_system.current_day,
-                cls.scoring_system.current_hour,
             ).clone()
             tier_distribution = [
                 int((current_tiers == tier).sum().item())
@@ -147,7 +146,6 @@ class TestScoringSystem(unittest.TestCase):
             current_scores = cls.scoring_system._get_tensor_for_day(
                 cls.scoring_system.composite_scores,
                 cls.scoring_system.current_day,
-                cls.scoring_system.current_hour,
             )
             avg_score = current_scores.mean().item()
             cls.score_history.append(avg_score)
@@ -156,7 +154,6 @@ class TestScoringSystem(unittest.TestCase):
                 cls.scoring_system._get_tensor_for_day(
                     cls.scoring_system.amount_wagered,
                     cls.scoring_system.current_day,
-                    cls.scoring_system.current_hour,
                 )
                 .sum()
                 .item()
@@ -235,13 +232,13 @@ class TestScoringSystem(unittest.TestCase):
     def test_update_new_day(self):
         # Check tier changes over the first 5 days
         initial_tiers = self.scoring_system._get_tensor_for_day(
-            self.scoring_system.tiers, 0, 0
+            self.scoring_system.tiers, 0
         )
 
         tiers_changed = False
         for day in range(1, 5):  # Check days 1 to 4
             current_tiers = self.scoring_system._get_tensor_for_day(
-                self.scoring_system.tiers, day, 0
+                self.scoring_system.tiers, day
             )
             if not t.all(initial_tiers == current_tiers):
                 tiers_changed = True
@@ -314,20 +311,13 @@ class TestScoringSystem(unittest.TestCase):
     def test_entropy_system_integration(self):
         final_entropy_scores = self.scoring_system._get_tensor_for_day(
             self.scoring_system.entropy_scores,
-            self.scoring_system.current_day,
-            self.scoring_system.current_hour,
+            self.scoring_system.current_day
         )
 
         print(f"Entropy scores shape: {final_entropy_scores.shape}")
-        print(
-            f"Entropy scores non-zero count: {(final_entropy_scores != 0).sum().item()}"
-        )
-        print(
-            f"Entropy scores statistics: Min: {final_entropy_scores.min().item():.8f}, Max: {final_entropy_scores.max().item():.8f}, Mean: {final_entropy_scores.mean().item():.8f}"
-        )
-        print(
-            f"Number of game entropies: {len(self.scoring_system.entropy_system.game_entropies)}"
-        )
+        print(f"Entropy scores non-zero count: {(final_entropy_scores != 0).sum().item()}")
+        print(f"Entropy scores statistics: Min: {final_entropy_scores.min().item():.8f}, Max: {final_entropy_scores.max().item():.8f}, Mean: {final_entropy_scores.mean().item():.8f}")
+        print(f"Number of game entropies: {len(self.scoring_system.entropy_system.game_entropies)}")
         print(f"Game entropies: {self.scoring_system.entropy_system.game_entropies}")
 
         self.assertTrue(
@@ -337,19 +327,15 @@ class TestScoringSystem(unittest.TestCase):
 
     def test_wraparound(self):
         # This test can use the data from the full simulation
-        expected_day = (
-            15
-        ) % self.scoring_system.max_days  # 15 is the last day of our 16-day simulation
+        expected_day = 15 % self.scoring_system.max_days  # 15 is the last day of our 16-day simulation
         self.assertEqual(self.scoring_system.current_day, expected_day)
-        self.assertEqual(self.scoring_system.current_hour, 0)
 
     def test_window_calculation(self):
         # This test might need to be adjusted to use the data from the full simulation
         window = 30
         start_day = self.scoring_system.current_day
-        start_hour = 0
         window_scores = self.scoring_system._get_window_scores(
-            self.scoring_system.clv_scores, start_day, start_hour, window
+            self.scoring_system.clv_scores, start_day, window
         )
 
         # Adjust the expected_scores calculation based on the actual data from the simulation
@@ -357,7 +343,7 @@ class TestScoringSystem(unittest.TestCase):
             (start_day - offset) % self.scoring_system.max_days
             for offset in range(window)
         ]
-        expected_scores = self.scoring_system.clv_scores[:, expected_days, start_hour]
+        expected_scores = self.scoring_system.clv_scores[:, expected_days]
 
         self.assertEqual(
             window_scores.shape[1],

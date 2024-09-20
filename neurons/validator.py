@@ -1,21 +1,3 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 oneandahalfcats
-# Copyright © 2023 geardici
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the "Software"), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
 import os
 import sys
 import time
@@ -249,6 +231,18 @@ def send_data_to_website_server(validator):
         bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
 
+def scoring_run(validator):
+    """
+    calls the scoring system to update miner scores before setting weights
+    """
+    try:
+        validator.scores = validator.scoring_system.scoring_run()
+        bt.logging.info("Scores updated successfully")
+    except Exception as e:
+        bt.logging.error(f"Error in scoring_run: {str(e)}")
+        
+
+
 def set_weights(validator):
     try:
         bt.logging.info("Attempting to update weights")
@@ -282,10 +276,6 @@ def set_weights(validator):
         )
 
 
-def scoring_run(validator):
-    """
-    calls the scoring system to update miner scores before setting weights
-    """
 
 
 def end_of_loop_processes(validator, watchdog):

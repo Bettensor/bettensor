@@ -1,13 +1,13 @@
-import json
-import requests
-import time
-from typing import Dict, Any, Optional
-import bittensor as bt
-from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
-from .base_api_client import BaseAPIClient
 import os
+import json
+import time
+import requests
+import bittensor as bt
+from dotenv import load_dotenv
+from typing import Dict, Any, Optional
 from .sports_config import sports_config
+from .base_api_client import BaseAPIClient
+from datetime import datetime, timedelta, timezone
 
 
 class ExternalAPIClient(BaseAPIClient):
