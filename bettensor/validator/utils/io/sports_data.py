@@ -23,17 +23,11 @@ class SportsData:
         self,
         db_manager: DatabaseManager,
         entropy_system: EntropySystem,
-        use_bt_api=False,
+        api_client,
     ):
         self.db_manager = db_manager
         self.entropy_system = entropy_system
-        self.use_bt_api = use_bt_api
-
-        # initialize api client depending on use_bt_api flag
-        if self.use_bt_api:
-            self.api_client = BettensorAPIClient()
-        else:
-            self.api_client = ExternalAPIClient()
+        self.api_client = api_client
 
         self.all_games = []
 

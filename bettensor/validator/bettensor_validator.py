@@ -17,11 +17,11 @@ from dotenv import load_dotenv
 from argparse import ArgumentParser
 from typing import Dict, Tuple
 from datetime import datetime, timedelta, timezone
-from base.neuron import BaseNeuron
+from bettensor.base.neuron import BaseNeuron
 from bettensor.protocol import TeamGamePrediction
 from .utils.scoring.entropy_system import EntropySystem
 from bettensor.validator.utils.io.sports_data import SportsData
-from bettensor.validator.utils.io.external_api_client import APIClient
+from bettensor.validator.utils.io.external_api_client import ExternalAPIClient
 from bettensor.validator.utils.scoring.weights_functions import WeightSetter
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 from bettensor.validator.utils.io.miner_data import MinerDataMixin
@@ -107,6 +107,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.data_entry = None
         self.uid = None
         self.miner_responses = None
+        self.miner_data = MinerDataMixin(self)
 
         self.db_path = DEFAULT_DB_PATH
 
@@ -269,16 +270,16 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.db_path = args.db
         self.target_group = 0
 
-        ############## Setup Validator Components ##############
-        self.api_client = APIClient() if not self.use_bt_api else BettensorAPIClient()
-
         self.db_manager = DatabaseManager(self.db_path)
 
-        self.sports_data = SportsData(
-            db_manager=self.db_manager, api_client=self.api_client
-        )
-
         self.entropy_system = EntropySystem(max_capacity=self.max_targets, max_days=45)
+
+        ############## Setup Validator Components ##############
+        self.api_client = APIClient() if not self.use_bt_api else BettensorAPIClient(self.db_manager)
+
+        self.sports_data = SportsData(
+            db_manager=self.db_manager, api_client=self.api_client, entropy_system = self.entropy_system
+        )
 
         self.weight_setter = WeightSetter(
             metagraph=self.metagraph,
@@ -287,7 +288,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             neuron_config=self.neuron_config,
             db_path=self.db_path,
         )
-        self.weight_setter.update_all_daily_stats()
 
         return True
 

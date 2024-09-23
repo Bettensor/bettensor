@@ -15,16 +15,12 @@ class WeightSetter:
         wallet,
         subtensor,
         neuron_config,
-        loop,
-        thread_executor,
         db_path,
     ):
         self.metagraph = metagraph
         self.wallet = wallet
         self.subtensor = subtensor
         self.neuron_config = neuron_config
-        self.loop = loop
-        self.thread_executor = thread_executor
 
         self.db_path = db_path
 

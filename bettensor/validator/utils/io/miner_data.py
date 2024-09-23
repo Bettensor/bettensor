@@ -8,7 +8,6 @@ from typing import Dict
 import bittensor as bt
 import torch
 from bettensor.protocol import TeamGame, TeamGamePrediction
-from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 
 
@@ -19,6 +18,8 @@ Miner Data Methods, Extends the Bettensor Validator Class
 
 
 class MinerDataMixin:
+    def __init__(self, validator):
+        self.validator = validator
     def insert_predictions(self, processed_uids, predictions):
         """
         Inserts new predictions into the database
