@@ -456,9 +456,9 @@ def fetch_local_game_data(self, current_timestamp: str) -> Dict[str, TeamGame]:
     ).isoformat()
 
     query = """
-        SELECT id, teamA, teamB, sport, league, externalId, createDate, lastUpdateDate, eventStartDate, active, outcome, teamAodds, teamBodds, tieOdds, canTie
+        SELECT id, team_a, team_b, sport, league, external_id, create_date, last_update_date, event_start_date, active, outcome, team_a_odds, team_b_odds, tie_odds, can_tie
         FROM game_data
-        WHERE eventStartDate > ? OR (eventStartDate BETWEEN ? AND ?)
+        WHERE event_start_date > ? OR (event_start_date BETWEEN ? AND ?)
     """
 
     rows = self.db_manager.fetchall(

@@ -64,7 +64,10 @@ def initialize_database():
             team_a_odds REAL,
             team_b_odds REAL,
             tie_odds REAL,
+            can_tie BOOLEAN,
             event_start_date TEXT,
+            create_date TEXT,
+            last_update_date TEXT,
             sport TEXT,
             outcome TEXT,
             active INTEGER
