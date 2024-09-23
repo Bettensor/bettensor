@@ -2,7 +2,6 @@ import torch as t
 import math
 import bittensor as bt
 
-
 class EntropySystem:
     def __init__(self, max_capacity: int, max_days: int):
         """
@@ -14,12 +13,11 @@ class EntropySystem:
         """
         self.max_capacity = max_capacity
         self.max_days = max_days
-        self.scores_per_day = 24  # Assuming hourly updates
-        self.ebdr_scores = t.zeros(max_capacity, max_days, self.scores_per_day)
+        self.ebdr_scores = t.zeros(max_capacity, max_days)
         self.current_day = 0
-        self.current_hour = 0
-        self.game_entropies = {}  # Store entropy for each game
-        self.epsilon = 1e-8  # Small constant to avoid log(0)
+        self.game_outcome_entropies = {}  # Store entropy for each outcome of each game
+        self.prediction_counts = {}       # Store prediction counts per outcome of each game
+        self.epsilon = 1e-8              # Small constant to avoid log(0)
 
     def update_ebdr_scores(self, predictions, closing_line_odds, results):
         """
@@ -37,26 +35,20 @@ class EntropySystem:
             bt.logging.warning("No predictions provided. Skipping EBDR score update.")
             return self.ebdr_scores
 
-        entropy_scores = self.ebdr_scores[
-            :, self.current_day, self.current_hour
-        ].clone()
+        entropy_scores = self.ebdr_scores[:, self.current_day].clone()
+        bt.logging.info(f"Initial entropy_scores: {entropy_scores}")
 
-        bt.logging.debug(f"Number of predictions: {len(predictions)}")
-        bt.logging.debug(f"Closing line odds shape: {closing_line_odds.shape}")
-        bt.logging.debug(f"Results shape: {results.shape}")
-
-        # Initialize game entropies if not already present
         for game_id in range(closing_line_odds.shape[0]):
-            if game_id not in self.game_entropies:
-                initial_entropy = self.calculate_initial_entropy(
-                    closing_line_odds[game_id]
-                )
-                self.game_entropies[game_id] = initial_entropy
-                bt.logging.debug(
-                    f"Initialized entropy for game {game_id}: {initial_entropy}"
-                )
+            if game_id not in self.game_outcome_entropies:
+                self.game_outcome_entropies[game_id] = {}
+                self.prediction_counts[game_id] = {}
+                outcomes = closing_line_odds[game_id][1:].size(0)  # Number of outcomes
+                for outcome in range(outcomes):
+                    initial_entropy = self.calculate_initial_entropy(closing_line_odds[game_id][1:][outcome])
+                    self.game_outcome_entropies[game_id][outcome] = initial_entropy
+                    self.prediction_counts[game_id][outcome] = 0
+                    bt.logging.info(f"Initialized entropy for game {game_id}, outcome {outcome}: {initial_entropy}")
 
-        # Update entropy scores based on predictions
         for i, miner_predictions in enumerate(predictions):
             if miner_predictions.numel() > 0:
                 miner_entropy = 0
@@ -64,72 +56,65 @@ class EntropySystem:
                 for pred in miner_predictions:
                     game_id, outcome, odds, wager = pred
                     game_id = int(game_id.item())
+                    outcome = int(outcome.item())
                     if game_id < closing_line_odds.shape[0]:
-                        new_entropy = self.update_game_entropy(
-                            game_id, outcome, odds, wager
-                        )
+                        new_entropy = self.update_game_entropy(game_id, outcome, odds)
                         miner_entropy += new_entropy
                         valid_predictions += 1
-                        bt.logging.debug(
-                            f"Miner {i}, Game {game_id}: New entropy {new_entropy}"
-                        )
+                        self.prediction_counts[game_id][outcome] += 1
 
                 if valid_predictions > 0:
                     entropy_scores[i] = miner_entropy / valid_predictions
                 else:
                     entropy_scores[i] = self.epsilon
+                    bt.logging.info(f"Miner {i}: No valid predictions, setting entropy to epsilon {self.epsilon}")
             else:
-                bt.logging.debug(f"Miner {i} has no predictions")
+                bt.logging.info(f"Miner {i} has no predictions")
 
-        # Ensure non-zero scores
-        entropy_scores = t.clamp(entropy_scores, min=self.epsilon)
 
-        # Normalize scores using softmax instead of min-max normalization
-        entropy_scores = t.softmax(entropy_scores, dim=0)
-
-        # Update the current time slot with new scores
-        self.ebdr_scores[:, self.current_day, self.current_hour] = entropy_scores
-
-        self._increment_time()
+        self.ebdr_scores[:, self.current_day] = entropy_scores
+        bt.logging.info(f"Updated self.ebdr_scores for day {self.current_day}")
+        bt.logging.info(f"Entropy scores: {self.ebdr_scores}")
 
         return self.ebdr_scores
 
     def calculate_initial_entropy(self, odds):
         """
-        Calculate the initial entropy for a game based on the odds.
+        Calculate the initial entropy for a game outcome based on the odds.
 
         Args:
-            odds (torch.Tensor): Tensor of odds for the game.
+            odds (float): Odds for the outcome.
 
         Returns:
             float: Initial entropy value.
         """
-        probs = self.calculate_bookmaker_probabilities(odds[1:])  # Exclude game_id
-        entropy = -t.sum(probs * t.log2(probs + self.epsilon))
-        result = max(entropy.item(), self.epsilon)
+        prob = 1 / (odds + self.epsilon)
+        entropy = -prob * math.log2(prob + self.epsilon)
+        result = max(entropy, self.epsilon)
         bt.logging.debug(f"Initial entropy calculation: odds={odds}, result={result}")
         return result
 
-    def update_game_entropy(self, game_id, outcome, odds, wager):
+    def update_game_entropy(self, game_id, outcome, odds):
         """
-        Update the entropy for a specific game based on new predictions.
+        Update the entropy for a specific game outcome based on new predictions.
 
         Args:
             game_id (int): ID of the game.
-            outcome (float): Outcome of the game.
-            odds (float): Odds for the game.
-            wager (float): Wager amount.
+            outcome (int): Outcome index.
+            odds (float): Odds for the outcome.
 
         Returns:
             float: Updated entropy value.
         """
-        current_entropy = self.game_entropies[game_id]
+        bt.logging.trace(f"EntropySystem.update_game_entropy()| Updating game {game_id} outcome {outcome} entropy")
+        current_entropy = self.game_outcome_entropies[game_id].get(outcome, self.epsilon)
         prob = 1 / (odds + self.epsilon)
         new_entropy = -prob * math.log2(prob + self.epsilon)
         updated_entropy = max((current_entropy + new_entropy) / 2, self.epsilon)
-        self.game_entropies[game_id] = updated_entropy
+        bt.logging.trace(f"EntropySystem.update_game_entropy()| Updated game {game_id} outcome {outcome} entropy: {updated_entropy}")
+        self.game_outcome_entropies[game_id][outcome] = updated_entropy
         bt.logging.debug(
-            f"Updating game {game_id} entropy: current={current_entropy}, new={new_entropy}, updated={updated_entropy}"
+            f"Updating game {game_id} outcome {outcome} entropy: current={current_entropy}, new={new_entropy}, updated={updated_entropy}"
         )
         return updated_entropy
 
@@ -298,12 +283,12 @@ class EntropySystem:
 
     def get_current_ebdr_scores(self):
         """
-        Get the current EBDR scores for the current time slot.
+        Get the current EBDR scores for the current day.
 
         Returns:
             torch.Tensor: Current EBDR scores.
         """
-        return self.ebdr_scores[:, self.current_day, self.current_hour]
+        return self.ebdr_scores[:, self.current_day]
 
     def get_uniqueness_scores(self):
         """
@@ -336,20 +321,3 @@ class EntropySystem:
             torch.Tensor: Historical uniqueness scores.
         """
         return self.get_uniqueness_scores()
-
-    def _increment_time(self):
-        """
-        Increment the current time slot by one hour. If the hour exceeds the scores per day, increment the day.
-        """
-        self.current_hour = (self.current_hour + 1) % self.scores_per_day
-        if self.current_hour == 0:
-            self.current_day = (self.current_day + 1) % self.max_days
-
-    def get_current_entropy_scores(self):
-        """
-        Get the current entropy scores for the current time slot.
-
-        Returns:
-            torch.Tensor: Current entropy scores.
-        """
-        return self.ebdr_scores[:, self.current_day, self.current_hour]

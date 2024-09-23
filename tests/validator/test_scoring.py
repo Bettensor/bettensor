@@ -2,6 +2,7 @@ import unittest
 import tempfile
 import os
 import torch as t
+import bittensor as bt
 from datetime import datetime, timedelta, timezone
 from bettensor.validator.utils.scoring.entropy_system import EntropySystem
 from bettensor.validator.utils.scoring.scoring import ScoringSystem
@@ -71,6 +72,7 @@ class TestScoringSystem(unittest.TestCase):
         for test_date in test_dates:
             for _ in range(games_per_day):
                 external_id = f"EXT_{game_id_counter}"
+                outcome = random.randint(0, 2)
                 cursor.execute(
                     """
                     INSERT INTO game_data (id, external_id, team_a, team_b, team_a_odds, team_b_odds, tie_odds, event_start_date, sport, outcome, active)
@@ -86,13 +88,25 @@ class TestScoringSystem(unittest.TestCase):
                         3.0,
                         test_date,
                         "TestSport",
-                        0,
+                        outcome,
                         1,
                     ),
                 )
 
                 for miner_uid in range(cls.num_miners):
                     # Calculate wager amount to reach approximately 1000 per day
+                    predicted_outcome = random.randint(0, 2)
+                    #get odds for the predicted outcome. 0 - team_a, 1 - team_b, 2 - tie
+
+                    odds = cursor.execute(
+                        """
+                        SELECT team_a_odds, team_b_odds, tie_odds FROM game_data WHERE id = ?
+                    """,
+                        (game_id_counter,),
+                    )
+                    odds = cursor.fetchone()[predicted_outcome]
+
+
                     wager = 1000 / games_per_day
                     cursor.execute(
                         """
@@ -121,6 +135,7 @@ class TestScoringSystem(unittest.TestCase):
         print(
             f"Debug: Each miner wagered approximately {1000 * len(test_dates)} units in total"
         )
+        bt.logging.trace("Test data added successfully.")
 
     @classmethod
     def run_full_simulation(cls):
@@ -131,7 +146,9 @@ class TestScoringSystem(unittest.TestCase):
 
         for i in range(16):
             current_date = cls.initial_date + timedelta(days=i)
+            bt.logging.info(f"Running simulation for day {i}")
             weights = cls.scoring_system.scoring_run(current_date)
+            bt.logging.info(f"Weights: {weights}")
 
             current_tiers = cls.scoring_system._get_tensor_for_day(
                 cls.scoring_system.tiers,
@@ -171,6 +188,7 @@ class TestScoringSystem(unittest.TestCase):
             cls.logger.debug(
                 f"Day {i}: Min score: {current_scores.min().item():.4f}, Max score: {current_scores.max().item():.4f}"
             )
+            bt.logging.info(f"Completed simulation for day {i}")
 
     def test_preprocess_for_scoring(self):
         # This test can use the data from the first day of the simulation
@@ -197,29 +215,32 @@ class TestScoringSystem(unittest.TestCase):
         self.assertEqual(results.shape[0], closing_line_odds.shape[0])
 
     def test_entropy_system_update_ebdr_scores(self):
-        # This test can use the data from the first day of the simulation
         date = self.initial_date.strftime("%Y-%m-%d")
-        (
-            predictions,
-            closing_line_odds,
-            results,
-        ) = self.scoring_system.scoring_data.preprocess_for_scoring(date)
+        predictions, closing_line_odds, results = self.scoring_system.scoring_data.preprocess_for_scoring(date)
 
-        entropy_system = EntropySystem(
-            max_capacity=self.num_miners, max_days=self.max_days
-        )
-        ebdr_scores = entropy_system.update_ebdr_scores(
-            predictions, closing_line_odds, results
-        )
+        entropy_system = self.scoring_system.entropy_system
+        ebdr_scores = entropy_system.update_ebdr_scores(predictions, closing_line_odds, results)
 
         self.assertIsInstance(ebdr_scores, t.Tensor)
         self.assertEqual(ebdr_scores.shape, (self.num_miners, self.max_days, 24))
-        self.assertTrue(
-            t.any(ebdr_scores != 0),
-            f"All EBDR scores are zero. Min: {ebdr_scores.min().item():.8f}, Max: {ebdr_scores.max().item():.8f}, Mean: {ebdr_scores.mean().item():.8f}",
-        )
+        self.assertTrue(t.any(ebdr_scores != 0), "All EBDR scores are zero.")
         print(f"Number of non-zero EBDR scores: {(ebdr_scores != 0).sum().item()}")
         print(f"Game entropies: {entropy_system.game_entropies}")
+
+        # Verify sum of entropy scores for a miner
+        miner_entropy_sum = ebdr_scores[:, self.scoring_system.current_day, :].sum(dim=1)
+        self.assertTrue(t.all(miner_entropy_sum >= 0), "Some miner entropy sums are negative.")
+        print(f"Miner entropy sums: {miner_entropy_sum}")
+
+        # Verify that each prediction is scored upon submission
+        for i, miner_predictions in enumerate(predictions):
+            if miner_predictions.numel() > 0:
+                for pred in miner_predictions:
+                    game_id, outcome, odds, wager = pred
+                    game_id = int(game_id.item())
+                    self.assertLess(game_id, closing_line_odds.shape[0], f"Game ID {game_id} out of range.")
+                    self.assertIn(game_id, entropy_system.game_entropies, f"Game {game_id} entropy not found.")
+                    self.assertGreater(entropy_system.game_entropies[game_id], 0, f"Game {game_id} entropy is zero.")
 
     def test_scoring_run(self):
         # This test can use the data from the first day of the simulation

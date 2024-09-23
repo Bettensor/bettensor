@@ -17,7 +17,7 @@ class BettensorAPIClient(BaseAPIClient):
         self.db_manager = db_manager
         self.games = []
 
-    def fetch_game_data(self):
+    def fetch_all_game_data(self):
         """
         fetch and update game data from bettensor API. overridden from BaseAPIClient
 

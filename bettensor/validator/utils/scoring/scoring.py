@@ -182,7 +182,8 @@ class ScoringSystem:
 
         # Update entropy scores
         self.entropy_system.update_ebdr_scores(predictions, closing_line_odds, results)
-        entropy_scores = self.entropy_system.get_current_entropy_scores()
+        entropy_scores = self.entropy_system.get_current_ebdr_scores()
+        bt.logging.info(f"Entropy scores after calling get_current_ebdr_scores: {entropy_scores}")
         self._set_tensor_for_day(self.entropy_scores, self.current_day, entropy_scores)
 
         self.logger.info(
@@ -792,14 +793,14 @@ class ScoringSystem:
         Returns:
             torch.Tensor: The calculated weights for all miners.
         """
-        self.logger.debug(f"Starting scoring run for date: {current_date}")
+        bt.logging.info(f"Starting scoring run for date: {current_date}")
 
         # Ensure current_date is timezone-aware
         if current_date.tzinfo is None:
             current_date = current_date.replace(tzinfo=timezone.utc)
 
         date_str = current_date.strftime("%Y-%m-%d")
-        self.logger.info(f"=== Starting scoring run for date: {date_str} ===")
+        bt.logging.info(f"=== Starting scoring run for date: {date_str} ===")
 
         (
             predictions,
@@ -807,22 +808,22 @@ class ScoringSystem:
             results,
         ) = self.scoring_data.preprocess_for_scoring(date_str)
 
-        self.logger.info(f"Number of predictions: {len(predictions)}")
-        self.logger.info(f"Closing line odds shape: {closing_line_odds.shape}")
-        self.logger.info(f"Results shape: {results.shape}")
+        bt.logging.info(f"Number of predictions: {len(predictions)}")
+        bt.logging.info(f"Closing line odds shape: {closing_line_odds.shape}")
+        bt.logging.info(f"Results shape: {results.shape}")
 
         # Calculate the days since reference date without wraparound
         days_since_reference = (current_date - self.reference_date).days
         new_day = days_since_reference % self.max_days
 
         if new_day != self.current_day:
-            self.logger.info(f"Moving from day {self.current_day} to day {new_day}")
+            bt.logging.info(f"Moving from day {self.current_day} to day {new_day}")
             self._increment_time(new_day)
 
         # Update the current_date
         self.current_date = current_date
 
-        self.logger.info(
+        bt.logging.info(
             f"Current day: {self.current_day}, reference date: {self.reference_date}"
         )
 
@@ -835,12 +836,12 @@ class ScoringSystem:
             int((current_tiers == tier).sum().item())
             for tier in range(1, len(self.tier_configs) + 1)
         ]
-        self.logger.info(f"Current tier distribution: {tier_distribution}")
+        bt.logging.info(f"Current tier distribution: {tier_distribution}")
 
         if predictions:
-            self.logger.info("Updating scores...")
+            bt.logging.info("Updating scores...")
             self.update_scores(predictions, closing_line_odds, results)
-            self.logger.info("Scores updated successfully.")
+            bt.logging.info("Scores updated successfully.")
 
             total_wager = (
                 self._get_tensor_for_day(self.amount_wagered, self.current_day)
@@ -848,29 +849,29 @@ class ScoringSystem:
                 .item()
             )
             avg_wager = total_wager / self.num_miners
-            self.logger.info(f"Total wager for this run: {total_wager:.2f}")
-            self.logger.info(f"Average wager per miner: {avg_wager:.2f}")
+            bt.logging.info(f"Total wager for this run: {total_wager:.2f}")
+            bt.logging.info(f"Average wager per miner: {avg_wager:.2f}")
         else:
-            self.logger.warning(
+            bt.logging.warning(
                 f"No predictions for date {date_str}. Skipping score update."
             )
 
         self.logger.info("Calculating weights...")
         weights = self.calculate_weights()
-        self.logger.info(
+        bt.logging.info(
             f"Weights calculated. Min: {weights.min().item():.4f}, Max: {weights.max().item():.4f}, Mean: {weights.mean().item():.4f}"
         )
 
-        self.logger.info("Managing tiers...")
+        bt.logging.info("Managing tiers...")
         self.manage_tiers()
-        self.logger.info("Tiers managed successfully.")
+        bt.logging.info("Tiers managed successfully.")
 
         # Log final tier distribution
         self.log_tier_summary("Final tier distribution")
 
         self.log_score_summary()
 
-        self.logger.info(f"=== Completed scoring run for date: {date_str} ===")
+        bt.logging.info(f"=== Completed scoring run for date: {date_str} ===")
 
         return weights
 
@@ -944,20 +945,4 @@ class ScoringSystem:
         else:
             tensor[:, self._get_day_index(day), tier] = value
 
-    def calculate_sortino_ratio(self, tier):
-        # Add this check at the beginning of the method
-        if (self.tiers == tier).sum() == 0:
-            self.logger.info(f"No miners in Tier {tier}, skipping Sortino ratio calculation")
-            return None
-
-        # ... rest of the method ...
-
-    def update_tiers(self):
-        # Add logging here to track tier changes
-        old_tiers = self._get_tensor_for_day(self.tiers, self.current_day).clone()
-        
-        # ... existing tier update logic ...
-
-        new_tiers = self._get_tensor_for_day(self.tiers, self.current_day)
-        changes = (old_tiers != new_tiers).sum().item()
-        self.logger.info(f"Updated tiers: {changes} miners changed tiers")
+    
