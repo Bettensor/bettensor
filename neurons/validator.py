@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import copy
+import traceback
 import torch
 import sqlite3
 import bittensor as bt
@@ -44,7 +45,11 @@ def main(validator: BettensorValidator):
                 uids_not_to_query,
             ) = filter_and_update_axons(validator)
 
+           
+
             synapse = query_axons_with_game_data(validator)
+
+            bt.logging.info(f'Synapse: {synapse}')
 
             collect_and_process_responses(
                 validator,
@@ -95,10 +100,11 @@ def update_game_data(validator, current_time):
                 "Failed to fetch game data. Continuing with previous data."
             )
         else:
-            validator.last_api_call = current_time
+            validator.last_api_call = current_time.isoformat()
             validator.save_state()
     except Exception as e:
         bt.logging.error(f"Error fetching game data: {e}")
+        bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
 
 
 def sync_metagraph(validator):
@@ -148,18 +154,27 @@ def filter_and_update_axons(validator):
 
 def query_axons_with_game_data(validator):
     current_time = datetime.now(timezone.utc).isoformat()
-    gamedata_dict = validator.fetch_game_data(current_timestamp=current_time)
-    synapse = GameData.create(
-        db_path=validator.db_path,
-        wallet=validator.wallet,
-        subnet_version=validator.subnet_version,
-        neuron_uid=validator.uid,
-        synapse_type="game_data",
-        gamedata_dict=gamedata_dict,
-    )
-    bt.logging.debug(
-        f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}"
-    )
+    gamedata_dict = validator.fetch_local_game_data(current_timestamp=current_time)
+    if gamedata_dict is not None:
+        synapse = GameData.create(
+            db_path=validator.db_path,
+            wallet=validator.wallet,
+            subnet_version=validator.subnet_version,
+            neuron_uid=validator.uid,
+            synapse_type="game_data",
+            gamedata_dict=gamedata_dict,
+        )
+        if synapse is None:
+            bt.logging.error("Synapse is None")
+            return None
+        bt.logging.debug(
+            f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}"
+        )
+        
+    else:
+        bt.logging.error("No game data found")
+        return None
+    
     return synapse
 
 

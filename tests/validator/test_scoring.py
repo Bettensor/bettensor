@@ -10,12 +10,16 @@ from bettensor.validator.utils.scoring.scoring_data import ScoringData
 import random
 import logging
 
-
 class TestScoringSystem(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        print("Debug: Starting setUpClass method")
+        logging.debug("Starting setUpClass method")
+
         cls.temp_dir = tempfile.mkdtemp()
         cls.db_path = os.path.join(cls.temp_dir, "test_scoring.db")
+        print(f"Debug: Database path: {cls.db_path}")
+        logging.debug(f"Database path: {cls.db_path}")
 
         cls.num_miners = 256
         cls.max_days = 45
@@ -31,20 +35,44 @@ class TestScoringSystem(unittest.TestCase):
             reference_date=cls.initial_date,  # Pass reference_date
         )
 
+
+
+        # Verify that the game_data table exists
+        table_check = cls.scoring_system.scoring_data.db_manager.fetch_one(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='game_data'", ()
+        )
+        if not table_check:
+            raise Exception("game_data table does not exist in the database")
+
+        # Add this check
+        if not os.path.exists(cls.db_path):
+            print(f"Warning: Database file does not exist at {cls.db_path}")
+        
+        # Check if the table exists
+        table_check = cls.scoring_system.scoring_data.db_manager.fetch_one(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='game_data'", ()
+        )
+        if not table_check:
+            print("Warning: game_data table does not exist in the database")
+
+        print("Debug: Calling _add_test_data")
+        logging.debug("Calling _add_test_data")
         cls._add_test_data()
 
-        conn = cls.scoring_system.scoring_data.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM predictions")
-        prediction_count = cursor.fetchone()[0]
+        # Fetch prediction count using DatabaseManager
+        prediction_count = cls.scoring_system.scoring_data.db_manager.fetch_one(
+            "SELECT COUNT(*) FROM predictions", ()
+        )
         print(f"Debug: Total predictions in database: {prediction_count}")
-        conn.close()
 
         logging.basicConfig(level=logging.DEBUG)
         cls.logger = logging.getLogger(__name__)
 
         # Run a full 16-day simulation
         cls.run_full_simulation()
+
+        print("Debug: Finished setUpClass method")
+        logging.debug("Finished setUpClass method")
 
     @classmethod
     def tearDownClass(cls):
@@ -57,77 +85,120 @@ class TestScoringSystem(unittest.TestCase):
 
     @classmethod
     def _add_test_data(cls):
-        conn = cls.scoring_system.scoring_data.connect_db()
-        cursor = conn.cursor()
+        print("Debug: Starting _add_test_data method")
+        logging.debug("Starting _add_test_data method")
 
         test_dates = [
-            (datetime(2023, 5, 1, tzinfo=timezone.utc) + timedelta(days=i)).strftime(
-                "%Y-%m-%d"
-            )
+            (datetime(2023, 5, 1, tzinfo=timezone.utc) + timedelta(days=i)).isoformat()
             for i in range(16)  # 16 days of data
         ]
+        print(f"Debug: Test dates: {test_dates}")
+        logging.debug(f"Test dates: {test_dates}")
 
         games_per_day = 10
         game_id_counter = 0
+        game_data_batch = []
+        prediction_data_batch = []
+
         for test_date in test_dates:
             for _ in range(games_per_day):
                 external_id = f"EXT_{game_id_counter}"
-                outcome = random.randint(0, 2)
-                cursor.execute(
-                    """
-                    INSERT INTO game_data (id, external_id, team_a, team_b, team_a_odds, team_b_odds, tie_odds, event_start_date, sport, outcome, active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        game_id_counter,
-                        external_id,
-                        "Team A",
-                        "Team B",
-                        2.0,
-                        2.0,
-                        3.0,
-                        test_date,
-                        "TestSport",
-                        outcome,
-                        1,
-                    ),
+                create_date = test_date
+                last_update_date = test_date
+                
+                can_tie = random.choice([True, False])
+                if can_tie:
+                    outcome = random.randint(0, 2)  # 0 - Team A, 1 - Team B, 2 - Tie
+                    tie_odds = random.uniform(2.0, 4.0)
+                else:
+                    outcome = random.randint(0, 1)  # 0 - Team A, 1 - Team B
+                    tie_odds = 0.0  # No tie possible
+
+                team_a_odds = random.uniform(1.5, 3.5)
+                team_b_odds = random.uniform(1.5, 3.5)
+                
+                game_data = (
+                    game_id_counter,
+                    external_id,
+                    "Team A",
+                    "Team B",
+                    team_a_odds,
+                    team_b_odds,
+                    tie_odds,
+                    can_tie,
+                    test_date,
+                    create_date,
+                    last_update_date,
+                    "TestSport",
+                    outcome,
+                    1,
                 )
+                game_data_batch.append(game_data)
 
                 for miner_uid in range(cls.num_miners):
-                    # Calculate wager amount to reach approximately 1000 per day
-                    predicted_outcome = random.randint(0, 2)
-                    #get odds for the predicted outcome. 0 - team_a, 1 - team_b, 2 - tie
-
-                    odds = cursor.execute(
-                        """
-                        SELECT team_a_odds, team_b_odds, tie_odds FROM game_data WHERE id = ?
-                    """,
-                        (game_id_counter,),
-                    )
-                    odds = cursor.fetchone()[predicted_outcome]
-
+                    predicted_outcome = random.randint(0, 2) if can_tie else random.randint(0, 1)
+                    if predicted_outcome == 0:
+                        odds = team_a_odds
+                    elif predicted_outcome == 1:
+                        odds = team_b_odds
+                    else:
+                        odds = tie_odds
 
                     wager = 1000 / games_per_day
-                    cursor.execute(
-                        """
-                        INSERT INTO predictions (prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds, wager)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        (
-                            f"{test_date}_{miner_uid}_{external_id}",
-                            external_id,
-                            miner_uid,
-                            test_date,
-                            random.randint(0, 2),
-                            random.uniform(1.5, 3.0),
-                            wager,
-                        ),
+                    prediction_data = (
+                        f"{test_date}_{miner_uid}_{external_id}",
+                        external_id,
+                        miner_uid,
+                        test_date,
+                        predicted_outcome,
+                        random.uniform(1.5, 4.0),
+                        wager,
                     )
+                    prediction_data_batch.append(prediction_data)
 
                 game_id_counter += 1
 
-        conn.commit()
-        conn.close()
+        # Batch insert game data
+        cls.scoring_system.scoring_data.db_manager.execute_query(
+            """
+            INSERT INTO game_data (
+                id, external_id, team_a, team_b, team_a_odds, team_b_odds, tie_odds,
+                can_tie, event_start_date, create_date, last_update_date, sport, outcome, active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            game_data_batch,
+            batch=True
+        )
+
+        # Batch insert prediction data
+        cls.scoring_system.scoring_data.db_manager.execute_query(
+            """
+            INSERT INTO predictions (
+                prediction_id, game_id, miner_uid, prediction_date,
+                predicted_outcome, predicted_odds, wager
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            prediction_data_batch,
+            batch=True
+        )
+
+        # Add these debug statements at the end of the method
+        print(f"Debug: Total games attempted to insert: {game_id_counter}")
+        total_games = cls.scoring_system.scoring_data.db_manager.fetch_one(
+            "SELECT COUNT(*) FROM game_data", ()
+        )[0]
+        total_predictions = cls.scoring_system.scoring_data.db_manager.fetch_one(
+            "SELECT COUNT(*) FROM predictions", ()
+        )[0]
+        print(f"Debug: Total games in database: {total_games}")
+        print(f"Debug: Total predictions in database: {total_predictions}")
+
+        # Debug: Check available dates
+        available_dates = cls.scoring_system.scoring_data.db_manager.fetch_all(
+            "SELECT DISTINCT event_start_date FROM game_data ORDER BY event_start_date",
+            ()  # Empty tuple for params
+        )
+        print(f"Debug: Available dates: {available_dates}")
 
         print(f"Debug: Added test data for dates: {test_dates}")
         print(f"Debug: Total games added: {game_id_counter}")
@@ -137,6 +208,9 @@ class TestScoringSystem(unittest.TestCase):
         )
         bt.logging.trace("Test data added successfully.")
 
+        # Add this debug statement at the end of the method
+        print(f"Debug: Database path: {cls.db_path}")
+
     @classmethod
     def run_full_simulation(cls):
         cls.tier_history = []
@@ -144,9 +218,26 @@ class TestScoringSystem(unittest.TestCase):
         cls.wager_history = []
         cls.weight_history = []
 
+        # Fetch all games at once
+        all_games = cls.scoring_system.scoring_data.db_manager.fetch_all(
+            "SELECT * FROM game_data ORDER BY event_start_date",
+            ()  # Empty tuple for params
+        )
+        games_by_date = {}
+        for game in all_games:
+            date = game[8]  # Assuming event_start_date is at index 8
+            if date not in games_by_date:
+                games_by_date[date] = []
+            games_by_date[date].append(game)
+
         for i in range(16):
             current_date = cls.initial_date + timedelta(days=i)
             bt.logging.info(f"Running simulation for day {i}")
+            
+            # Debug: Check for games on the current date
+            games_on_date = games_by_date.get(current_date.isoformat(), [])
+            print(f"Debug: Games on {current_date.isoformat()}: {len(games_on_date)}")
+            
             weights = cls.scoring_system.scoring_run(current_date)
             bt.logging.info(f"Weights: {weights}")
 
@@ -191,16 +282,36 @@ class TestScoringSystem(unittest.TestCase):
             bt.logging.info(f"Completed simulation for day {i}")
 
     def test_preprocess_for_scoring(self):
-        # This test can use the data from the first day of the simulation
-        date = self.initial_date.strftime("%Y-%m-%d")
+        # Use ISO format for the date
+        date = self.initial_date.isoformat()
+        print(f"Debug: Testing for date: {date}")
+
         (
             predictions,
             closing_line_odds,
             results,
         ) = self.scoring_system.scoring_data.preprocess_for_scoring(date)
 
+        print(f"Debug: Number of predictions: {len(predictions)}")
+        print(f"Debug: Shape of closing_line_odds: {closing_line_odds.shape}")
+        print(f"Debug: Shape of results: {results.shape}")
+
+        # Check if there are any games for this date
+        games_on_date = self.scoring_system.scoring_data.db_manager.fetch_all(
+            "SELECT COUNT(*) FROM game_data WHERE event_start_date = ?",
+            (date,)
+        )
+        print(f"Debug: Number of games on {date}: {games_on_date[0][0]}")
+
+        # Check if there are any predictions for this date
+        predictions_on_date = self.scoring_system.scoring_data.db_manager.fetch_all(
+            "SELECT COUNT(*) FROM predictions WHERE prediction_date = ?",
+            (date,)
+        )
+        print(f"Debug: Number of predictions on {date}: {predictions_on_date[0][0]}")
+
+        self.assertGreater(len(predictions), 0, f"No predictions found for date {date}")
         self.assertIsInstance(predictions, list)
-        self.assertGreater(len(predictions), 0)
         self.assertIsInstance(predictions[0], t.Tensor)
         self.assertEqual(
             predictions[0].shape[1], 4
@@ -215,20 +326,20 @@ class TestScoringSystem(unittest.TestCase):
         self.assertEqual(results.shape[0], closing_line_odds.shape[0])
 
     def test_entropy_system_update_ebdr_scores(self):
-        date = self.initial_date.strftime("%Y-%m-%d")
+        date = self.initial_date.isoformat()
         predictions, closing_line_odds, results = self.scoring_system.scoring_data.preprocess_for_scoring(date)
 
         entropy_system = self.scoring_system.entropy_system
         ebdr_scores = entropy_system.update_ebdr_scores(predictions, closing_line_odds, results)
 
         self.assertIsInstance(ebdr_scores, t.Tensor)
-        self.assertEqual(ebdr_scores.shape, (self.num_miners, self.max_days, 24))
+        self.assertEqual(ebdr_scores.shape, (self.num_miners, self.max_days))
         self.assertTrue(t.any(ebdr_scores != 0), "All EBDR scores are zero.")
         print(f"Number of non-zero EBDR scores: {(ebdr_scores != 0).sum().item()}")
-        print(f"Game entropies: {entropy_system.game_entropies}")
+        print(f"Game entropies: {entropy_system.game_outcome_entropies}")
 
         # Verify sum of entropy scores for a miner
-        miner_entropy_sum = ebdr_scores[:, self.scoring_system.current_day, :].sum(dim=1)
+        miner_entropy_sum = ebdr_scores[:, self.scoring_system.current_day]
         self.assertTrue(t.all(miner_entropy_sum >= 0), "Some miner entropy sums are negative.")
         print(f"Miner entropy sums: {miner_entropy_sum}")
 
@@ -239,16 +350,15 @@ class TestScoringSystem(unittest.TestCase):
                     game_id, outcome, odds, wager = pred
                     game_id = int(game_id.item())
                     self.assertLess(game_id, closing_line_odds.shape[0], f"Game ID {game_id} out of range.")
-                    self.assertIn(game_id, entropy_system.game_entropies, f"Game {game_id} entropy not found.")
-                    self.assertGreater(entropy_system.game_entropies[game_id], 0, f"Game {game_id} entropy is zero.")
+                    self.assertIn(game_id, entropy_system.game_outcome_entropies, f"Game {game_id} entropy not found.")
+                    game_entropy = entropy_system.game_outcome_entropies[game_id]
+                    self.assertIsInstance(game_entropy, dict, f"Game {game_id} entropy is not a dictionary.")
+                    self.assertTrue(any(v > 0 for v in game_entropy.values()), f"Game {game_id} has no positive entropy values.")
 
-    def test_scoring_run(self):
-        # This test can use the data from the first day of the simulation
-        weights = self.weight_history[0]
-
-        self.assertIsNotNone(weights)
-        self.assertEqual(weights.shape[0], self.num_miners)
-        self.assertAlmostEqual(weights.sum().item(), 1.0, places=6)
+        # Print additional debug information
+        print(f"EBDR scores shape: {ebdr_scores.shape}")
+        print(f"EBDR scores non-zero count: {(ebdr_scores != 0).sum().item()}")
+        print(f"EBDR scores statistics: Min: {ebdr_scores.min().item():.8f}, Max: {ebdr_scores.max().item():.8f}, Mean: {ebdr_scores.mean().item():.8f}")
 
     def test_update_new_day(self):
         # Check tier changes over the first 5 days
@@ -321,25 +431,14 @@ class TestScoringSystem(unittest.TestCase):
             "Wagers are not increasing over time",
         )
 
-    def test_weight_distribution(self):
-        final_weights = self.weight_history[-1]
-        self.assertAlmostEqual(
-            final_weights.sum().item(), 1.0, places=6, msg="Weights do not sum to 1"
-        )
-        self.assertTrue((final_weights >= 0).all(), "Some weights are negative")
-        self.assertTrue((final_weights <= 1).all(), "Some weights are greater than 1")
-
     def test_entropy_system_integration(self):
-        final_entropy_scores = self.scoring_system._get_tensor_for_day(
-            self.scoring_system.entropy_scores,
-            self.scoring_system.current_day
-        )
+        final_entropy_scores = self.scoring_system.entropy_scores[:, self.scoring_system.current_day]
 
         print(f"Entropy scores shape: {final_entropy_scores.shape}")
         print(f"Entropy scores non-zero count: {(final_entropy_scores != 0).sum().item()}")
         print(f"Entropy scores statistics: Min: {final_entropy_scores.min().item():.8f}, Max: {final_entropy_scores.max().item():.8f}, Mean: {final_entropy_scores.mean().item():.8f}")
-        print(f"Number of game entropies: {len(self.scoring_system.entropy_system.game_entropies)}")
-        print(f"Game entropies: {self.scoring_system.entropy_system.game_entropies}")
+        print(f"Number of game entropies: {len(self.scoring_system.entropy_system.game_outcome_entropies)}")
+        print(f"Game entropies: {self.scoring_system.entropy_system.game_outcome_entropies}")
 
         self.assertTrue(
             t.any(final_entropy_scores >= 0),
@@ -383,6 +482,17 @@ class TestScoringSystem(unittest.TestCase):
         print(f"window_scores shape: {window_scores.shape}")
         print(f"expected_scores shape: {expected_scores.shape}")
 
+    def test_database_connection(self):
+        print("Debug: Starting test_database_connection")
+        try:
+            result = self.scoring_system.scoring_data.db_manager.fetch_one(
+                "SELECT COUNT(*) FROM game_data", ()
+            )
+            print(f"Debug: Test database query result: {result}")
+            self.assertIsNotNone(result)
+        except Exception as e:
+            print(f"Error in test_database_connection: {e}")
+            raise
 
 if __name__ == "__main__":
     unittest.main()

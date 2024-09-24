@@ -63,8 +63,9 @@ while [[ $# -gt 0 ]]; do
         --axon.port) AXON_PORT="$2"; shift 2 ;;
         --validator_min_stake) VALIDATOR_MIN_STAKE="$2"; shift 2 ;;
         --disable_auto_update) DISABLE_AUTO_UPDATE="$2"; shift 2 ;;
-        *) echo "Unknown parameter passed: $1"; exit 1 ;;
         --use_bt_api) USE_BT_API="--use_bt_api"; shift ;;
+        *) echo "Unknown parameter passed: $1"; exit 1 ;;
+        
     esac
 done
 

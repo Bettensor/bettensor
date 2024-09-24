@@ -36,11 +36,11 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
     Bettensor Validator Class, Extends the BaseNeuron Class and MinerDataMixin Class
 
     Contains top-level methods for validator operations.
-
     """
 
     def __init__(self, parser: ArgumentParser):
         super().__init__(parser=parser, profile="validator")
+        MinerDataMixin.__init__(self)  # Explicitly initialize the mixin
         parser.add_argument(
             "--db",
             type=str,
@@ -107,7 +107,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.data_entry = None
         self.uid = None
         self.miner_responses = None
-        self.miner_data = MinerDataMixin(self)
+    
 
         self.db_path = DEFAULT_DB_PATH
 
@@ -275,7 +275,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.entropy_system = EntropySystem(max_capacity=self.max_targets, max_days=45)
 
         ############## Setup Validator Components ##############
-        self.api_client = APIClient() if not self.use_bt_api else BettensorAPIClient(self.db_manager)
+        self.api_client = ExternalAPIClient() if not self.use_bt_api else BettensorAPIClient(self.db_manager)
 
         self.sports_data = SportsData(
             db_manager=self.db_manager, api_client=self.api_client, entropy_system = self.entropy_system
@@ -365,13 +365,12 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         """saves the state of the validator to a file"""
         bt.logging.info("saving validator state")
 
-        # Convert datetime to timestamp before saving
-        last_api_call_timestamp = self.last_api_call.timestamp()
-        last_update_recent_games_timestamp = self.last_update_recent_games.timestamp()
+
 
         # Convert datetime to timestamp before saving
-        last_api_call_timestamp = self.last_api_call.timestamp()
-        last_update_recent_games_timestamp = self.last_update_recent_games.timestamp()
+    
+        last_api_call_timestamp = self.last_api_call.timestamp() if isinstance(self.last_api_call, datetime) else self.last_api_call
+        last_update_recent_games_timestamp = self.last_update_recent_games.timestamp() if isinstance(self.last_update_recent_games, datetime) else self.last_update_recent_games
 
         # save the state of the validator to file
         torch.save(
@@ -411,7 +410,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.blacklisted_miner_hotkeys = None
 
     def load_state(self):
-        """loads the state of the validator from a file"""
         state_path = self.base_path + "/state.pt"
         if path.exists(state_path):
             try:
@@ -426,43 +424,24 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
 
                 # Convert timestamps back to datetime
-                self.last_api_call = datetime.fromtimestamp(
-                    state.get(
-                        "last_api_call",
-                        (
-                            datetime.now(timezone.utc) - timedelta(minutes=30)
-                        ).timestamp(),
-                    ),
-                    tz=timezone.utc,
+                last_api_call_timestamp = state.get(
+                    "last_api_call",
+                    (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()
                 )
-                self.last_update_recent_games = datetime.fromtimestamp(
-                    state.get(
-                        "last_update_recent_games",
-                        (
-                            datetime.now(timezone.utc) - timedelta(minutes=30)
-                        ).timestamp(),
-                    ),
-                    tz=timezone.utc,
+                self.last_api_call = (
+                    datetime.fromtimestamp(last_api_call_timestamp, tz=timezone.utc)
+                    if isinstance(last_api_call_timestamp, (int, float))
+                    else datetime.now(timezone.utc)
                 )
 
-                # Convert timestamps back to datetime
-                self.last_api_call = datetime.fromtimestamp(
-                    state.get(
-                        "last_api_call",
-                        (
-                            datetime.now(timezone.utc) - timedelta(minutes=30)
-                        ).timestamp(),
-                    ),
-                    tz=timezone.utc,
+                last_update_recent_games_timestamp = state.get(
+                    "last_update_recent_games",
+                    (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()
                 )
-                self.last_update_recent_games = datetime.fromtimestamp(
-                    state.get(
-                        "last_update_recent_games",
-                        (
-                            datetime.now(timezone.utc) - timedelta(minutes=30)
-                        ).timestamp(),
-                    ),
-                    tz=timezone.utc,
+                self.last_update_recent_games = (
+                    datetime.fromtimestamp(last_update_recent_games_timestamp, tz=timezone.utc)
+                    if isinstance(last_update_recent_games_timestamp, (int, float))
+                    else datetime.now(timezone.utc)
                 )
 
             except Exception as e:

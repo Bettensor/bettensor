@@ -799,7 +799,7 @@ class ScoringSystem:
         if current_date.tzinfo is None:
             current_date = current_date.replace(tzinfo=timezone.utc)
 
-        date_str = current_date.strftime("%Y-%m-%d")
+        date_str = current_date.isoformat()
         bt.logging.info(f"=== Starting scoring run for date: {date_str} ===")
 
         (

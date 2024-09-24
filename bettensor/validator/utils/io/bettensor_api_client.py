@@ -26,6 +26,9 @@ class BettensorAPIClient(BaseAPIClient):
         # Get the last update date from the database
         last_update_date = self.load_last_update_date()
 
+        if last_update_date is None:
+            #set to 2 hours ago
+            last_update_date = datetime.now(timezone.utc) - timedelta(hours=2)  
         # Fetch the games from the API
         games = self.get_games(last_update_date)
 
@@ -33,6 +36,9 @@ class BettensorAPIClient(BaseAPIClient):
         new_last_update = datetime.now(timezone.utc)
         self.save_last_update_date(new_last_update)
 
+        #print one game
+        if len(games) > 0:
+            bt.logging.info(f"Games: {games[0]}")
         return games
 
     def get_games(self, last_update_date=None, items_per_page=100):
@@ -46,7 +52,7 @@ class BettensorAPIClient(BaseAPIClient):
         ).isoformat()  # 15 days ago
 
         while True:
-            games = self._get_games_page(
+            games = self.get_games_page(
                 start_date, items_per_page, page_index, last_update_date
             )
             if not games:

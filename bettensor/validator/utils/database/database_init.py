@@ -57,8 +57,8 @@ def initialize_database():
         """,
         """
         CREATE TABLE IF NOT EXISTS game_data (
-            id INTEGER PRIMARY KEY,
-            external_id TEXT,
+            game_id TEXT PRIMARY KEY UNIQUE,
+            external_id TEXT UNIQUE,
             team_a TEXT,
             team_b TEXT,
             team_a_odds REAL,
@@ -69,6 +69,7 @@ def initialize_database():
             create_date TEXT,
             last_update_date TEXT,
             sport TEXT,
+            league TEXT,
             outcome TEXT,
             active INTEGER
         )

@@ -18,8 +18,7 @@ Miner Data Methods, Extends the Bettensor Validator Class
 
 
 class MinerDataMixin:
-    def __init__(self, validator):
-        self.validator = validator
+    
     def insert_predictions(self, processed_uids, predictions):
         """
         Inserts new predictions into the database
@@ -385,104 +384,104 @@ class MinerDataMixin:
         self.process_game_result(sport, game_response, external_id, team_a, team_b)
 
 
-def process_game_result(self, sport, game_response, external_id, team_a, team_b):
-    # Handle NFL scores
-    if sport.lower() == "nfl":
-        # The NFL score is provided as a string like "20-27"
-        scores = game_response.get("ss", "").split("-")
-        if len(scores) == 2:
-            home_score, away_score = map(int, scores)
+    def process_game_result(self, sport, game_response, external_id, team_a, team_b):
+        # Handle NFL scores
+        if sport.lower() == "nfl":
+            # The NFL score is provided as a string like "20-27"
+            scores = game_response.get("ss", "").split("-")
+            if len(scores) == 2:
+                home_score, away_score = map(int, scores)
+            else:
+                bt.logging.error(f"Invalid score format for NFL game {external_id}")
+                return
+        # Handle baseball and soccer scores
+        elif sport == "baseball":
+            home_score = game_response.get("scores", {}).get("home", {}).get("total")
+            away_score = game_response.get("scores", {}).get("away", {}).get("total")
+        elif sport == "soccer":
+            home_score = game_response.get("goals", {}).get("home")
+            away_score = game_response.get("goals", {}).get("away")
+        elif sport.lower() == "nfl":
+            scores = game_response.get("ss", "").split("-")
+            if len(scores) == 2:
+                home_score, away_score = map(int, scores)
+            else:
+                bt.logging.error(f"Invalid score format for NFL game {external_id}")
+                return
         else:
-            bt.logging.error(f"Invalid score format for NFL game {external_id}")
+            bt.logging.error(f"Unsupported sport: {sport}")
             return
-    # Handle baseball and soccer scores
-    elif sport == "baseball":
-        home_score = game_response.get("scores", {}).get("home", {}).get("total")
-        away_score = game_response.get("scores", {}).get("away", {}).get("total")
-    elif sport == "soccer":
-        home_score = game_response.get("goals", {}).get("home")
-        away_score = game_response.get("goals", {}).get("away")
-    elif sport.lower() == "nfl":
-        scores = game_response.get("ss", "").split("-")
-        if len(scores) == 2:
-            home_score, away_score = map(int, scores)
+
+        # Validate scores
+        if home_score is None or away_score is None:
+            bt.logging.error(f"Unable to extract scores for {sport} game {external_id}")
+            return
+
+        # Convert scores to integers for comparison
+        home_score = int(home_score)
+        away_score = int(away_score)
+
+        # Determine game outcome: 0 for home win, 1 for away win, 2 for tie
+        if home_score > away_score:
+            numeric_outcome = 0
+        elif away_score > home_score:
+            numeric_outcome = 1
         else:
-            bt.logging.error(f"Invalid score format for NFL game {external_id}")
-            return
-    else:
-        bt.logging.error(f"Unsupported sport: {sport}")
-        return
+            numeric_outcome = 2
 
-    # Validate scores
-    if home_score is None or away_score is None:
-        bt.logging.error(f"Unable to extract scores for {sport} game {external_id}")
-        return
-
-    # Convert scores to integers for comparison
-    home_score = int(home_score)
-    away_score = int(away_score)
-
-    # Determine game outcome: 0 for home win, 1 for away win, 2 for tie
-    if home_score > away_score:
-        numeric_outcome = 0
-    elif away_score > home_score:
-        numeric_outcome = 1
-    else:
-        numeric_outcome = 2
-
-    bt.logging.trace(
-        f"Game {external_id} result: {team_a} {home_score} - {away_score} {team_b}"
-    )
-
-    # Update the game outcome in the database
-    self.update_game_outcome(external_id, numeric_outcome)
-
-
-def get_sport_from_db(self, external_id):
-    result = self.db_manager.fetchone(
-        "SELECT sport FROM game_data WHERE external_id = ?", (external_id,)
-    )
-    return result[0] if result else None
-
-
-def recalculate_all_profits(self):
-    self.weight_setter.recalculate_daily_profits()
-
-
-def fetch_local_game_data(self, current_timestamp: str) -> Dict[str, TeamGame]:
-    # Calculate timestamp for 15 days ago
-    fifteen_days_ago = (
-        datetime.fromisoformat(current_timestamp) - datetime.timedelta(days=15)
-    ).isoformat()
-
-    query = """
-        SELECT id, team_a, team_b, sport, league, external_id, create_date, last_update_date, event_start_date, active, outcome, team_a_odds, team_b_odds, tie_odds, can_tie
-        FROM game_data
-        WHERE event_start_date > ? OR (event_start_date BETWEEN ? AND ?)
-    """
-
-    rows = self.db_manager.fetchall(
-        query, (current_timestamp, fifteen_days_ago, current_timestamp)
-    )
-
-    gamedata_dict = {}
-    for row in rows:
-        team_game = TeamGame(
-            game_id=row[0],  # External ID from API
-            team_a=row[1],
-            team_b=row[2],
-            sport=row[3],
-            league=row[4],
-            create_date=row[6],
-            last_update_date=row[7],
-            event_start_date=row[8],
-            active=bool(row[9]),
-            outcome=row[10],
-            team_a_odds=row[11],
-            team_b_odds=row[12],
-            tie_odds=row[13],
-            can_tie=bool(row[14]),
+        bt.logging.trace(
+            f"Game {external_id} result: {team_a} {home_score} - {away_score} {team_b}"
         )
-        gamedata_dict[row[0]] = team_game
 
-    return gamedata_dict
+        # Update the game outcome in the database
+        self.update_game_outcome(external_id, numeric_outcome)
+
+
+    def get_sport_from_db(self, external_id):
+        result = self.db_manager.fetchone(
+            "SELECT sport FROM game_data WHERE external_id = ?", (external_id,)
+        )
+        return result[0] if result else None
+
+
+    def recalculate_all_profits(self):
+        self.weight_setter.recalculate_daily_profits()
+
+
+    def fetch_local_game_data(self, current_timestamp: str) -> Dict[str, TeamGame]:
+        # Calculate timestamp for 15 days ago
+        fifteen_days_ago = (
+            datetime.datetime.fromisoformat(current_timestamp) - datetime.timedelta(days=15)
+        ).isoformat()
+
+        query = """
+            SELECT game_id, team_a, team_b, sport, league, external_id, create_date, last_update_date, event_start_date, active, outcome, team_a_odds, team_b_odds, tie_odds, can_tie
+            FROM game_data
+            WHERE event_start_date > ? OR (event_start_date BETWEEN ? AND ?)
+        """
+
+        rows = self.db_manager.fetch_all(
+            query, (current_timestamp, fifteen_days_ago, current_timestamp)
+        )
+
+        gamedata_dict = {}
+        for row in rows:
+            team_game = TeamGame(
+                game_id=row[0],  # External ID from API
+                team_a=row[1],
+                team_b=row[2],
+                sport=row[3],
+                league=row[4],
+                create_date=row[6],
+                last_update_date=row[7],
+                event_start_date=row[8],
+                active=bool(row[9]),
+                outcome=row[10],
+                team_a_odds=row[11],
+                team_b_odds=row[12],
+                tie_odds=row[13],
+                can_tie=bool(row[14]),
+            )
+            gamedata_dict[row[0]] = team_game
+
+        return gamedata_dict

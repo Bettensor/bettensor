@@ -146,7 +146,6 @@ class Metadata(BaseModel):
     synapse_id: str = Field(..., description="UUID of the synapse")
     neuron_uid: str = Field(..., description="UUID of the serving neuron")
     timestamp: str = Field(..., description="Timestamp of the synapse")
-    signature: str = Field(..., description="Signature of the serving neuron")
     subnet_version: str = Field(
         ..., description="Subnet version of the neuron sending the synapse"
     )
@@ -265,14 +264,15 @@ class GameData(bt.Synapse):
         )
         if synapse_type == "prediction":
             gamedata_dict = None
+        if synapse_type == "game_data":
+            prediction_dict = None
         else:
-            gamedata_dict = cls.fetch_game_data(metadata.timestamp, db_path)
-        return cls(
-            metadata=metadata,
-            gamedata_dict=gamedata_dict,
-            prediction_dict=prediction_dict,
-            synapse_type=synapse_type,
-        )
+            return cls(
+                metadata=metadata,
+                gamedata_dict=gamedata_dict,
+                prediction_dict=prediction_dict,
+                synapse_type=synapse_type,
+            )
 
     def deserialize(self):
         return self.gamedata_dict, self.prediction_dict, self.metadata
