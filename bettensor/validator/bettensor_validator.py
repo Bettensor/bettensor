@@ -107,19 +107,13 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.data_entry = None
         self.uid = None
         self.miner_responses = None
-    
-
         self.db_path = DEFAULT_DB_PATH
-
         self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
-        self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
+        self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=60)
         self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(
-            minutes=30
+            minutes=60
         )
-        self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
-        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(
-            minutes=30
-        )
+     
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -364,10 +358,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
     def save_state(self):
         """saves the state of the validator to a file"""
         bt.logging.info("saving validator state")
-
-
-
-        # Convert datetime to timestamp before saving
     
         last_api_call_timestamp = self.last_api_call.timestamp() if isinstance(self.last_api_call, datetime) else self.last_api_call
         last_update_recent_games_timestamp = self.last_update_recent_games.timestamp() if isinstance(self.last_update_recent_games, datetime) else self.last_update_recent_games
@@ -390,7 +380,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         bt.logging.debug(
             f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {last_api_call_timestamp}, last_update_recent_games: {last_update_recent_games_timestamp}"
-            f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {last_api_call_timestamp}, last_update_recent_games: {last_update_recent_games_timestamp}"
+            
         )
 
     def reset_validator_state(self, state_path):
