@@ -30,6 +30,10 @@ def main(validator: BettensorValidator):
             watchdog.reset()
             current_time = datetime.now(timezone.utc)
 
+            # Convert last_api_call to datetime if it's a string
+            if isinstance(validator.last_api_call, str):
+                validator.last_api_call = datetime.fromisoformat(validator.last_api_call)
+
             # Update game data every 60 minutes
             if current_time - validator.last_api_call >= timedelta(minutes=60):
                 update_game_data(validator, current_time)
@@ -38,27 +42,9 @@ def main(validator: BettensorValidator):
             if validator.step % 5 == 0:
                 sync_metagraph(validator)
 
-            (
-                uids_to_query,
-                list_of_uids,
-                blacklisted_uids,
-                uids_not_to_query,
-            ) = filter_and_update_axons(validator)
-
-           
-
-            synapse = query_axons_with_game_data(validator)
+            synapse = query_and_process_axons_with_game_data(validator)
 
             bt.logging.info(f'Synapse: {synapse}')
-
-            collect_and_process_responses(
-                validator,
-                uids_to_query,
-                list_of_uids,
-                blacklisted_uids,
-                uids_not_to_query,
-                synapse,
-            )
 
             current_block = validator.subtensor.block
 
@@ -152,7 +138,7 @@ def filter_and_update_axons(validator):
     return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
 
-def query_axons_with_game_data(validator):
+def query_and_process_axons_with_game_data(validator):
     current_time = datetime.now(timezone.utc).isoformat()
     gamedata_dict = validator.fetch_local_game_data(current_timestamp=current_time)
     if gamedata_dict is not None:
@@ -170,18 +156,13 @@ def query_axons_with_game_data(validator):
         bt.logging.debug(
             f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}"
         )
-        
     else:
         bt.logging.error("No game data found")
         return None
-    
-    return synapse
 
-
-def collect_and_process_responses(
-    validator, uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query, synapse
-):
     responses = []
+    uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query = filter_and_update_axons(validator)
+
     for i in range(0, len(uids_to_query), 20):
         responses += validator.dendrite.query(
             axons=uids_to_query[i : i + 20],
@@ -190,43 +171,45 @@ def collect_and_process_responses(
             deserialize=True,
         )
 
-    for uid in blacklisted_uids:
-        if uid is not None:
-            bt.logging.debug(
-                f"Setting score for blacklisted UID: {uid}. Old score: {validator.scores[uid]}"
-            )
-            validator.scores[uid] = (
-                validator.neuron_config.alpha * validator.scores[uid]
-                + (1 - validator.neuron_config.alpha) * 0.0
-            )
-            bt.logging.debug(
-                f"Set score for blacklisted UID: {uid}. New score: {validator.scores[uid]}"
-            )
+        for uid in blacklisted_uids:
+            if uid is not None:
+                bt.logging.debug(
+                    f"Setting score for blacklisted UID: {uid}. Old score: {validator.scores[uid]}"
+                )
+                validator.scores[uid] = (
+                    validator.neuron_config.alpha * validator.scores[uid]
+                    + (1 - validator.neuron_config.alpha) * 0.0
+                )
+                bt.logging.debug(
+                    f"Set score for blacklisted UID: {uid}. New score: {validator.scores[uid]}"
+                )
 
-    for uid in uids_not_to_query:
-        if uid is not None:
-            bt.logging.trace(
-                f"Setting score for not queried UID: {uid}. Old score: {validator.scores[uid]}"
-            )
-            validator_alpha_type = type(validator.neuron_config.alpha)
-            validator_scores_type = type(validator.scores[uid])
-            bt.logging.debug(
-                f"validator_alpha_type: {validator_alpha_type}, validator_scores_type: {validator_scores_type}"
-            )
-            validator.scores[uid] = (
-                validator.neuron_config.alpha * validator.scores[uid]
-                + (1 - validator.neuron_config.alpha) * 0.0
-            )
-            bt.logging.trace(
-                f"Set score for not queried UID: {uid}. New score: {validator.scores[uid]}"
-            )
+        for uid in uids_not_to_query:
+            if uid is not None:
+                bt.logging.trace(
+                    f"Setting score for not queried UID: {uid}. Old score: {validator.scores[uid]}"
+                )
+                validator_alpha_type = type(validator.neuron_config.alpha)
+                validator_scores_type = type(validator.scores[uid])
+                bt.logging.debug(
+                    f"validator_alpha_type: {validator_alpha_type}, validator_scores_type: {validator_scores_type}"
+                )
+                validator.scores[uid] = (
+                    validator.neuron_config.alpha * validator.scores[uid]
+                    + (1 - validator.neuron_config.alpha) * 0.0
+                )
+                bt.logging.trace(
+                    f"Set score for not queried UID: {uid}. New score: {validator.scores[uid]}"
+                )
 
-    if not responses:
-        print("No responses received. Sleeping for 18 seconds.")
-        time.sleep(18)
+        if not responses:
+            print("No responses received. Sleeping for 18 seconds.")
+            time.sleep(18)
 
-    if responses and any(responses):
-        validator.process_prediction(processed_uids=list_of_uids, predictions=responses)
+        if responses and any(responses):
+            validator.process_prediction(processed_uids=list_of_uids, predictions=responses)
+
+    return synapse
 
 
 def send_data_to_website_server(validator):

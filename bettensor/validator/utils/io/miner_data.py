@@ -32,7 +32,7 @@ class MinerDataMixin:
         )
 
         # Get today's date in UTC
-        today_utc = datetime.now(datetime.timezone.utc).date().isoformat()
+        today_utc = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
 
         for uid, prediction_dict in predictions.items():
             for predictionID, res in prediction_dict.items():
@@ -154,8 +154,8 @@ class MinerDataMixin:
                     bt.logging.error(f"An error occurred: {e}")
 
         # After inserting predictions, update entropy scores
-        game_data = self.prepare_game_data_for_entropy(predictions)
-        self.entropy_system.update_ebdr_scores(game_data)
+        #game_data = self.prepare_game_data_for_entropy(predictions)
+        #self.entropy_system.update_ebdr_scores(game_data)
 
     def process_prediction(
         self, processed_uids: torch.tensor, predictions: list
