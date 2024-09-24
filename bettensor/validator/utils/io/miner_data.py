@@ -28,7 +28,7 @@ class MinerDataMixin:
         predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
         """
         current_time = (
-            datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
+            datetime.datetime.now(datetime.timezone.utc).isoformat()
         )
 
         # Get today's date in UTC
@@ -196,8 +196,6 @@ class MinerDataMixin:
                 bt.logging.warning(
                     "synapse data is incomplete or not in the expected format."
                 )
-
-        self.create_table()
         self.insert_predictions(processed_uids, predictions_dict)
 
     def update_game_outcome(self, game_id, numeric_outcome):
