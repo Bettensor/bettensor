@@ -437,15 +437,27 @@ class NFLPredictor:
     def get_model_params(self, db_manager):
         current_time = time.time()
         if current_time - self.last_param_update >= self.param_refresh_interval:
-            row = db_manager.get_model_params(self.id)
-            self.nfl_model_on = row["nfl_model_on"]
-            self.nfl_minimum_wager_amount = row["nfl_minimum_wager_amount"]
-            self.nfl_maximum_wager_amount = row["nfl_max_wager_amount"]
-            self.fuzzy_match_percentage = row["fuzzy_match_percentage"]
-            self.nfl_top_n_games = row["nfl_top_n_games"]
-            self.nfl_kelly_fraction_multiplier = row["nfl_kelly_fraction_multiplier"]
-            self.nfl_edge_threshold = row["nfl_edge_threshold"]
-            self.nfl_max_bet_percentage = row["nfl_max_bet_percentage"]
+            if self.id is None:
+                bt.logging.warning(
+                    "Miner ID is not set. Using default NFL model parameters."
+                )
+            else:
+                row = db_manager.get_model_params(self.id)
+                print(f"DEBUG: NFL Model params returned from database: {row}")  # Add this line for debugging
+                if row is None:
+                    bt.logging.info(
+                        f"No NFL model parameters found for miner ID: {self.id}. Using default values."
+                    )
+                    db_manager.initialize_default_model_params(self.id)
+                else:
+                    self.nfl_model_on = row.get("nfl_model_on", False)
+                    self.nfl_minimum_wager_amount = row.get("nfl_minimum_wager_amount", 20.0)
+                    self.nfl_maximum_wager_amount = row.get("nfl_max_wager_amount", 1000.0)
+                    self.fuzzy_match_percentage = row.get("fuzzy_match_percentage", 80)
+                    self.nfl_top_n_games = row.get("nfl_top_n_games", 10)
+                    self.nfl_kelly_fraction_multiplier = row.get("nfl_kelly_fraction_multiplier", 1.0)
+                    self.nfl_edge_threshold = row.get("nfl_edge_threshold", 0.02)
+                    self.nfl_max_bet_percentage = row.get("nfl_max_bet_percentage", 0.7)
             self.last_param_update = current_time
 
     def preprocess_data(self, home_teams, away_teams):
