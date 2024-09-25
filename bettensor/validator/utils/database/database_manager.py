@@ -18,9 +18,10 @@ class DatabaseManager:
 
     def __init__(self, db_path):
         self.db_path = db_path
-        self.conn = None
-        self.cursor = None
-        self.connect()
+        self.conn = sqlite3.connect(db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.cursor = self.conn.cursor()
+        self.transaction_active = False
         logging.basicConfig(level=logging.DEBUG)
         self.logger = logging.getLogger(__name__)
         self.queue = Queue()
@@ -28,7 +29,6 @@ class DatabaseManager:
         self._start_worker()
         self._initialize_database()
         self.initialized = True
-        self._transaction_active = False
 
     def connect(self):
         try:
@@ -40,22 +40,16 @@ class DatabaseManager:
             raise
 
     def begin_transaction(self):
-        self.execute(lambda cursor: cursor.execute("BEGIN"))
-        self._transaction_active = True
+        self.transaction_active = True
+        self.conn.execute("BEGIN")
 
     def commit_transaction(self):
-        if self._transaction_active:
-            self.execute(lambda cursor: cursor.execute("COMMIT"))
-            self._transaction_active = False
-        else:
-            bt.logging.warning("No active transaction to commit")
+        self.conn.commit()
+        self.transaction_active = False
 
     def rollback_transaction(self):
-        if self._transaction_active:
-            self.execute(lambda cursor: cursor.execute("ROLLBACK"))
-            self._transaction_active = False
-        else:
-            bt.logging.warning("No active transaction to rollback")
+        self.conn.rollback()
+        self.transaction_active = False
 
     def _start_worker(self):
         threading.Thread(target=self._worker, daemon=True).start()
@@ -133,7 +127,8 @@ class DatabaseManager:
 
         def _execute_fetch(cursor):
             cursor.execute(query, params)
-            return cursor.fetchone()
+            result = cursor.fetchone()
+            return result if result is None else tuple(result)
 
         self.queue.put((_execute_fetch, (), {}, result_queue))
         result = result_queue.get()
@@ -156,7 +151,8 @@ class DatabaseManager:
 
         def _execute_fetch(cursor):
             cursor.execute(query, params)
-            return cursor.fetchall()
+            results = cursor.fetchall()
+            return [tuple(row) for row in results]
 
         self.queue.put((_execute_fetch, (), {}, result_queue))
         result = result_queue.get()

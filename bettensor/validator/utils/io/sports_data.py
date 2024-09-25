@@ -31,16 +31,15 @@ class SportsData:
 
         self.all_games = []
 
-    def fetch_and_update_game_data(self):
-        """
-        Single method to fetch and update game data from either BettensorAPI or external API.
-        This method will be called from the validator.py file.
-
-        """
-        all_games = self.api_client.fetch_all_game_data()
-        self.insert_or_update_games(all_games)
-        self.all_games = all_games
-        return all_games
+    def fetch_and_update_game_data(self, last_api_call):
+        try:
+            all_games = self.api_client.fetch_all_game_data(last_api_call)
+            self.insert_or_update_games(all_games)
+            self.all_games = all_games
+            return all_games
+        except Exception as e:
+            bt.logging.error(f"Error fetching game data: {str(e)}")
+            raise  # Re-raise the exception
 
     def insert_or_update_games(self, games):
         if not games:
@@ -60,7 +59,7 @@ class SportsData:
                 last_update_date = create_date
                 event_start_date = game["date"]
                 active = 1
-                outcome = game["outcome"] if game["outcome"] is not None and game["outcome"] != "None" else "Unfinished"
+                outcome = "Unfinished"
 
                 if self.is_bettensor_api():
                     team_a_odds = game["teamAOdds"]

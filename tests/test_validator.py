@@ -1,186 +1,244 @@
 """
-test script for validator functions and files
+Test script for validator functions and files
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
-from neurons.validator import main
+import unittest
+from unittest.mock import Mock, patch
+import datetime
+import tempfile
+import os
+from datetime import timedelta
+from argparse import ArgumentParser
+
+import bittensor as bt
 from bettensor.validator.bettensor_validator import BettensorValidator
-import torch
+from bettensor.validator.utils.io.sports_data import SportsData
+from bettensor.validator.utils.io.external_api_client import ExternalAPIClient
+from bettensor.validator.utils.database.database_manager import DatabaseManager
+from bettensor.validator.utils.scoring.entropy_system import EntropySystem
 
 
-@pytest.fixture
-def mock_validator():
-    return MagicMock(spec=BettensorValidator)
+class TestValidator(unittest.TestCase):
+    @patch('bettensor.validator.utils.io.external_api_client.ExternalAPIClient', autospec=True)
+    def setUp(self, MockExternalAPIClient):
+        # Create a temporary database
+        self.temp_db = tempfile.NamedTemporaryFile(delete=False)
+        self.db_path = self.temp_db.name
 
+        # Initialize database manager
+        self.db_manager = DatabaseManager(self.db_path)
+        self.db_manager._initialize_database()
 
-@pytest.fixture
-def mock_argparser():
-    parser = MagicMock()
-    parser.parse_args.return_value = MagicMock(
-        db="test.db", alpha=0.9, netuid=30, max_targets=128, load_state="True"
-    )
-    return parser
+        # Mock EntropySystem
+        self.mock_entropy_system = Mock(spec=EntropySystem)
 
+        # Initialize a mock ExternalAPIClient instance
+        self.mock_api_client = MockExternalAPIClient.return_value
 
-@pytest.fixture
-def validator(mock_argparser):
-    with patch("bettensor.validator.bettensor_validator.bt") as mock_bt:
-        mock_bt.wallet.return_value = MagicMock(
-            hotkey=MagicMock(ss58_address="test_hotkey")
+        # Mock the process_game_result method
+        self.mock_api_client.process_game_result = Mock()
+
+        # Initialize SportsData with mocks
+        self.sports_data = SportsData(self.db_manager, self.mock_entropy_system, self.mock_api_client)
+
+        # Prepare ArgumentParser without adding conflicting arguments
+        parser = ArgumentParser()
+        parser.add_argument("--subtensor.network", type=str, default="test_network")
+        parser.add_argument("--netuid", type=int, default=1)
+        parser.add_argument("--wallet.name", type=str, default="test_wallet")
+        # Add other required arguments as needed, except those that BettensorValidator adds
+
+        # Initialize BettensorValidator with the parser
+        self.validator = BettensorValidator(parser=parser)
+        # Assign the db_manager to the validator to resolve AttributeError
+        self.validator.db_manager = self.db_manager
+        # Assign sports_data if required by validator
+        self.validator.sports_data = self.sports_data
+        # Assign the mocked api_client to the validator
+        self.validator.api_client = self.mock_api_client
+
+    def tearDown(self):
+        # Close and remove the temporary database
+        self.db_manager.conn.close()
+        os.unlink(self.db_path)
+
+    def test_update_game_data_flow(self):
+        # Define the mock response for fetch_and_update_game_data
+        mock_games = [
+            {
+                "externalId": "123",
+                "teamA": "Team A",
+                "teamB": "Team B",
+                "sport": "Football",
+                "league": "NFL",
+                "date": "2023-06-01T18:00:00Z",
+                "outcome": "Unfinished",
+                "odds": {
+                    "average_home_odds": 1.5,
+                    "average_away_odds": 2.5,
+                    "average_tie_odds": None
+                }
+            }
+        ]
+
+        self.mock_api_client.fetch_all_game_data.return_value = mock_games
+
+        # Call fetch_and_update_game_data which should insert into the database
+        self.sports_data.fetch_and_update_game_data()
+
+        # Verify that fetch_all_game_data was called once
+        self.mock_api_client.fetch_all_game_data.assert_called_once()
+
+        # Retrieve the inserted game from the database
+        game = self.db_manager.fetch_one(
+            "SELECT external_id, team_a, team_b FROM game_data WHERE external_id = ?",
+            ("123",)
         )
-        mock_bt.subtensor.return_value = MagicMock()
-        mock_bt.metagraph.return_value = MagicMock(hotkeys=["test_hotkey"])
-        yield BettensorValidator(parser=mock_argparser)
+        self.assertIsNotNone(game)
+        self.assertEqual(game[0], "123")
+        self.assertEqual(game[1], "Team A")
+        self.assertEqual(game[2], "Team B")
+
+    def test_update_recent_games_flow(self):
+        # Insert a game into the database with event_start_date older than five hours
+        six_hours_ago = datetime.datetime.now(datetime.timezone.utc) - timedelta(hours=6)
+        self.db_manager.execute_query(
+            """
+            INSERT INTO game_data (team_a, team_b, sport, league, external_id, event_start_date, outcome)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Team A", "Team B", "Football", "NFL", "123", six_hours_ago.isoformat(), "Unfinished")
+        )
+
+        # Define mocked API response to simulate a finished game
+        mock_game_data = {
+            "results": [
+                {
+                    "time_status": "3",  # 3 means the game has finished
+                    "ss": "20-27"  # Example score
+                }
+            ]
+        }
+
+        self.mock_api_client.get_nfl_result.return_value = mock_game_data
+
+        # Spy on the process_game_result method
+        original_process_game_result = self.mock_api_client.process_game_result
+        self.mock_api_client.process_game_result = Mock(side_effect=original_process_game_result)
+
+        # Call update_recent_games which should process the game
+        self.validator.update_recent_games()
+
+        # Assert determine_winner was called correctly
+        expected_game_info = {
+            "external_id": "123",
+            "team_a": "Team A",
+            "team_b": "Team B",
+            "sport": "Football",
+            "league": "NFL",
+            "event_start_date": six_hours_ago.isoformat()
+        }
+        self.mock_api_client.determine_winner.assert_called_once_with(expected_game_info)
+
+        # Assert process_game_result was called with correct parameters
+        self.mock_api_client.process_game_result.assert_called_once_with(
+            "Football",
+            mock_game_data["results"][0],
+            "123",
+            "Team A",
+            "Team B"
+        )
+
+        # Verify that the outcome was updated in the database
+        game = self.db_manager.fetch_one(
+            "SELECT outcome FROM game_data WHERE external_id = ?",
+            ("123",)
+        )
+        self.assertEqual(game[0], 1)  # 1 represents away team win based on score "20-27"
+
+    def test_full_update_flow(self):
+        # Insert a game into the database with event_start_date older than five hours
+        six_hours_ago = datetime.datetime.now(datetime.timezone.utc) - timedelta(hours=6)
+        self.db_manager.execute_query(
+            """
+            INSERT INTO game_data (team_a, team_b, sport, league, external_id, event_start_date, outcome)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Team A", "Team B", "Football", "NFL", "123", six_hours_ago.isoformat(), "Unfinished")
+        )
+
+        # Define mocked API response
+        mock_games = [
+            {
+                "externalId": "123",
+                "teamA": "Team A",
+                "teamB": "Team B",
+                "sport": "Football",
+                "league": "NFL",
+                "date": six_hours_ago.isoformat(),
+                "outcome": "Unfinished",
+                "odds": {
+                    "average_home_odds": 1.5,
+                    "average_away_odds": 2.5,
+                    "average_tie_odds": None
+                }
+            }
+        ]
+        self.mock_api_client.fetch_all_game_data.return_value = mock_games
+
+        # Define a side effect for determine_winner to ensure process_game_result is called
+        def mock_determine_winner(game_info):
+            # Verify the structure of game_info
+            self.assertIsInstance(game_info, dict)
+            self.assertEqual(game_info["external_id"], "123")
+            return 0  # 0 represents home team win
+
+        with patch.object(self.mock_api_client, 'determine_winner', side_effect=mock_determine_winner) as mock_det_winner:
+            # Mock process_game_result to track its calls
+            self.mock_api_client.process_game_result = Mock(return_value=0)
+
+            # Call update_recent_games which should process the game
+            self.validator.update_recent_games()
+
+            # Assert determine_winner was called correctly
+            expected_game_info = {
+                "external_id": "123",
+                "team_a": "Team A",
+                "team_b": "Team B",
+                "sport": "Football",
+                "league": "NFL",
+                "event_start_date": six_hours_ago.isoformat()
+            }
+            mock_det_winner.assert_called_once_with(expected_game_info)
+
+            # Assert process_game_result was called with correct parameters
+            self.mock_api_client.process_game_result.assert_called_once_with(
+                "Football",
+                unittest.mock.ANY,  # Replace with actual game_response if needed
+                "123",
+                "Team A",
+                "Team B"
+            )
+
+            # Verify that the outcome was updated in the database
+            game = self.db_manager.fetch_one(
+                "SELECT outcome FROM game_data WHERE external_id = ?",
+                ("123",)
+            )
+            self.assertEqual(game[0], 0)  # 0 represents home team win
+
+    def test_api_error_handling(self):
+        # Configure the mock to raise an exception when fetch_all_game_data is called
+        self.mock_api_client.fetch_all_game_data.side_effect = Exception("API Failure")
+
+        with self.assertRaises(Exception) as context:
+            # Assuming that update_recent_games triggers fetch_all_game_data indirectly
+            self.sports_data.fetch_and_update_game_data()
+
+        # Verify that the exception message is as expected
+        self.assertTrue("API Failure" in str(context.exception))
 
 
-# Tests for validator.py
+if __name__ == '__main__':
+    unittest.main()
 
-
-@patch("neurons.validator.SportsData")
-@patch("neurons.validator.load_dotenv")
-@patch("neurons.validator.os.getenv")
-def test_main(mock_getenv, mock_load_dotenv, mock_sports_data, mock_validator):
-    mock_getenv.return_value = "fake_api_key"
-    mock_sports_data.return_value.get_multiple_game_data.return_value = {}
-
-    with patch("neurons.validator.time.sleep", side_effect=KeyboardInterrupt):
-        main(mock_validator)
-
-    mock_load_dotenv.assert_called_once()
-    mock_getenv.assert_called_once_with("RAPID_API_KEY")
-    mock_sports_data.assert_called_once()
-    mock_sports_data.return_value.get_multiple_game_data.assert_called()
-
-    mock_validator.sync_metagraph.assert_called()
-    mock_validator.check_hotkeys.assert_called()
-    mock_validator.save_state.assert_called()
-    mock_validator.set_weights.assert_called()
-
-
-@pytest.mark.parametrize(
-    "step,expected_calls",
-    [
-        (0, 0),
-        (5, 1),
-        (10, 2),
-        (149, 29),
-        (150, 30),
-    ],
-)
-def test_main_periodic_actions(step, expected_calls, mock_validator):
-    mock_validator.step = step
-
-    with patch("neurons.validator.time.sleep", side_effect=KeyboardInterrupt):
-        main(mock_validator)
-
-    assert mock_validator.sync_metagraph.call_count == expected_calls
-    assert mock_validator.check_hotkeys.call_count == expected_calls
-    assert mock_validator.save_state.call_count == expected_calls
-
-
-def test_main_error_handling(mock_validator):
-    mock_validator.sync_metagraph.side_effect = TimeoutError("Sync failed")
-
-    with patch("neurons.validator.time.sleep", side_effect=KeyboardInterrupt):
-        main(mock_validator)
-
-    mock_validator.sync_metagraph.assert_called()
-    # Ensure the loop continues despite the error
-
-
-# Tests for bettensor_validator.py
-
-
-def test_apply_config(validator):
-    bt_classes = [MagicMock(), MagicMock()]
-    assert validator.apply_config(bt_classes)
-    assert validator.neuron_config is not None
-
-
-def test_check_vali_reg(validator):
-    mock_metagraph = MagicMock(hotkeys=["test_hotkey"])
-    mock_wallet = MagicMock(hotkey=MagicMock(ss58_address="test_hotkey"))
-    mock_subtensor = MagicMock()
-
-    assert validator.check_vali_reg(mock_metagraph, mock_wallet, mock_subtensor)
-
-    mock_metagraph.hotkeys = ["other_hotkey"]
-    assert not validator.check_vali_reg(mock_metagraph, mock_wallet, mock_subtensor)
-
-
-def test_calculate_total_wager(validator):
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(10,), (20,), (30,)]
-
-    total_wager = validator.calculate_total_wager(mock_cursor, "miner1", "2023-05-01")
-    assert total_wager == 60
-
-    total_wager = validator.calculate_total_wager(
-        mock_cursor, "miner1", "2023-05-01", exclude_id="game1"
-    )
-    assert total_wager == 60
-    mock_cursor.execute.assert_called_with(
-        "SELECT p.wager FROM predictions p JOIN game_data g ON p.teamGameId = g.id WHERE p.minerId = ? AND DATE(g.eventStartDate) = DATE(?) AND p.teamGameId != ?",
-        ("miner1", "2023-05-01", "game1"),
-    )
-
-
-def test_check_hotkeys(validator):
-    validator.metagraph = MagicMock(hotkeys=["hotkey1", "hotkey2"])
-    validator.hotkeys = ["hotkey1", "hotkey2"]
-    validator.scores = torch.tensor([1.0, 1.0])
-
-    validator.check_hotkeys()
-    assert validator.hotkeys == ["hotkey1", "hotkey2"]
-    assert torch.all(validator.scores == torch.tensor([1.0, 1.0]))
-
-    validator.metagraph.hotkeys = ["hotkey1", "hotkey3"]
-    validator.check_hotkeys()
-    assert validator.hotkeys == ["hotkey1", "hotkey3"]
-    assert torch.all(validator.scores == torch.tensor([1.0, 0.0]))
-
-
-def test_init_default_scores(validator):
-    validator.metagraph = MagicMock(S=torch.tensor([1.0, 2.0, 3.0]))
-    validator.init_default_scores()
-    assert torch.all(validator.scores == torch.zeros(3))
-
-
-@patch("bettensor.validator.bettensor_validator.torch.load")
-@patch("bettensor.validator.bettensor_validator.path.exists")
-def test_load_state(mock_exists, mock_torch_load, validator):
-    mock_exists.return_value = True
-    mock_torch_load.return_value = {
-        "step": 10,
-        "scores": torch.tensor([1.0, 2.0]),
-        "hotkeys": ["hotkey1", "hotkey2"],
-        "last_updated_block": 100,
-        "blacklisted_miner_hotkeys": ["blacklisted_hotkey"],
-    }
-
-    validator.load_state()
-
-    assert validator.step == 10
-    assert torch.all(validator.scores == torch.tensor([1.0, 2.0]))
-    assert validator.hotkeys == ["hotkey1", "hotkey2"]
-    assert validator.last_updated_block == 100
-    assert validator.blacklisted_miner_hotkeys == ["blacklisted_hotkey"]
-
-
-@patch("bettensor.validator.bettensor_validator.json.loads")
-@patch("builtins.open")
-@patch("bettensor.validator.bettensor_validator.Path.is_file")
-def test_get_local_miner_blacklist(mock_is_file, mock_open, mock_json_loads, validator):
-    mock_is_file.return_value = True
-    mock_json_loads.return_value = ["blacklisted_hotkey1", "blacklisted_hotkey2"]
-
-    blacklist = validator._get_local_miner_blacklist()
-
-    assert blacklist == ["blacklisted_hotkey1", "blacklisted_hotkey2"]
-    mock_open.assert_called_once()
-    mock_json_loads.assert_called_once()
-
-
-if __name__ == "__main__":
-    pytest.main(["-v", "test_validator.py"])

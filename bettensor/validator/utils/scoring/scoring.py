@@ -12,6 +12,7 @@ Outputs:
 """
 
 
+import json
 import torch as t
 import logging
 import bittensor as bt
@@ -27,7 +28,6 @@ class ScoringSystem:
         db_path: str,
         num_miners: int,
         max_days: int,
-        num_tiers: int = 5,
         reference_date: datetime = datetime(2023, 1, 1, tzinfo=timezone.utc),
     ):
         """
@@ -44,12 +44,17 @@ class ScoringSystem:
         self.db_path = db_path
         self.num_miners = num_miners
         self.max_days = max_days
-        self.num_tiers = num_tiers
+        self.num_tiers = 7  # 5 tiers + 2 for invalid UIDs (0) and empty network slots (-1) 
+        self.valid_uids = set()  # Initialize as an empty set
 
         self.reference_date = reference_date
+        self.invalid_uids = []
+        self.base_path = ("./bettensor/validator/state/")
 
         # Initialize tier configurations
         self.tier_configs = [
+            {"window": 0, "min_wager": 0, "capacity": int(num_miners * 1), "incentive": 0},  # Tier -1 for empty slots
+            {"window": 0, "min_wager": 0, "capacity": int(num_miners * 1), "incentive": 0},  # Tier 0 for invalid UIDs
             {
                 "window": 3,
                 "min_wager": 0,
@@ -111,6 +116,11 @@ class ScoringSystem:
 
         self.current_day = 0
 
+        # Try to load state from file
+
+        state_file_path = self.base_path + 'scoring_system_state.json'
+        self.load_state(state_file_path)
+
     def update_scores(self, predictions, closing_line_odds, results):
         """
         Update the scores for the current day based on predictions, closing line odds, and results.
@@ -150,7 +160,7 @@ class ScoringSystem:
         wagers = t.zeros(self.num_miners)
 
         for i, miner_predictions in enumerate(predictions):
-            if miner_predictions.size(0) > 0:
+            if i not in self.invalid_uids and miner_predictions.size(0) > 0:
                 game_ids = miner_predictions[:, 0].long()
                 predicted_outcomes = miner_predictions[:, 1]
                 predicted_odds = miner_predictions[:, 2]
@@ -275,10 +285,10 @@ class ScoringSystem:
 
     def _get_window_scores(self, score_tensor, start_day, window):
         """
-        Get the windowed scores for a given tensor and window size.
+        Get the windowed scores for a specific score tensor.
 
         Args:
-            score_tensor (torch.Tensor): The tensor containing the scores.
+            score_tensor (torch.Tensor): The score tensor to window.
             start_day (int): The starting day for the window.
             window (int): The size of the window.
 
@@ -288,10 +298,14 @@ class ScoringSystem:
         scores = []
         for i in range(window):
             day = (start_day - i + self.max_days) % self.max_days
-            scores.append(self._get_tensor_for_day(score_tensor, day))
-        return t.stack(
-            scores, dim=1
-        )  # Stack along dimension 1 to preserve miner dimension
+            day_scores = self._get_tensor_for_day(score_tensor, day)
+            if day_scores.numel() > 0:
+                scores.append(day_scores)
+        
+        if not scores:
+            return t.tensor([])  # Return an empty tensor if no scores are available
+        
+        return t.stack(scores, dim=1)  # Stack along dimension 1 to preserve miner dimension
 
     def _increment_time(self, new_day):
         """
@@ -327,15 +341,15 @@ class ScoringSystem:
             (self.num_miners, self.max_days, len(self.tier_configs))
         )
 
-        for tier, config in enumerate(self.tier_configs):
-            window = min(config["window"], self.max_days)
+        for tier in range(2, self.num_tiers):  # Start from tier 2 (actual tier 1)
+            window = min(self.tier_configs[tier]["window"], self.max_days)
 
             start_day = self.current_day
 
             clv = self._get_window_scores(self.clv_scores, start_day, window)
             roi = self._get_window_scores(self.roi_scores, start_day, window)
             sortino = self._get_window_scores(
-                self.window_sortino_scores[:, :, tier], start_day, window
+                self.window_sortino_scores[:, :, tier-2], start_day, window
             )
             entropy = self._get_window_scores(self.entropy_scores, start_day, window)
 
@@ -352,49 +366,70 @@ class ScoringSystem:
                     + self.entropy_weight * entropy.mean(dim=1)
                 )
                 self._set_tensor_for_day(
-                    composite_scores, self.current_day, composite_score, tier
+                    composite_scores, self.current_day, composite_score, tier-2
                 )
+            else:
+                self.logger.warning(f"No scores available for tier {tier-1}. Skipping composite score calculation.")
 
         return composite_scores
 
     def manage_tiers(self):
-        """
-        Manage the tiers of miners based on their composite scores.
-        """
-        self.logger.info("Managing tiers")
+        bt.logging.info("Managing tiers")
 
         try:
             composite_scores = self.calculate_composite_scores()
+            if composite_scores.numel() == 0:
+                bt.logging.warning("No composite scores available. Skipping tier management.")
+                return
+
             current_tiers = self._get_tensor_for_day(self.tiers, self.current_day)
             new_tiers = current_tiers.clone()
 
-            initial_miner_count = (current_tiers > 0).sum()
+ 
+            self.log_tier_summary()
 
-            # Step 1: Handle demotions
+            # Set invalid UIDs to tier 0 and empty slots to tier -1
+            for uid in range(self.num_miners):
+                if uid in self.invalid_uids:
+                    new_tiers[uid] = 1  # Invalid UIDs
+                elif uid not in self.valid_uids:
+                    new_tiers[uid] = 0  # Empty slots
+                else:
+                    # For valid miners, keep their current tier if it's 2 or higher
+                    current_tier = current_tiers[uid].item()
+                    if current_tier < 2:
+                        new_tiers[uid] = 2  # Set to the lowest valid tier if not already assigned
+                    else:
+                        new_tiers[uid] = current_tier  # Keep the existing tier
+            
+            
+
+            initial_valid_miner_count = (current_tiers > 0).sum().item()
+
+            # Adjust tier capacities (excluding tiers "-1" and "0")
+            valid_miner_count = len(self.valid_uids)
+            for tier in range(2, self.num_tiers):
+                self.tier_configs[tier]['capacity'] = int(valid_miner_count * self.tier_configs[tier]['capacity'] / self.num_miners)
+
+            # Handle demotions 
+            
             self._handle_demotions(new_tiers, composite_scores)
 
-            # Step 2: Handle promotions, swaps, and fill empty slots
+            # Handle promotions and fill empty slots 
             self._handle_promotions_and_fill_slots(new_tiers, composite_scores)
 
-            # Step 3: Force another round of slot filling
-            self._fill_all_empty_slots(new_tiers, composite_scores)
-
             # Ensure that all tier indices are within bounds
-            assert (
-                new_tiers.max() < self.num_tiers
-            ), f"Tier index {new_tiers.max()} exceeds configured tiers."
+            assert new_tiers.max() < self.num_tiers - 1, f"Tier index {new_tiers.max()} exceeds configured tiers."
 
-            # Update tiers for the current day and hour
+            # Update tiers for the current day
             self._set_tensor_for_day(self.tiers, self.current_day, new_tiers)
 
-            # Propagate the new tier information to the next day
-            next_day = (self.current_day + 1) % self.max_days
-            self.tiers[:, next_day] = new_tiers
-
-            final_miner_count = (new_tiers > 0).sum()
-            assert (
-                initial_miner_count == final_miner_count
-            ), f"Miner count changed from {initial_miner_count} to {final_miner_count}"
+            final_valid_miner_count = ((new_tiers >= 2) & (new_tiers < self.num_tiers)).sum().item()
+            
+            if initial_valid_miner_count != final_valid_miner_count:
+                self.logger.warning(f"Valid miner count changed from {initial_valid_miner_count} to {final_valid_miner_count}")
+            else:
+                self.logger.info(f"Valid miner count remained constant at {final_valid_miner_count}")
 
             self.logger.info("Tier management completed")
             self.log_tier_summary()
@@ -412,8 +447,8 @@ class ScoringSystem:
             composite_scores (torch.Tensor): The tensor containing the composite scores of miners.
         """
         initial_tiers = tiers.clone()
-        for tier in range(len(self.tier_configs), 1, -1):
-            config = self.tier_configs[tier - 1]
+        for tier in range(self.num_tiers - 1, 2, -1):  # Start from the highest tier, exclude tiers 0 and 1
+            config = self.tier_configs[tier]
             tier_mask = tiers == tier
             tier_miners = tier_mask.nonzero().squeeze()
 
@@ -438,9 +473,9 @@ class ScoringSystem:
             composite_scores (torch.Tensor): The tensor containing the composite scores of miners.
         """
         initial_tiers = tiers.clone()
-        for tier in range(1, len(self.tier_configs)):
-            config = self.tier_configs[tier - 1]
-            next_config = self.tier_configs[tier]
+        for tier in range(2, self.num_tiers - 1):  # Start from tier 2 (actual tier 1), exclude the highest tier
+            config = self.tier_configs[tier]
+            next_config = self.tier_configs[tier + 1]
 
             # Handle promotions and swaps
             self._promote_and_swap(tier, tiers, composite_scores, config, next_config)
@@ -448,9 +483,9 @@ class ScoringSystem:
             # Fill empty slots immediately after promotions
             self._fill_empty_slots(tier, tiers, composite_scores, config)
 
-        # Repeat the fill process to ensure all slots are filled
-        for tier in range(1, len(self.tier_configs)):
-            config = self.tier_configs[tier - 1]
+        # Repeat the fill process to ensure all slots are filled in one pass
+        for tier in range(2, self.num_tiers - 1):
+            config = self.tier_configs[tier]
             self._fill_empty_slots(tier, tiers, composite_scores, config)
 
         self.logger.info(
@@ -505,7 +540,7 @@ class ScoringSystem:
             promoted_miners = top_half_miners[:promotions]
             tiers[promoted_miners] = tier + 1
             for miner in promoted_miners:
-                self.logger.info(f"Miner {miner.item()} promoted to tier {tier + 1}")
+                self.logger.info(f"Miner {miner.item()} promoted to tier {tier}")  # Corrected tier logging
 
         # Handle swaps if next tier is at capacity
         if next_tier_miners.numel() == next_config["capacity"]:
@@ -520,7 +555,7 @@ class ScoringSystem:
                     tiers[miner] = tier + 1
                     tiers[next_tier_miners[i]] = tier
                     self.logger.info(
-                        f"Miner {miner.item()} promoted to tier {tier + 1}, replacing miner {next_tier_miners[i].item()}"
+                        f"Miner {miner.item()} promoted to tier {tier}, replacing miner {next_tier_miners[i].item()}"
                     )
                 else:
                     # Stop swapping if we reach a higher score in the next tier
@@ -529,6 +564,7 @@ class ScoringSystem:
     def _fill_empty_slots(self, tier, tiers, composite_scores, config):
         """
         Fill empty slots in a tier by promoting miners from the lower tier based on their composite scores.
+        Excludes tiers 0 and 1 from the promotion process.
 
         Args:
             tier (int): The current tier.
@@ -536,6 +572,10 @@ class ScoringSystem:
             composite_scores (torch.Tensor): The tensor containing the composite scores of miners.
             config (dict): The configuration of the current tier.
         """
+        # Only process tiers 2 and above
+        if tier < 2:
+            return
+
         tier_mask = tiers == tier
         tier_miners = tier_mask.nonzero().squeeze()
 
@@ -544,7 +584,12 @@ class ScoringSystem:
         if empty_slots == 0:
             return
 
-        lower_tier_mask = tiers == (tier - 1)
+        lower_tier = tier - 1
+        # Ensure we're not considering tier 1 for promotion
+        if lower_tier < 2:
+            return
+
+        lower_tier_mask = tiers == lower_tier
         lower_tier_miners = lower_tier_mask.nonzero().squeeze()
 
         if lower_tier_miners.numel() == 0:
@@ -559,7 +604,7 @@ class ScoringSystem:
 
         # Get scores for eligible miners
         eligible_miners = lower_tier_miners[promotion_eligible]
-        eligible_scores = composite_scores[eligible_miners, self.current_day, tier - 2]
+        eligible_scores = composite_scores[eligible_miners, self.current_day, lower_tier - 2]
 
         # Sort eligible miners by score
         sorted_indices = eligible_scores.argsort(descending=True)
@@ -571,7 +616,7 @@ class ScoringSystem:
         tiers[promoted_miners] = tier
         for miner in promoted_miners:
             self.logger.info(
-                f"Miner {miner.item()} promoted to tier {tier} to fill empty slot"
+                f"Miner {miner.item()} promoted to tier {tier - 1} to fill empty slot"
             )
 
     def _fill_all_empty_slots(self, tiers, composite_scores):
@@ -669,9 +714,23 @@ class ScoringSystem:
         """
         self.logger.info(message)
         current_tiers = self._get_tensor_for_day(self.tiers, self.current_day)
-        for tier in range(1, len(self.tier_configs) + 1):
-            tier_count = (current_tiers == tier).sum().item()
-            self.logger.info(f"Tier {tier}: {tier_count} miners")
+        
+        # Initialize tier counts
+        tier_counts = [0] * self.num_tiers
+        
+        # Count tiers
+        for tier in current_tiers:
+            tier_index = int(tier.item())  
+            tier_counts[tier_index] += 1
+        
+        # Log tier distribution
+        self.logger.info(f"Tier -1 (Empty slots): {tier_counts[0]} miners")
+        self.logger.info(f"Tier 0 (Invalid UIDs): {tier_counts[1]} miners")
+        for tier in range(2, self.num_tiers):
+            self.logger.info(f"Tier {tier - 1}: {tier_counts[tier]} miners")
+        
+        total_miners = sum(tier_counts)
+        self.logger.info(f"Total miners: {total_miners}")
 
     def get_miner_history(self, miner_uid: int, score_type: str, days: int = None):
         """
@@ -720,40 +779,34 @@ class ScoringSystem:
         Weights sum to 1 and represent both the miner's share of incentives and their influence.
 
         Returns:
-            torch.Tensor: The calculated weights for all miners.
+            torch.Tensor: The calculated weights for all miners
         """
         self.logger.info("Calculating weights")
 
         try:
             weights = t.zeros(self.num_miners)
 
-            tier_incentives = t.tensor(
-                [config["incentive"] for config in self.tier_configs]
-            )
+            tier_incentives = t.tensor([config["incentive"] for config in self.tier_configs[2:]])  # Exclude tiers -1 and 0
             total_incentive = tier_incentives.sum()
             normalized_incentives = tier_incentives / total_incentive
 
-            # Calculate the number of miners in each tier
             current_tiers = self._get_tensor_for_day(self.tiers, self.current_day)
-            tier_counts = t.bincount(
-                current_tiers, minlength=len(self.tier_configs) + 1
-            )[1:]
+            
+            # Only consider miners in valid tiers (2 to num_tiers - 1)
+            valid_miners = ((current_tiers >= 2) & (current_tiers < self.num_tiers)).nonzero().squeeze()
+            tier_counts = t.bincount(current_tiers[valid_miners], minlength=self.num_tiers)[2:]
 
             # Only consider non-empty tiers
             non_empty_tiers = tier_counts > 0
-            active_tiers = t.arange(1, len(self.tier_configs) + 1)[non_empty_tiers]
+            active_tiers = t.arange(2, self.num_tiers)[non_empty_tiers]
 
             # Redistribute weights from empty tiers
             total_active_incentive = normalized_incentives[non_empty_tiers].sum()
-            adjusted_incentives = (
-                normalized_incentives[non_empty_tiers] / total_active_incentive
-            )
+            adjusted_incentives = normalized_incentives[non_empty_tiers] / total_active_incentive
 
             for i, tier in enumerate(active_tiers):
                 tier_mask = current_tiers == tier
-                tier_scores = self._get_tensor_for_day(
-                    self.composite_scores, self.current_day, tier - 1
-                )[tier_mask]
+                tier_scores = self._get_tensor_for_day(self.composite_scores, self.current_day, tier - 2)[tier_mask]
 
                 if tier_scores.numel() == 0:
                     continue
@@ -771,7 +824,7 @@ class ScoringSystem:
             if total_weight > 0:
                 weights /= total_weight
             else:
-                weights = t.ones(self.num_miners) / self.num_miners
+                weights[valid_miners] = 1.0 / len(valid_miners)
 
             self.logger.info(
                 f"Weights calculated - min: {weights.min().item():.4f}, max: {weights.max().item():.4f}, mean: {weights.mean().item():.4f}"
@@ -780,27 +833,29 @@ class ScoringSystem:
         except Exception as e:
             self.logger.error(f"Error calculating weights: {str(e)}")
             raise
-
         return weights
 
-    def scoring_run(self, current_date):
-        """
-        Perform a scoring run for the given date.
+    def scoring_run(self, date, invalid_uids, valid_uids):
+        bt.logging.info(f"=== Starting scoring run for date: {date} ===")
 
-        Args:
-            current_date (datetime): The date for which to perform the scoring run.
+        # Update invalid and valid UIDs
+        self.invalid_uids = set(invalid_uids)
+        self.valid_uids = set(valid_uids)  # This should now work as valid_uids are integers
+        bt.logging.info(f"Invalid UIDs: {self.invalid_uids}")
+        bt.logging.info(f"Valid UIDs: {self.valid_uids}")
 
-        Returns:
-            torch.Tensor: The calculated weights for all miners.
-        """
-        bt.logging.info(f"Starting scoring run for date: {current_date}")
+        # Ensure date is a datetime object with tzinfo
+        if isinstance(date, str):
+            date = datetime.fromisoformat(date).replace(tzinfo=timezone.utc)
+        elif isinstance(date, datetime) and date.tzinfo is None:
+            date = date.replace(tzinfo=timezone.utc)
 
-        # Ensure current_date is timezone-aware
-        if current_date.tzinfo is None:
-            current_date = current_date.replace(tzinfo=timezone.utc)
+        date_str = date.strftime("%Y-%m-%d")
+
+        current_date = date
+        self.current_day = (date.date() - self.reference_date).days % self.max_days
 
         date_str = current_date.isoformat()
-        bt.logging.info(f"=== Starting scoring run for date: {date_str} ===")
 
         (
             predictions,
@@ -809,11 +864,11 @@ class ScoringSystem:
         ) = self.scoring_data.preprocess_for_scoring(date_str)
 
         bt.logging.info(f"Number of predictions: {len(predictions)}")
-        bt.logging.info(f"Closing line odds shape: {closing_line_odds.shape}")
-        bt.logging.info(f"Results shape: {results.shape}")
+        # bt.logging.info(f"Closing line odds shape: {closing_line_odds.shape}")
+        # bt.logging.info(f"Results shape: {results.shape}")
 
         # Calculate the days since reference date without wraparound
-        days_since_reference = (current_date - self.reference_date).days
+        days_since_reference = (current_date.date() - self.reference_date).days
         new_day = days_since_reference % self.max_days
 
         if new_day != self.current_day:
@@ -856,22 +911,22 @@ class ScoringSystem:
                 f"No predictions for date {date_str}. Skipping score update."
             )
 
-        self.logger.info("Calculating weights...")
-        weights = self.calculate_weights()
-        bt.logging.info(
-            f"Weights calculated. Min: {weights.min().item():.4f}, Max: {weights.max().item():.4f}, Mean: {weights.mean().item():.4f}"
-        )
-
-        bt.logging.info("Managing tiers...")
+        self.logger.info("Managing tiers...")
         self.manage_tiers()
         bt.logging.info("Tiers managed successfully.")
 
+        self.logger.info("Calculating weights...")
+        weights = self.calculate_weights()
+        bt.logging.info(f"Weights calculated. Min: {weights.min().item():.4f}, Max: {weights.max().item():.4f}, Mean: {weights.mean().item():.4f}")
+
         # Log final tier distribution
         self.log_tier_summary("Final tier distribution")
-
         self.log_score_summary()
 
         bt.logging.info(f"=== Completed scoring run for date: {date_str} ===")
+
+        # Save state at the end of each run
+        self.save_state(self.base_path + 'scoring_system_state.json')
 
         return weights
 
@@ -944,5 +999,70 @@ class ScoringSystem:
             tensor[:, self._get_day_index(day)] = value
         else:
             tensor[:, self._get_day_index(day), tier] = value
+
+    def save_state(self, file_path):
+        """
+        Save the current state of the ScoringSystem to a JSON file.
+
+        Args:
+            file_path (str): The path to save the JSON file.
+        """
+        state = {
+            "current_day": self.current_day,
+            "current_date": self.current_date.isoformat() if self.current_date else None,
+            "reference_date": self.reference_date.isoformat(),
+            "clv_scores": self.clv_scores.tolist(),
+            "roi_scores": self.roi_scores.tolist(),
+            "amount_wagered": self.amount_wagered.tolist(),
+            "entropy_scores": self.entropy_scores.tolist(),
+            "tiers": self.tiers.tolist(),
+            "window_clv_scores": self.window_clv_scores.tolist(),
+            "window_roi_scores": self.window_roi_scores.tolist(),
+            "window_sortino_scores": self.window_sortino_scores.tolist(),
+            "composite_scores": self.composite_scores.tolist(),
+            "invalid_uids": list(self.invalid_uids),
+            "valid_uids": list(self.valid_uids)
+        }
+
+        with open(file_path, 'w') as f:
+            json.dump(state, f)
+
+        self.logger.info(f"ScoringSystem state saved to {file_path}")
+
+    def load_state(self, file_path):
+        """
+        Load the state of the ScoringSystem from a JSON file.
+
+        Args:
+            file_path (str): The path to load the JSON file from.
+        """
+        try:
+            with open(file_path, 'r') as f:
+                state = json.load(f)
+
+            self.current_day = state["current_day"]
+            self.current_date = datetime.fromisoformat(state["current_date"]) if state["current_date"] else None
+            self.reference_date = datetime.fromisoformat(state["reference_date"])
+            self.clv_scores = t.tensor(state["clv_scores"])
+            self.roi_scores = t.tensor(state["roi_scores"])
+            self.amount_wagered = t.tensor(state["amount_wagered"])
+            self.entropy_scores = t.tensor(state["entropy_scores"])
+            self.tiers = t.tensor(state["tiers"])
+            self.window_clv_scores = t.tensor(state["window_clv_scores"])
+            self.window_roi_scores = t.tensor(state["window_roi_scores"])
+            self.window_sortino_scores = t.tensor(state["window_sortino_scores"])
+            self.composite_scores = t.tensor(state["composite_scores"])
+            self.invalid_uids = set(state["invalid_uids"])
+            self.valid_uids = set(state["valid_uids"])
+
+            self.logger.info(f"ScoringSystem state loaded from {file_path}")
+        except FileNotFoundError:
+            self.logger.warning(f"No state file found at {file_path}. Starting with fresh state.")
+        except json.JSONDecodeError:
+            self.logger.error(f"Error decoding JSON from {file_path}. Starting with fresh state.")
+        except KeyError as e:
+            self.logger.error(f"Missing key in state file: {e}. Starting with fresh state.")
+        except Exception as e:
+            self.logger.error(f"Unexpected error loading state: {e}. Starting with fresh state.")
 
     

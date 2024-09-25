@@ -4,6 +4,7 @@ Class to handle and process all incoming miner data.
 
 
 import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict
 import bittensor as bt
 import torch
@@ -28,19 +29,19 @@ class MinerDataMixin:
         predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
         """
         current_time = (
-            datetime.datetime.now(datetime.timezone.utc).isoformat()
+           datetime.now(timezone.utc).isoformat()
         )
 
         # Get today's date in UTC
-        today_utc = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+        today_utc = datetime.now(timezone.utc).date().isoformat()
 
         for uid, prediction_dict in predictions.items():
-            for predictionID, res in prediction_dict.items():
+            for prediction_id, res in prediction_dict.items():
                 if int(uid) not in processed_uids:
                     continue
 
                 # Get today's date in UTC
-                today_utc = datetime.now(datetime.timezone.utc).isoformat()
+                today_utc = datetime.now(timezone.utc).isoformat()
 
                 hotkey = self.metagraph.hotkeys[int(uid)]
                 prediction_id = res.prediction_id
@@ -198,77 +199,44 @@ class MinerDataMixin:
                 )
         self.insert_predictions(processed_uids, predictions_dict)
 
-    def update_game_outcome(self, game_id, numeric_outcome):
-        """Updates the outcome of a game in the database"""
-        try:
-            self.db_manager.begin_transaction()
-            affected_rows = self.db_manager.execute_query(
-                "UPDATE game_data SET outcome = ?, active = 0 WHERE external_id = ?",
-                (numeric_outcome, game_id),
-            )
-            if affected_rows == 0:
-                bt.logging.trace(f"No game updated for external_id {game_id}")
-            else:
-                bt.logging.trace(
-                    f"Updated game {game_id} with outcome: {numeric_outcome}"
-                )
-            self.db_manager.commit_transaction()
-        except Exception as e:
-            self.db_manager.rollback_transaction()
-            bt.logging.error(f"Error updating game outcome: {e}")
-
     def update_recent_games(self):
-        current_time = datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
-
-        # Fetch games that have started at least 4 hours ago but don't have a final outcome yet
-        four_hours_ago = current_time - datetime.timedelta(hours=4)
-        recent_games = self.db_manager.fetchall(
+        bt.logging.info("miner_data.py update_recent_games called")
+        current_time = datetime.now(timezone.utc)
+        five_hours_ago = current_time - timedelta(hours=5)
+        
+        recent_games = self.db_manager.fetch_all(
             """
-            SELECT id, team_a, team_b, external_id, event_start_date, sport
+            SELECT external_id, team_a, team_b, sport, league, event_start_date
             FROM game_data
-            WHERE event_start_date <= ? AND outcome = 'Unfinished'
-            ORDER BY event_start_date
+            WHERE event_start_date < ? AND outcome = 'Unfinished'
             """,
-            (four_hours_ago.isoformat(),),
+            (five_hours_ago.isoformat(),)
         )
-
-        bt.logging.info(f"Checking {len(recent_games)} games for updates")
+        bt.logging.info("Recent games: ")
+        bt.logging.info(recent_games)
 
         for game in recent_games:
-            game_id, team_a, team_b, external_id, start_time, sport = game
-            start_time = datetime.fromisoformat(start_time).replace(
-                tzinfo=datetime.timezone.utc
-            )
+            external_id, team_a, team_b, sport, league, event_start_date = game
+            game_info = {
+                "external_id": external_id,
+                "team_a": team_a,
+                "team_b": team_b,
+                "sport": sport,
+                "league": league,
+                "event_start_date": event_start_date
+            }
+            bt.logging.info("Game info: ")
+            bt.logging.info(game_info)
+            numeric_outcome = self.api_client.determine_winner(game_info)
+            bt.logging.info("Outcome: ")
+            bt.logging.info(numeric_outcome)
+            
+            if numeric_outcome is not None:
+                # Update the game outcome in the database
+                self.api_client.update_game_outcome(external_id, numeric_outcome)
 
-            # Additional check to ensure the game has indeed started
-            if start_time > current_time:
-                continue
-
-            bt.logging.trace(f"Checking {sport} game {external_id} for results")
-            self.determine_winner((game_id, team_a, team_b, external_id))
-
-        bt.logging.info("Recent games and predictions update process completed")
-
-        # DEAD CODE
-
-    # def calculate_total_wager(self, minerId, event_start_date, exclude_id=None):
-    #     """calculates the total wager for a given miner and event start date"""
-    #     query = """
-    #         SELECT p.wager
-    #         FROM predictions p
-    #         JOIN game_data g ON p.game_id = g.id
-    #         WHERE p.miner_uid = ? AND DATE(g.event_start_date) = DATE(?)
-    #     """
-    #     params = (minerId, event_start_date)
-
-    #     if exclude_id:
-    #         query += " AND p.game_id != ?"
-    #         params += (exclude_id,)
-
-    #     wagers = self.db_manager.fetchall(query, params)
-    #     total_wager = sum([w[0] for w in wagers])
-
-    #     return total_wager
+        self.db_manager.commit_transaction()
+        bt.logging.info(f"Checked {len(recent_games)} games for updates")
 
     def prepare_game_data_for_entropy(self, predictions):
         game_data = []
@@ -289,7 +257,7 @@ class MinerDataMixin:
             datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
             - datetime.timedelta(hours=48)
         ).isoformat()
-        return self.db_manager.fetchall(
+        return self.db_manager.fetch_all(
             "SELECT id, team_a, team_b, external_id FROM game_data WHERE event_start_date >= ? AND outcome = 'Unfinished'",
             (two_days_ago,),
         )
@@ -313,143 +281,11 @@ class MinerDataMixin:
             bt.logging.error(f"Database error in get_current_odds: {e}")
             return [0.0, 0.0, 0.0]  # Return default values in case of database error
 
-    def determine_winner(self, game_info):
-        game_id, team_a, team_b, external_id = game_info
-
-        sport = self.get_sport_from_db(external_id)
-        if not sport:
-            bt.logging.error(f"No game found with externalId {external_id}")
-            return
-
-        bt.logging.trace(f"Fetching {sport} game data for externalId: {external_id}")
-
-        if sport == "baseball":
-            game_data = self.api_client.get_baseball_game(str(external_id))
-        elif sport == "soccer":
-            game_data = self.api_client.get_soccer_game(str(external_id))
-        elif sport.lower() == "nfl":
-            game_data = self.api_client.get_nfl_result(str(external_id))
-        else:
-            bt.logging.error(f"Unsupported sport: {sport}")
-            return
-
-        if not game_data:
-            bt.logging.error(f"Invalid or empty game data for {external_id}")
-            return
-
-        if sport.lower() == "nfl":
-            if "results" not in game_data or not game_data["results"]:
-                bt.logging.error(
-                    f"Invalid or empty game data for NFL game {external_id}"
-                )
-                return
-            game_response = game_data["results"][0]
-            status = game_response.get("time_status")
-            if status != "3":  # 3 means the game has finished
-                bt.logging.trace(
-                    f"NFL game {external_id} is not finished yet. Current status: {status}"
-                )
-                return
-        else:
-            if "response" not in game_data or not game_data["response"]:
-                bt.logging.error(
-                    f"Invalid or empty game data for {sport} game {external_id}"
-                )
-                return
-            game_response = game_data["response"][0]
-
-        # Check if the game has finished
-        if sport == "baseball":
-            status = game_response.get("status", {}).get("long")
-            if status != "Finished":
-                bt.logging.trace(
-                    f"Baseball game {external_id} is not finished yet. Current status: {status}"
-                )
-                return
-        elif sport == "soccer":
-            status = game_response.get("fixture", {}).get("status", {}).get("long")
-            if status not in [
-                "Match Finished",
-                "Match Finished After Extra Time",
-                "Match Finished After Penalties",
-            ]:
-                bt.logging.trace(
-                    f"Soccer game {external_id} is not finished yet. Current status: {status}"
-                )
-                return
-
-        # Process scores and update game outcome
-        self.process_game_result(sport, game_response, external_id, team_a, team_b)
-
-
-    def process_game_result(self, sport, game_response, external_id, team_a, team_b):
-        # Handle NFL scores
-        if sport.lower() == "nfl":
-            # The NFL score is provided as a string like "20-27"
-            scores = game_response.get("ss", "").split("-")
-            if len(scores) == 2:
-                home_score, away_score = map(int, scores)
-            else:
-                bt.logging.error(f"Invalid score format for NFL game {external_id}")
-                return
-        # Handle baseball and soccer scores
-        elif sport == "baseball":
-            home_score = game_response.get("scores", {}).get("home", {}).get("total")
-            away_score = game_response.get("scores", {}).get("away", {}).get("total")
-        elif sport == "soccer":
-            home_score = game_response.get("goals", {}).get("home")
-            away_score = game_response.get("goals", {}).get("away")
-        elif sport.lower() == "nfl":
-            scores = game_response.get("ss", "").split("-")
-            if len(scores) == 2:
-                home_score, away_score = map(int, scores)
-            else:
-                bt.logging.error(f"Invalid score format for NFL game {external_id}")
-                return
-        else:
-            bt.logging.error(f"Unsupported sport: {sport}")
-            return
-
-        # Validate scores
-        if home_score is None or away_score is None:
-            bt.logging.error(f"Unable to extract scores for {sport} game {external_id}")
-            return
-
-        # Convert scores to integers for comparison
-        home_score = int(home_score)
-        away_score = int(away_score)
-
-        # Determine game outcome: 0 for home win, 1 for away win, 2 for tie
-        if home_score > away_score:
-            numeric_outcome = 0
-        elif away_score > home_score:
-            numeric_outcome = 1
-        else:
-            numeric_outcome = 2
-
-        bt.logging.trace(
-            f"Game {external_id} result: {team_a} {home_score} - {away_score} {team_b}"
-        )
-
-        # Update the game outcome in the database
-        self.update_game_outcome(external_id, numeric_outcome)
-
-
-    def get_sport_from_db(self, external_id):
-        result = self.db_manager.fetchone(
-            "SELECT sport FROM game_data WHERE external_id = ?", (external_id,)
-        )
-        return result[0] if result else None
-
-
-    def recalculate_all_profits(self):
-        self.weight_setter.recalculate_daily_profits()
-
 
     def fetch_local_game_data(self, current_timestamp: str) -> Dict[str, TeamGame]:
         # Calculate timestamp for 15 days ago
         fifteen_days_ago = (
-            datetime.datetime.fromisoformat(current_timestamp) - datetime.timedelta(days=15)
+            datetime.fromisoformat(current_timestamp) - timedelta(days=15)
         ).isoformat()
 
         query = """

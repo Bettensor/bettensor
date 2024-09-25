@@ -8,6 +8,8 @@ from typing import Dict, Any, Optional
 from .sports_config import sports_config
 from .base_api_client import BaseAPIClient
 from datetime import datetime, timedelta, timezone
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class ExternalAPIClient(BaseAPIClient):
@@ -31,38 +33,49 @@ class ExternalAPIClient(BaseAPIClient):
         except Exception as e:
             bt.logging.error(f"Failed to load environment variables: {e}")
 
-    def fetch_all_game_data(self):
+    def fetch_all_game_data(self, last_api_call):
         all_games = []
         start_date = datetime.now(timezone.utc)
         end_date = start_date + timedelta(days=6)
 
-        for sport, leagues in self.sports_config.items():
-            if sport in self.api_hosts:
-                for league in leagues:
-                    league_id, season = league["id"], league["season"]
-                    bt.logging.debug(
-                        f"Fetching data for {sport}, league ID: {league_id}, season: {season}"
-                    )
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            future_to_sport = {}
+            for sport, leagues in self.sports_config.items():
+                if sport in self.api_hosts:
+                    future = executor.submit(self._fetch_sport_data, sport, leagues, start_date, end_date)
+                    future_to_sport[future] = sport
 
-                    sport_games = self._fetch_sport_games(
-                        sport, league_id, str(season), start_date, end_date
-                    )
+            for future in as_completed(future_to_sport):
+                sport = future_to_sport[future]
+                try:
+                    sport_games = future.result()
                     if sport_games:
                         all_games.extend(sport_games)
                     else:
-                        bt.logging.warning(
-                            f"No games fetched for {sport}, league ID: {league_id}, season: {season}"
-                        )
+                        bt.logging.warning(f"No games fetched for {sport}")
+                except Exception as exc:
+                    bt.logging.error(f"Error fetching data for {sport}: {exc}")
 
         bt.logging.info(f"Total games fetched: {len(all_games)}")
         filtered_games = self.filter_games(all_games)
-        bt.logging.info(
-            f"Filtered {len(all_games) - len(filtered_games)} games out of {len(all_games)} total games"
-        )
+        bt.logging.info(f"Filtered {len(all_games) - len(filtered_games)} games out of {len(all_games)} total games")
         return filtered_games
 
+    def _fetch_sport_data(self, sport, leagues, start_date, end_date):
+        sport_games = []
+        for league in leagues:
+            league_id, season = league["id"], league["season"]
+            bt.logging.debug(f"Fetching data for {sport}, league ID: {league_id}, season: {season}")
+
+            league_games = self._fetch_sport_games(sport, league_id, str(season), start_date, end_date)
+            if league_games:
+                sport_games.extend(league_games)
+            else:
+                bt.logging.warning(f"No games fetched for {sport}, league ID: {league_id}, season: {season}")
+        return sport_games
+
     def _fetch_sport_games(self, sport, league, season, start_date, end_date):
-        if sport == "nfl":
+        if sport == "football":
             return self._fetch_nfl_games()
 
         url = f"https://{self.api_hosts[sport]}/{'v3/fixtures' if sport == 'soccer' else 'games'}"
@@ -327,3 +340,174 @@ class ExternalAPIClient(BaseAPIClient):
                             "implied_probability": f"{(1 / float(odd['odds'])) * 100:.2f}%",
                         }
         return moneyline_odds
+
+
+
+
+
+
+    def get_baseball_game(self, game_id: str) -> Optional[Dict[str, Any]]:
+        url = "https://api-baseball.p.rapidapi.com/games"
+        params = {"id": game_id}
+        return self._make_request(url, params)
+
+    def get_soccer_game(self, game_id: str) -> Optional[Dict[str, Any]]:
+        url = "https://api-football-v1.p.rapidapi.com/v3/fixtures"
+        params = {"id": game_id}
+        return self._make_request(url, params)
+    
+    def get_nfl_result(self, event_id: str) -> Optional[Dict[str, Any]]:
+        url = "https://api.b365api.com/v1/bet365/result"
+        params = {"event_id": event_id, "token": self.bet365_api_key}
+        return self._make_request(url, params)
+    
+
+ 
+    def determine_winner(self, game_info):
+        """
+        Determine the winner of a game and record the corresponding outcome in the database.
+        """
+        bt.logging.info("external_api_client.determine_winner() called")
+        
+        external_id = game_info.get("external_id")
+        team_a = game_info.get("team_a")
+        team_b = game_info.get("team_b")
+        sport = game_info.get("sport")
+        league = game_info.get("league")
+        event_start_date = game_info.get("event_start_date")
+        
+        if not all([external_id, team_a, team_b, sport, league, event_start_date]):
+            bt.logging.error("Incomplete game information provided to determine_winner.")
+            return
+        
+        bt.logging.trace(f"Fetching {sport} game data for externalId: {external_id}")
+
+        game_data = None
+        if sport.lower() == "baseball":
+            game_data = self.api_client.get_baseball_game(str(external_id))
+        elif sport.lower() == "soccer":
+            game_data = self.api_client.get_soccer_game(str(external_id))
+        elif sport.lower() == "nfl":
+            game_data = self.api_client.get_nfl_result(str(external_id))
+        else:
+            bt.logging.error(f"Unsupported sport: {sport}")
+            return
+
+        if not game_data:
+            bt.logging.error(f"Invalid or empty game data for {external_id}")
+            return
+
+        if sport.lower() == "nfl":
+            if "results" not in game_data or not game_data["results"]:
+                bt.logging.error(f"Invalid or empty game data for NFL game {external_id}")
+                return
+            game_response = game_data["results"][0]
+            status = game_response.get("time_status")
+            if status != "3":  # 3 means the game has finished
+                bt.logging.trace(f"NFL game {external_id} is not finished yet. Current status: {status}")
+                return
+        else:
+            if "response" not in game_data or not game_data["response"]:
+                bt.logging.error(f"Invalid or empty game data for {sport} game {external_id}")
+                return
+            game_response = game_data["response"][0]
+
+        # Check if the game has finished
+        if sport.lower() == "baseball":
+            status = game_response.get("status", {}).get("long")
+            if status != "Finished":
+                bt.logging.trace(f"Baseball game {external_id} is not finished yet. Current status: {status}")
+                return
+        elif sport.lower() == "soccer":
+            status = game_response.get("fixture", {}).get("status", {}).get("long")
+            if status not in [
+                "Match Finished",
+                "Match Finished After Extra Time",
+                "Match Finished After Penalties",
+            ]:
+                bt.logging.trace(f"Soccer game {external_id} is not finished yet. Current status: {status}")
+                return
+
+        # Process scores and update game outcome
+        numeric_outcome = self.process_game_result(sport, game_response, external_id, team_a, team_b)
+        return numeric_outcome
+
+    def get_sport_from_db(self, external_id):
+        result = self.db_manager.fetchone(
+            "SELECT sport FROM game_data WHERE external_id = ?", (external_id,)
+        )
+        return result[0] if result else None
+    
+
+    def process_game_result(self, sport, game_response, external_id, team_a, team_b):
+        bt.logging.info("Processing game result")
+        # Handle NFL scores
+        if sport.lower() == "nfl":
+            # The NFL score is provided as a string like "20-27"
+            scores = game_response.get("ss", "").split("-")
+            if len(scores) == 2:
+                home_score, away_score = map(int, scores)
+            else:
+                bt.logging.error(f"Invalid score format for NFL game {external_id}")
+                return
+        # Handle baseball and soccer scores
+        elif sport == "baseball":
+            home_score = game_response.get("scores", {}).get("home", {}).get("total")
+            away_score = game_response.get("scores", {}).get("away", {}).get("total")
+        elif sport == "soccer":
+            home_score = game_response.get("goals", {}).get("home")
+            away_score = game_response.get("goals", {}).get("away")
+        elif sport.lower() == "nfl":
+            scores = game_response.get("ss", "").split("-")
+            if len(scores) == 2:
+                home_score, away_score = map(int, scores)
+            else:
+                bt.logging.error(f"Invalid score format for NFL game {external_id}")
+                return
+        else:
+            bt.logging.error(f"Unsupported sport: {sport}")
+            return
+
+        # Validate scores
+        if home_score is None or away_score is None:
+            bt.logging.error(f"Unable to extract scores for {sport} game {external_id}")
+            return
+
+        # Convert scores to integers for comparison
+        home_score = int(home_score)
+        away_score = int(away_score)
+
+        # Determine game outcome: 0 for home win, 1 for away win, 2 for tie
+        if home_score > away_score:
+            numeric_outcome = 0
+        elif away_score > home_score:
+            numeric_outcome = 1
+        else:
+            numeric_outcome = 2
+
+        bt.logging.trace(
+            f"Game {external_id} result: {team_a} {home_score} - {away_score} {team_b}"
+        )
+
+        # Update the game outcome in the database
+        self.update_game_outcome(external_id, numeric_outcome)
+        return numeric_outcome
+
+    def update_game_outcome(self, game_id, numeric_outcome):
+        """Updates the outcome of a game in the database"""
+        try:
+            self.db_manager.begin_transaction()
+            affected_rows = self.db_manager.execute_query(
+                "UPDATE game_data SET outcome = ?, active = 0 WHERE external_id = ?",
+                (numeric_outcome, game_id),
+            )
+            if affected_rows == 0:
+                bt.logging.trace(f"No game updated for external_id {game_id}")
+            else:
+                bt.logging.trace(
+                    f"Updated game {game_id} with outcome: {numeric_outcome}"
+                )
+            self.db_manager.commit_transaction()
+        except Exception as e:
+            self.db_manager.rollback_transaction()
+            bt.logging.error(f"Error updating game outcome: {e}")

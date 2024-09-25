@@ -27,36 +27,51 @@ def main(validator: BettensorValidator):
 
     while True:
         try:
+            # reset watchdog 
             watchdog.reset()
+
+            # get current time and block
             current_time = datetime.now(timezone.utc)
+            current_block = validator.subtensor.block
 
             # Convert last_api_call to datetime if it's a string
             if isinstance(validator.last_api_call, str):
                 validator.last_api_call = datetime.fromisoformat(validator.last_api_call)
 
-            # Update game data every 60 minutes
-            if current_time - validator.last_api_call >= timedelta(minutes=60):
-                update_game_data(validator, current_time)
 
-            # Sync metagraph every 5 steps
-            if validator.step % 5 == 0:
-                sync_metagraph(validator)
+            bt.logging.info("Current time: ", current_time)
+            bt.logging.info("Last api call was at: ", validator.last_api_call)
+            # Update game data every 10 minutes with bettensor api
+            if validator.use_bt_api:
+                if current_time - validator.last_api_call >= timedelta(minutes=10):
+                    bt.logging.info("Updating game data with bettensor api")
+                    update_game_data(validator, validator.last_api_call)
+            else:
+                # Update game data every 60 minutes with external api client (to reduce overages)
+                if current_time - validator.last_api_call >= timedelta(minutes=60):
+                    bt.logging.info("Updating game data with external api client")
+                    update_game_data(validator, validator.last_api_call)
+            # Sync metagraph every step
+            sync_metagraph(validator)
 
-            synapse = query_and_process_axons_with_game_data(validator)
+            # Query and process axons with game data every 10 blocks (~2 minutes)
+            if (current_block - validator.last_updated_block) % 10 > 0:
+                query_and_process_axons_with_game_data(validator)
 
-            bt.logging.info(f'Synapse: {synapse}')
-
-            current_block = validator.subtensor.block
-
-            # Send data to website server every 15 blocks
-            if (current_block - validator.last_updated_block) % 15 == 0:
+            # Send data to website server every 15 blocks (~ 3 minutes)
+            if (current_block - validator.last_updated_block) % 15 > 0:
                 send_data_to_website_server(validator)
 
-            # Set weights every 300 blocks
-            if current_block - validator.last_updated_block > 300:
-                set_weights(validator)
+            # Recalculate scores every 50 blocks (~2 minutes)
+            if current_block - validator.last_updated_block > 50:
+                bt.logging.info("Recalculating scores")
+                scoring_run(validator,current_time)
 
-            end_of_loop_processes(validator, watchdog)
+            # Set weights every 300 blocks (~ 1 hour)
+            if current_block - validator.last_updated_block > 300:
+                set_weights(validator,validator.scores)
+
+            end_of_loop_processes(validator, watchdog, current_block)
 
         except TimeoutError as e:
             bt.logging.error(f"Error in main loop: {str(e)}")
@@ -80,14 +95,23 @@ def update_game_data(validator, current_time):
     Calls SportsData to update game data in the database
     """
     try:
-        all_games = validator.sports_data.fetch_and_update_game_data()
+        if validator.last_api_call is None:
+            validator.last_api_call = current_time - timedelta(days=15)
+        
+        all_games = validator.sports_data.fetch_and_update_game_data(validator.last_api_call)
         if all_games is None:
             bt.logging.warning(
                 "Failed to fetch game data. Continuing with previous data."
             )
-        else:
-            validator.last_api_call = current_time.isoformat()
-            validator.save_state()
+        
+        validator.last_api_call = current_time
+        bt.logging.info(f"Last api call updated to: {validator.last_api_call}")
+        validator.save_state()
+
+        # if using the external api client, update the game outcomes with the results
+        if not validator.use_bt_api:
+            validator.update_recent_games()
+        
     except Exception as e:
         bt.logging.error(f"Error fetching game data: {e}")
         bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
@@ -112,13 +136,20 @@ def filter_and_update_axons(validator):
         bt.logging.warning("Scores were None. Reinitializing...")
         validator.init_default_scores()
 
-    if len(validator.metagraph.uids.tolist()) > len(validator.scores):
+    if validator.scores is None:
+        bt.logging.error("Failed to initialize scores. Exiting.")
+        return None, None, None, None
+
+    num_uids = len(validator.metagraph.uids.tolist())
+    current_scores_len = len(validator.scores)
+
+    if num_uids > current_scores_len:
         bt.logging.info(f"Discovered new Axons, current scores: {validator.scores}")
         validator.scores = torch.cat(
             (
                 validator.scores,
                 torch.zeros(
-                    (len(validator.metagraph.uids.tolist()) - len(validator.scores)),
+                    (num_uids - current_scores_len),
                     dtype=torch.float32,
                 ),
             )
@@ -141,27 +172,33 @@ def filter_and_update_axons(validator):
 def query_and_process_axons_with_game_data(validator):
     current_time = datetime.now(timezone.utc).isoformat()
     gamedata_dict = validator.fetch_local_game_data(current_timestamp=current_time)
-    if gamedata_dict is not None:
-        synapse = GameData.create(
-            db_path=validator.db_path,
-            wallet=validator.wallet,
-            subnet_version=validator.subnet_version,
-            neuron_uid=validator.uid,
-            synapse_type="game_data",
-            gamedata_dict=gamedata_dict,
-        )
-        if synapse is None:
-            bt.logging.error("Synapse is None")
-            return None
-        bt.logging.debug(
-            f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}"
-        )
-    else:
+    if gamedata_dict is None:
         bt.logging.error("No game data found")
         return None
 
+    synapse = GameData.create(
+        db_path=validator.db_path,
+        wallet=validator.wallet,
+        subnet_version=validator.subnet_version,
+        neuron_uid=validator.uid,
+        synapse_type="game_data",
+        gamedata_dict=gamedata_dict,
+    )
+    if synapse is None:
+        bt.logging.error("Synapse is None")
+        return None
+
+    bt.logging.debug(
+        f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}"
+    )
+
     responses = []
-    uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query = filter_and_update_axons(validator)
+    result = filter_and_update_axons(validator)
+    if result is None:
+        bt.logging.error("Failed to filter and update axons")
+        return None
+
+    uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query = result
 
     for i in range(0, len(uids_to_query), 20):
         responses += validator.dendrite.query(
@@ -214,9 +251,7 @@ def query_and_process_axons_with_game_data(validator):
 
 def send_data_to_website_server(validator):
     current_block = validator.subtensor.block
-    bt.logging.debug(
-        f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
-    )
+
 
     try:
         result = fetch_and_send_predictions("data/validator.db")
@@ -229,19 +264,27 @@ def send_data_to_website_server(validator):
         bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
 
-def scoring_run(validator):
+def scoring_run(validator,current_time):
     """
     calls the scoring system to update miner scores before setting weights
     """
-    try:
-        validator.scores = validator.scoring_system.scoring_run()
+    try:        
+        # Get UIDs to query and invalid UIDs
+        _, list_of_uids, blacklisted_uids, uids_not_to_query = validator.get_uids_to_query(validator.metagraph.axons)
+
+        valid_uids = set(list_of_uids)
+        # Combine blacklisted_uids and uids_not_to_query
+        invalid_uids = set(blacklisted_uids + uids_not_to_query)
+        validator.scores = validator.scoring_system.scoring_run(current_time,invalid_uids,valid_uids)
         bt.logging.info("Scores updated successfully")
+        bt.logging.info(f"Scores: {validator.scores}")
     except Exception as e:
         bt.logging.error(f"Error in scoring_run: {str(e)}")
+        bt.logging.error(f"Traceback: {traceback.format_exc()}")
         
 
 
-def set_weights(validator):
+def set_weights(validator,scores):
     try:
         bt.logging.info("Attempting to update weights")
         if validator.subtensor is None:
@@ -249,7 +292,7 @@ def set_weights(validator):
             validator.subtensor = validator.initialize_connection()
 
         if validator.subtensor is not None:
-            success = validator.set_weights()
+            success = validator.set_weights(scores)
             bt.logging.info("Weight update attempt completed")
         else:
             bt.logging.error(
@@ -276,8 +319,11 @@ def set_weights(validator):
 
 
 
-def end_of_loop_processes(validator, watchdog):
+def end_of_loop_processes(validator, watchdog, current_block):
     validator.step += 1
+    bt.logging.debug(
+        f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
+    )
     watchdog.reset()
     bt.logging.debug("Sleeping for: 45 seconds")
     time.sleep(45)

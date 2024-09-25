@@ -19,6 +19,7 @@ from typing import Dict, Tuple
 from datetime import datetime, timedelta, timezone
 from bettensor.base.neuron import BaseNeuron
 from bettensor.protocol import TeamGamePrediction
+from bettensor.validator.utils.scoring.scoring import ScoringSystem
 from .utils.scoring.entropy_system import EntropySystem
 from bettensor.validator.utils.io.sports_data import SportsData
 from bettensor.validator.utils.io.external_api_client import ExternalAPIClient
@@ -265,7 +266,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.target_group = 0
 
         self.db_manager = DatabaseManager(self.db_path)
-
+        self.scoring_system = ScoringSystem(self.db_path, num_miners=256,max_days=45,reference_date=datetime.now(timezone.utc).date())
         self.entropy_system = EntropySystem(max_capacity=self.max_targets, max_days=45)
 
         ############## Setup Validator Components ##############
@@ -318,6 +319,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                         )
                         self.scores[i] = 0.0
                         # TODO: CALL scoring.register_miner() to update the scores.
+                        self.scoring.register_miner(self.metagraph.hotkeys[i])
                         # TODO: CALL miner_tracking.update_miner_state() to update the miner's stats.
             else:
                 bt.logging.info(
@@ -357,10 +359,16 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
     def save_state(self):
         """saves the state of the validator to a file"""
-        bt.logging.info("saving validator state")
+        bt.logging.info("Saving validator state")
     
-        last_api_call_timestamp = self.last_api_call.timestamp() if isinstance(self.last_api_call, datetime) else self.last_api_call
-        last_update_recent_games_timestamp = self.last_update_recent_games.timestamp() if isinstance(self.last_update_recent_games, datetime) else self.last_update_recent_games
+        bt.logging.info(f"Last api call, save_state: {self.last_api_call}")
+
+        if isinstance(self.last_api_call, str):
+            self.last_api_call = datetime.fromisoformat(self.last_api_call)
+
+        bt.logging.info(f"Last api call, save_state: {self.last_api_call}")
+        timestamp = self.last_api_call.timestamp()
+        
 
         # save the state of the validator to file
         torch.save(
@@ -370,17 +378,16 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 "hotkeys": self.hotkeys,
                 "last_updated_block": self.last_updated_block,
                 "blacklisted_miner_hotkeys": self.blacklisted_miner_hotkeys,
-                "last_api_call": last_api_call_timestamp,
-                "last_update_recent_games": last_update_recent_games_timestamp,
-                "last_api_call": last_api_call_timestamp,
-                "last_update_recent_games": last_update_recent_games_timestamp,
+                "last_api_call": timestamp,
+
             },
-            self.base_path + "/state.pt",
+            self.base_path + "state/state.pt",
         )
 
         bt.logging.debug(
-            f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {last_api_call_timestamp}, last_update_recent_games: {last_update_recent_games_timestamp}"
-            
+            f"Saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, "
+            f"last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, "
+            f"last_api_call: {timestamp}"
         )
 
     def reset_validator_state(self, state_path):
@@ -400,12 +407,12 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.blacklisted_miner_hotkeys = None
 
     def load_state(self):
-        state_path = self.base_path + "/state.pt"
+        state_path = self.base_path + "state/state.pt"
         if path.exists(state_path):
             try:
-                bt.logging.info("loading validator state")
+                bt.logging.info("Loading validator state")
                 state = torch.load(state_path)
-                bt.logging.debug(f"loaded the following state from file: {state}")
+                bt.logging.debug(f"Loaded the following state from file: {state}")
                 self.step = state["step"]
                 self.scores = state["scores"]
                 self.hotkeys = state["hotkeys"]
@@ -414,25 +421,17 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
 
                 # Convert timestamps back to datetime
-                last_api_call_timestamp = state.get(
-                    "last_api_call",
-                    (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()
-                )
-                self.last_api_call = (
-                    datetime.fromtimestamp(last_api_call_timestamp, tz=timezone.utc)
-                    if isinstance(last_api_call_timestamp, (int, float))
-                    else datetime.now(timezone.utc)
-                )
-
-                last_update_recent_games_timestamp = state.get(
-                    "last_update_recent_games",
-                    (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()
-                )
-                self.last_update_recent_games = (
-                    datetime.fromtimestamp(last_update_recent_games_timestamp, tz=timezone.utc)
-                    if isinstance(last_update_recent_games_timestamp, (int, float))
-                    else datetime.now(timezone.utc)
-                )
+                last_api_call = state["last_api_call"]
+                if last_api_call is None:
+                    self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
+                else:
+                    try:
+                        
+                        self.last_api_call = datetime.fromtimestamp(last_api_call, tz=timezone.utc)
+                
+                    except (ValueError, TypeError, OverflowError) as e:
+                        bt.logging.warning(f"Invalid last_api_call timestamp: {last_api_call}. Using current time. Error: {e}")
+                        self.last_api_call = datetime.now(timezone.utc)
 
             except Exception as e:
                 bt.logging.error(
@@ -446,7 +445,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         """returns the blacklisted miners hotkeys from the local file"""
 
         # check if local blacklist exists
-        blacklist_file = f"{self.base_path}/miner_blacklist.json"
+        blacklist_file = f"{self.base_path}state/miner_blacklist.json"
         if Path(blacklist_file).is_file():
             # load the contents of the local blacklist
             bt.logging.trace(f"reading local blacklist file: {blacklist_file}")
@@ -489,6 +488,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
     def get_uids_to_query(self, all_axons) -> list:
         """returns the list of uids to query"""
+
+        # Define all_uids at the beginning
+        all_uids = set(range(len(self.metagraph.hotkeys)))
 
         # get uids with a positive stake
         uids_with_stake = self.metagraph.total_stake >= 0.0
@@ -593,11 +595,12 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
-    def set_weights(self):
+    def set_weights(self,scores):
         try:
-            return self.weight_setter.set_weights(self.db_path)
+            return self.weight_setter.set_weights(scores)
         except StopIteration:
             bt.logging.warning(
                 "StopIteration encountered in set_weights. Handling gracefully."
             )
             return None
+ 
