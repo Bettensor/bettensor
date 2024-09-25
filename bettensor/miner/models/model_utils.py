@@ -71,6 +71,7 @@ class SoccerPredictor:
                 )
             else:
                 row = db_manager.get_model_params(self.id)
+                print(f"DEBUG: Model params returned from database: {row}")  # Add this line
                 if row is None:
                     bt.logging.info(
                         f"No model parameters found for miner ID: {self.id}. Using default values."
@@ -108,24 +109,28 @@ class SoccerPredictor:
                 message="enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.self_attn.batch_first was not True",
             )
 
-            # Define the local path to save the model
-            local_model_path = os.path.join(
-                os.path.dirname(__file__), "..", "models", f"{model_name}.pt"
-            )
+            local_model_dir = os.path.join(os.path.dirname(__file__), "..", "models")
+            local_model_path = os.path.join(local_model_dir, f"{model_name}.pt")
 
             if os.path.exists(local_model_path):
-                # Load the model from local file if it exists
-                model = PodosTransformer.load_from_checkpoint(local_model_path)
-                bt.logging.info(f"Loaded model from local file: {local_model_path}")
+                bt.logging.info(f"Loading model from local file: {local_model_path}")
+                model = PodosTransformer.from_pretrained(local_model_path)
             else:
-                # Download the model from Hugging Face Hub
+                bt.logging.info(
+                    f"Downloading model from Hugging Face Hub: Bettensor/{model_name}"
+                )
                 model = PodosTransformer.from_pretrained(f"Bettensor/{model_name}")
 
                 # Save the model locally
-                torch.save(model.state_dict(), local_model_path)
-                bt.logging.info(
-                    f"Downloaded model from Hugging Face Hub and saved to: {local_model_path}"
-                )
+                os.makedirs(local_model_dir, exist_ok=True)
+                model.save_pretrained(local_model_path)
+                bt.logging.info(f"Saved model to local file: {local_model_path}")
+
+            return model.to(self.device)
+
+        except Exception as e:
+            bt.logging.error(f"Error loading model: {e}")
+            return None
 
             return model.to(self.device)
         except Exception as e:
