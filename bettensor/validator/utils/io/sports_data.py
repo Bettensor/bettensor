@@ -44,9 +44,10 @@ class SportsData:
     def insert_or_update_games(self, games):
         if not games:
             bt.logging.info("No games to insert or update")
-            return
+            return []
 
         self.db_manager.begin_transaction()
+        external_ids = []
         try:
             for game in games:
                 game_id = str(uuid.uuid4())
@@ -59,7 +60,10 @@ class SportsData:
                 last_update_date = create_date
                 event_start_date = game["date"]
                 active = 1
-                outcome = "Unfinished"
+                outcome = game["outcome"] if self.is_bettensor_api() else "Unfinished"
+
+                if outcome is None:
+                    outcome = "Unfinished"
 
                 if self.is_bettensor_api():
                     team_a_odds = game["teamAOdds"]
@@ -73,8 +77,21 @@ class SportsData:
                         if sport.lower() == "football"
                         else game["odds"].get("average_tie_odds", 0)
                     )
-
                 can_tie = sport.lower() == "soccer"
+
+                # Convert outcomes to numeric 
+                if outcome == "TeamAWin":
+                    outcome = 1
+                elif outcome == "TeamBWin":
+                    outcome = 2
+                elif outcome == "Draw":
+                    outcome = 3
+                else:  # Unfinished game
+                    outcome = 0
+
+                # Set active to 0 if outcome is not "Unfinished"
+                if outcome != 0:
+                    active = 0
 
                 self.db_manager.execute_query(
                     """
@@ -109,9 +126,11 @@ class SportsData:
                     ),
                 )
                 bt.logging.debug(f"Upserted game {external_id} in database")
+                external_ids.append(external_id)
 
             self.db_manager.commit_transaction()
             bt.logging.info(f"Inserted or updated {len(games)} games in the database")
+            return external_ids
 
         except Exception as e:
             self.db_manager.rollback_transaction()

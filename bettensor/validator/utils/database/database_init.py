@@ -70,17 +70,8 @@ def initialize_database():
             last_update_date TEXT,
             sport TEXT,
             league TEXT,
-            outcome TEXT,
+            outcome INTEGER,
             active INTEGER
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS closing_line_odds (
-            game_id INTEGER PRIMARY KEY,
-            team_a_odds REAL,
-            team_b_odds REAL,
-            tie_odds REAL,
-            event_start_date TEXT
         )
         """,
         """

@@ -16,7 +16,7 @@ import json
 import torch as t
 import logging
 import bittensor as bt
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict
 from .scoring_data import ScoringData
 from .entropy_system import EntropySystem
@@ -37,7 +37,6 @@ class ScoringSystem:
             db_path (str): Path to the database.
             num_miners (int): Number of miners.
             max_days (int): Maximum number of days to track.
-            num_tiers (int, optional): Number of tiers. Defaults to 5.
             reference_date (datetime, optional): Reference date for scoring. Defaults to January 1, 2023.
         """
         self.logger = logging.getLogger(__name__)
@@ -115,11 +114,67 @@ class ScoringSystem:
         self.entropy_system = EntropySystem(num_miners, max_days)
 
         self.current_day = 0
+        self.current_date = None  # Initialize current_date
 
         # Try to load state from file
-
         state_file_path = self.base_path + 'scoring_system_state.json'
         self.load_state(state_file_path)
+
+        # Handle potential downtime
+        self.handle_downtime()
+
+    def handle_downtime(self):
+        """
+        Handle the scenario where the system was down for one or more days.
+        Calculates the number of days missed based on reference_date and current_date,
+        updates the current_day index, and initializes missing days' data.
+        """
+        if self.current_date is None:
+            self.logger.warning("No current_date found. Initialization may be incomplete.")
+            return
+
+        # Get the current system date in UTC
+        today = datetime.now(timezone.utc).date()
+        last_scoring_date = self.current_date.date()
+
+        # Calculate the number of days missed
+        delta_days = (today - last_scoring_date).days
+
+        if delta_days <= 0:
+            self.logger.info("No downtime detected. No action required.")
+            return
+
+        self.logger.info(f"Downtime detected. Missed {delta_days} day(s) of scoring runs.")
+
+        for _ in range(delta_days):
+            # Advance the current_day index
+            self.current_day = (self.current_day + 1) % self.max_days
+
+            self.logger.info(f"Initializing scores for day index {self.current_day} due to downtime.")
+
+            # Reset scores for the missed day
+            self.clv_scores[:, self.current_day] = 0
+            self.roi_scores[:, self.current_day] = 0
+            self.amount_wagered[:, self.current_day] = 0
+            self.entropy_scores[:, self.current_day] = 0
+            self.tiers[:, self.current_day] = 1  # Reset to tier 1 or appropriate default
+
+            # Reset windowed scores for the missed day
+            self.window_clv_scores[:, self.current_day, :] = 0
+            self.window_roi_scores[:, self.current_day, :] = 0
+            self.window_sortino_scores[:, self.current_day, :] = 0
+
+            # Reset composite scores for the missed day
+            self.composite_scores[:, self.current_day, :] = 0
+
+            # Optionally, perform additional initialization if necessary
+
+        # Update the current_date to today
+        self.current_date = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+        self.logger.info(f"Updated current_date to {self.current_date.isoformat()} after handling downtime.")
+
+        # Save the updated state after handling downtime
+        self.save_state(self.base_path + 'scoring_system_state.json')
 
     def update_scores(self, predictions, closing_line_odds, results):
         """
@@ -845,9 +900,9 @@ class ScoringSystem:
         bt.logging.info(f"Valid UIDs: {self.valid_uids}")
 
         # Ensure date is a datetime object with tzinfo
-        if isinstance(date, str):
-            date = datetime.fromisoformat(date).replace(tzinfo=timezone.utc)
-        elif isinstance(date, datetime) and date.tzinfo is None:
+        if not isinstance(date, datetime):
+            date = datetime.fromisoformat(date)
+        if date.tzinfo is None:
             date = date.replace(tzinfo=timezone.utc)
 
         date_str = date.strftime("%Y-%m-%d")
@@ -924,6 +979,10 @@ class ScoringSystem:
         self.log_score_summary()
 
         bt.logging.info(f"=== Completed scoring run for date: {date_str} ===")
+
+        # Pass closed games to the EntropySystem
+        closed_games = self.entropy_system.identify_closed_games(date)
+        self.entropy_system.close_games(closed_games)
 
         # Save state at the end of each run
         self.save_state(self.base_path + 'scoring_system_state.json')
@@ -1056,6 +1115,7 @@ class ScoringSystem:
             self.valid_uids = set(state["valid_uids"])
 
             self.logger.info(f"ScoringSystem state loaded from {file_path}")
+
         except FileNotFoundError:
             self.logger.warning(f"No state file found at {file_path}. Starting with fresh state.")
         except json.JSONDecodeError:
