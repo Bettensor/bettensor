@@ -545,6 +545,8 @@ class Application:
             ),  # Use teamaodds as a placeholder
             "Result": max(len(pred["outcome"]) for pred in predictions.values()),
             "Payout": 10,  # Assuming a reasonable width for payout
+            "Sent": max(len(str(pred["validators_sent_to"])) for pred in predictions.values()),
+            "Confirmed": max(len(str(pred["validators_confirmed"])) for pred in predictions.values()),
         }
 
         table = Table(box=box.ROUNDED, expand=True, border_style=DARK_GREEN)
@@ -561,6 +563,8 @@ class Application:
         table.add_column("Wager Odds", style=LIGHT_GOLD, width=max_widths["Wager Odds"])
         table.add_column("Result", style=LIGHT_GREEN, width=max_widths["Result"])
         table.add_column("Payout", style=LIGHT_GOLD, width=max_widths["Payout"])
+        table.add_column("Sent", style=LIGHT_GREEN, width=max_widths["Sent"])
+        table.add_column("Confirmed", style=LIGHT_GREEN, width=max_widths["Confirmed"])
 
         start = (self.page - 1) * self.items_per_page
         end = start + self.items_per_page
@@ -597,6 +601,8 @@ class Application:
                 else str(wager_odds),
                 pred["outcome"],
                 f"${payout:.2f}" if isinstance(payout, (int, float)) else str(payout),
+                str(pred["validators_sent_to"]),
+                str(pred["validators_confirmed"])
             )
 
         if self.predictions_search_mode:

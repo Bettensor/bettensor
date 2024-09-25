@@ -150,7 +150,7 @@ class PredictionsHandler:
         query = """
         SELECT p.predictionID, p.teamGameID, p.minerID, p.predictionDate, p.predictedOutcome,
                p.teamA, p.teamB, p.wager, p.teamAodds, p.teamBodds, p.tieOdds, p.outcome,
-               g.teamA as home, g.teamB as away
+               g.teamA as home, g.teamB as away, p.validators_sent_to, p.validators_confirmed
         FROM predictions p
         JOIN games g ON p.teamGameID = g.externalID
         WHERE p.minerID = %s 
