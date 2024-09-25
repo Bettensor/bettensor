@@ -71,7 +71,6 @@ class SoccerPredictor:
                 )
             else:
                 row = db_manager.get_model_params(self.id)
-                print(f"DEBUG: Model params returned from database: {row}")  # Add this line
                 if row is None:
                     bt.logging.info(
                         f"No model parameters found for miner ID: {self.id}. Using default values."
@@ -443,7 +442,6 @@ class NFLPredictor:
                 )
             else:
                 row = db_manager.get_model_params(self.id)
-                print(f"DEBUG: NFL Model params returned from database: {row}")  # Add this line for debugging
                 if row is None:
                     bt.logging.info(
                         f"No NFL model parameters found for miner ID: {self.id}. Using default values."
