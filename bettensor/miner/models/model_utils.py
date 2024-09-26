@@ -116,9 +116,9 @@ class SoccerPredictor:
                 model = PodosTransformer.from_pretrained(local_model_path)
             else:
                 bt.logging.info(
-                    f"Downloading model from Hugging Face Hub: Bettensor/{model_name}"
+                    f"Downloading model from Hugging Face Hub: Nickel5HF/{model_name}"
                 )
-                model = PodosTransformer.from_pretrained(f"Bettensor/{model_name}")
+                model = PodosTransformer.from_pretrained(f"NicKel5HF/{model_name}")
 
                 # Save the model locally
                 os.makedirs(local_model_dir, exist_ok=True)
@@ -127,11 +127,6 @@ class SoccerPredictor:
 
             return model.to(self.device)
 
-        except Exception as e:
-            bt.logging.error(f"Error loading model: {e}")
-            return None
-
-            return model.to(self.device)
         except Exception as e:
             bt.logging.error(f"Error loading model: {e}")
             return None
@@ -418,9 +413,9 @@ class NFLPredictor:
                 model = KellyFractionNet.from_pretrained(local_model_path)
             else:
                 bt.logging.info(
-                    f"Downloading model from Hugging Face Hub: Bettensor/{model_name}"
+                    f"Downloading model from Hugging Face Hub: Nickel5HF/{model_name}"
                 )
-                model = KellyFractionNet.from_pretrained(f"Bettensor/{model_name}")
+                model = KellyFractionNet.from_pretrained(f"Nickel5HF/{model_name}")
 
                 # Save the model locally
                 os.makedirs(local_model_dir, exist_ok=True)
