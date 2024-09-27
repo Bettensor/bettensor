@@ -4,7 +4,7 @@ import ssl
 import sys
 import threading
 import time
-from flask import Flask, request, jsonify, g, make_response
+from flask import Flask, request, jsonify, g, make_response, current_app #maybe remove current_app
 from flask_cors import CORS
 import redis
 from werkzeug.serving import run_simple
@@ -23,8 +23,10 @@ from flask_limiter.util import get_remote_address
 import logging
 import traceback
 from datetime import datetime, timedelta
+import requests
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs12 
 
-# Set up logging
 bt.logging.set_trace(True)
 bt.logging.set_debug(True)
 
@@ -41,7 +43,6 @@ JWT_SECRET = os.environ.get(
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 
-# Initialize Redis client
 redis_interface = RedisInterface(host=REDIS_HOST, port=REDIS_PORT)
 if not redis_interface.connect():
     bt.logging.error("Failed to connect to Redis. Exiting.")
@@ -49,75 +50,99 @@ if not redis_interface.connect():
 
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
-# Rate limiting
 limiter = Limiter(
     key_func=get_remote_address, app=app, default_limits=["100 per minute"]
 )
 
+API_BASE_URL = 'https://dev-bettensor-api.azurewebsites.net'
+CERT_ENDPOINT = '/Certificate'
+CHILD_CERT_PATH = os.path.join(os.path.dirname(__file__), 'child_certificate.pem')
 
-# JWT token verification
+def fetch_and_store_child_cert():
+    try:
+        password = os.environ.get("CERT_PASSWORD", "default_password")
+        ip_address = requests.get('https://api.ipify.org').text
+        url = f'{API_BASE_URL}{CERT_ENDPOINT}?ipAddress={ip_address}&password={password}'
+        
+        bt.logging.info(f"Attempting to fetch certificate from {url}")
+        response = requests.get(url, verify=True)
+
+        bt.logging.info(f"Response status code: {response.status_code}")
+        bt.logging.info(f"Response headers: {response.headers}")
+
+        if response.status_code == 200:
+            pfx_data = response.content
+            password = password.encode()
+            private_key, certificate, _ = pkcs12.load_key_and_certificates(pfx_data, password)
+            
+            cert_pem = certificate.public_bytes(encoding=serialization.Encoding.PEM)
+            key_pem = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            )
+            
+            with open(CHILD_CERT_PATH, 'wb') as cert_file:
+                cert_file.write(cert_pem + key_pem)
+            
+            bt.logging.info(f'Child certificate downloaded and saved to {CHILD_CERT_PATH}')
+            return CHILD_CERT_PATH
+        else:
+            bt.logging.error(f'Failed to download child certificate. Status code: {response.status_code}')
+            bt.logging.error(f'Response content: {response.text}')
+            return None
+    except Exception as e:
+        bt.logging.error(f'Exception occurred while downloading child certificate: {str(e)}')
+        return None
+
+def is_certificate_valid(cert_path):
+    try:
+        with open(cert_path, 'rb') as cert_file:
+            pfx_data = cert_file.read()
+        password = os.environ.get("CERT_PASSWORD", "default_password").encode()
+        private_key, certificate, _ = pkcs12.load_key_and_certificates(pfx_data, password)
+        now = datetime.now()
+        return certificate.not_valid_before <= now <= certificate.not_valid_after
+    except Exception as e:
+        bt.logging.error(f'Error checking certificate validity: {str(e)}')
+        return False
+
+if not os.path.exists(CHILD_CERT_PATH) or not is_certificate_valid(CHILD_CERT_PATH):
+    fetch_and_store_child_cert()
+
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         bt.logging.info(f"Entering token_required decorator for function: {f.__name__}")
 
         token = None
-        auth_header = request.headers.get("Authorization")
-
-        if auth_header:
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
             try:
                 token = auth_header.split(" ")[1]
             except IndexError:
-                token = auth_header
+                return jsonify({'message': 'Token is missing or invalid'}), 401
 
         if not token:
-            return jsonify({"message": "Token is missing!"}), 401
-
-        # Load the stored token
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
-        token_store_path = os.path.join(root_dir, "token_store.json")
-        bt.logging.info(f"Looking for token_store.json at: {token_store_path}")
-
-        if not os.path.exists(token_store_path):
-            bt.logging.error(f"token_store.json not found at {token_store_path}")
-            return (
-                jsonify(
-                    {"message": "Token store not found!", "path": token_store_path}
-                ),
-                500,
-            )
+            return jsonify({'message': 'Token is missing!'}), 401
 
         try:
-            with open(token_store_path, "r") as file:
-                stored_token_data = json.load(file)
-        except json.JSONDecodeError:
-            bt.logging.error(f"Invalid JSON in token_store.json at {token_store_path}")
-            return jsonify({"message": "Invalid token store format!"}), 500
+            token_store_path = current_app.config.get('TOKEN_STORE_PATH', os.environ.get('TOKEN_STORE_PATH'))
+            bt.logging.info(f"Looking for token_store.json at: {token_store_path}")
+            
+            if not os.path.exists(token_store_path):
+                bt.logging.error(f"token_store.json not found at {token_store_path}")
+                return jsonify({'message': 'Token store not found!', 'path': token_store_path}), 500
 
-        stored_token = stored_token_data.get("jwt")
-        if not stored_token:
-            bt.logging.error("No 'jwt' field in token_store.json")
-            return jsonify({"message": "No valid token found in store!"}), 401
+            with open(token_store_path, 'r') as token_file:
+                token_store = json.load(token_file)
 
-        if token != stored_token:
-            bt.logging.warning("Provided token does not match stored token")
-            return jsonify({"message": "Invalid token!"}), 401
+            if token not in token_store.values():
+                return jsonify({'message': 'Token is invalid!'}), 401
 
-        if stored_token_data.get("revoked", False):
-            bt.logging.warning("Token has been revoked")
-            return jsonify({"message": "Token has been revoked!"}), 401
-
-        try:
-            jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        except ExpiredSignatureError:
-            bt.logging.warning("Token has expired")
-            return jsonify({"message": "Token has expired!"}), 401
-        except InvalidTokenError:
-            bt.logging.warning("Invalid token")
-            return jsonify({"message": "Invalid token!"}), 401
-
-        bt.logging.info(f"Token verification successful. Calling {f.__name__}")
+        except Exception as e:
+            bt.logging.error(f"Error in token validation: {str(e)}")
+            return jsonify({'message': 'Token is invalid!'}), 401
         return f(*args, **kwargs)
 
     return decorated
@@ -237,7 +262,7 @@ def get_active_miners():
                     JOIN miner_active a ON m.miner_uid = CAST (a.miner_uid AS INTEGER)
                     WHERE a.last_active_timestamp > %s
                 """,
-                    (datetime.utcnow() - timedelta(minutes=20),),
+                    (datetime.now() - timedelta(minutes=20),),
                 )
                 active_miners = cur.fetchall()
         return active_miners
@@ -305,55 +330,27 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    cert_path = os.path.join(os.path.dirname(__file__), "cert.pem")
-    key_path = os.path.join(os.path.dirname(__file__), "key.pem")
+    cert_path = os.path.join(os.path.dirname(__file__), 'child_certificate.pem')
+    key_path = os.path.join(os.path.dirname(__file__), 'private_key.pem')
 
-    # Generate self-signed certificate if it doesn't exist
-    if not (os.path.exists(cert_path) and os.path.exists(key_path)):
-        bt.logging.info("Generating self-signed certificate...")
-        from cryptography import x509
-        from cryptography.x509.oid import NameOID
-        from cryptography.hazmat.primitives import hashes
+    if not os.path.exists(cert_path) or not is_certificate_valid(cert_path):
+        bt.logging.info('Downloading child certificate...')
+        cert_path = fetch_and_store_child_cert()
+        if not cert_path:
+            bt.logging.error('Failed to download child certificate. Exiting.')
+            sys.exit(1)
+
+    if not os.path.exists(key_path):
+        bt.logging.info("Generating a new private key...")
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.hazmat.primitives import serialization
         import datetime
 
-        # Generate our key
         key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
         )
 
-        # Generate a self-signed certificate
-        subject = issuer = x509.Name(
-            [
-                x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
-                x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
-                x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
-                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Bettensor"),
-                x509.NameAttribute(NameOID.COMMON_NAME, "bettensor.com"),
-            ]
-        )
-        cert = (
-            x509.CertificateBuilder()
-            .subject_name(subject)
-            .issuer_name(issuer)
-            .public_key(key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.datetime.utcnow())
-            .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
-            .add_extension(
-                x509.SubjectAlternativeName([x509.DNSName("localhost")]),
-                critical=False,
-            )
-            .sign(key, hashes.SHA256())
-        )
-
-        # Write our certificate out to disk
-        with open(cert_path, "wb") as f:
-            f.write(cert.public_bytes(serialization.Encoding.PEM))
-
-        # Write our key out to disk
         with open(key_path, "wb") as f:
             f.write(
                 key.private_bytes(
@@ -362,9 +359,19 @@ if __name__ == "__main__":
                     encryption_algorithm=serialization.NoEncryption(),
                 )
             )
+    else:
+        with open(key_path, "rb") as f:
+            key_data = f.read()
+        key = serialization.load_pem_private_key(
+            key_data,
+            password=None,
+        )
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(cert_path, key_path)
+    with open(cert_path, 'rb') as cert_file:
+        pfx_data = cert_file.read()
+    password = os.environ.get("CERT_PASSWORD", "default_password").encode()
+    context.load_cert_chain(certfile=cert_path, password=password)
 
     server_start_time = time.time()
 
