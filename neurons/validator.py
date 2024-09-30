@@ -27,7 +27,7 @@ def main(validator: BettensorValidator):
 
     while True:
         try:
-            # reset watchdog 
+            # reset watchdog
             watchdog.reset()
 
             # get current time and block
@@ -36,21 +36,17 @@ def main(validator: BettensorValidator):
 
             # Convert last_api_call to datetime if it's a string
             if isinstance(validator.last_api_call, str):
-                validator.last_api_call = datetime.fromisoformat(validator.last_api_call)
+                validator.last_api_call = datetime.fromisoformat(
+                    validator.last_api_call
+                )
 
-
-            bt.logging.info("Current time: ", current_time)
+            bt.logging.info("Current time(main loop): ", current_time)
             bt.logging.info("Last api call was at: ", validator.last_api_call)
+
             # Update game data every 10 minutes with bettensor api
-            if validator.use_bt_api:
-                if current_time - validator.last_api_call >= timedelta(minutes=10):
-                    bt.logging.info("Updating game data with bettensor api")
-                    update_game_data(validator, validator.last_api_call)
-            else:
-                # Update game data every 60 minutes with external api client (to reduce overages)
-                if current_time - validator.last_api_call >= timedelta(minutes=60):
-                    bt.logging.info("Updating game data with external api client")
-                    update_game_data(validator, validator.last_api_call)
+            if current_time - validator.last_api_call >= timedelta(minutes=10):
+                bt.logging.info("Updating game data with bettensor api")
+                update_game_data(validator, current_time)
             # Sync metagraph every step
             sync_metagraph(validator)
 
@@ -65,11 +61,11 @@ def main(validator: BettensorValidator):
             # Recalculate scores every 50 blocks (~2 minutes)
             if current_block - validator.last_updated_block > 50:
                 bt.logging.info("Recalculating scores")
-                scoring_run(validator,current_time)
+                scoring_run(validator, current_time)
 
             # Set weights every 300 blocks (~ 1 hour)
             if current_block - validator.last_updated_block > 300:
-                set_weights(validator,validator.scores)
+                set_weights(validator, validator.scores)
 
             end_of_loop_processes(validator, watchdog, current_block)
 
@@ -97,21 +93,21 @@ def update_game_data(validator, current_time):
     try:
         if validator.last_api_call is None:
             validator.last_api_call = current_time - timedelta(days=15)
-        
-        all_games = validator.sports_data.fetch_and_update_game_data(validator.last_api_call)
+
+        all_games = validator.sports_data.fetch_and_update_game_data(
+            validator.last_api_call
+        )
         if all_games is None:
             bt.logging.warning(
                 "Failed to fetch game data. Continuing with previous data."
             )
-        
+
+        bt.logging.info(f"Current time: {current_time}")
         validator.last_api_call = current_time
+
         bt.logging.info(f"Last api call updated to: {validator.last_api_call}")
         validator.save_state()
 
-        # if using the external api client, update the game outcomes with the results
-        if not validator.use_bt_api:
-            validator.update_recent_games()
-        
     except Exception as e:
         bt.logging.error(f"Error fetching game data: {e}")
         bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
@@ -244,14 +240,15 @@ def query_and_process_axons_with_game_data(validator):
             time.sleep(18)
 
         if responses and any(responses):
-            validator.process_prediction(processed_uids=list_of_uids, predictions=responses)
+            validator.process_prediction(
+                processed_uids=list_of_uids, predictions=responses
+            )
 
     return synapse
 
 
 def send_data_to_website_server(validator):
     current_block = validator.subtensor.block
-
 
     try:
         result = fetch_and_send_predictions("data/validator.db")
@@ -264,27 +261,33 @@ def send_data_to_website_server(validator):
         bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
 
-def scoring_run(validator,current_time):
+def scoring_run(validator, current_time):
     """
     calls the scoring system to update miner scores before setting weights
     """
-    try:        
+    try:
         # Get UIDs to query and invalid UIDs
-        _, list_of_uids, blacklisted_uids, uids_not_to_query = validator.get_uids_to_query(validator.metagraph.axons)
+        (
+            _,
+            list_of_uids,
+            blacklisted_uids,
+            uids_not_to_query,
+        ) = validator.get_uids_to_query(validator.metagraph.axons)
 
         valid_uids = set(list_of_uids)
         # Combine blacklisted_uids and uids_not_to_query
         invalid_uids = set(blacklisted_uids + uids_not_to_query)
-        validator.scores = validator.scoring_system.scoring_run(current_time,invalid_uids,valid_uids)
+        validator.scores = validator.scoring_system.scoring_run(
+            current_time, invalid_uids, valid_uids
+        )
         bt.logging.info("Scores updated successfully")
         bt.logging.info(f"Scores: {validator.scores}")
     except Exception as e:
         bt.logging.error(f"Error in scoring_run: {str(e)}")
         bt.logging.error(f"Traceback: {traceback.format_exc()}")
-        
 
 
-def set_weights(validator,scores):
+def set_weights(validator, scores):
     try:
         bt.logging.info("Attempting to update weights")
         if validator.subtensor is None:
@@ -315,8 +318,6 @@ def set_weights(validator,scores):
         bt.logging.warning(
             "Failed to set weights or encountered an error, continuing with next iteration."
         )
-
-
 
 
 def end_of_loop_processes(validator, watchdog, current_block):
@@ -351,11 +352,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--logging.debug", action="store_true", help="Enable debug logging"
     )
-    parser.add_argument(
-        "--use_bt_api",
-        action="store_true",
-        help="Use the Bettensor API for fetching game data",
-    )
+
     parser.add_argument(
         "--alpha", type=float, default=0.9, help="The alpha value for the validator."
     )

@@ -19,7 +19,6 @@ Miner Data Methods, Extends the Bettensor Validator Class
 
 
 class MinerDataMixin:
-    
     def insert_predictions(self, processed_uids, predictions):
         """
         Inserts new predictions into the database
@@ -28,9 +27,7 @@ class MinerDataMixin:
         processed_uids: list of uids that have been processed
         predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
         """
-        current_time = (
-           datetime.now(timezone.utc).isoformat()
-        )
+        current_time = datetime.now(timezone.utc).isoformat()
 
         # Get today's date in UTC
         today_utc = datetime.now(timezone.utc).date().isoformat()
@@ -155,8 +152,8 @@ class MinerDataMixin:
                     bt.logging.error(f"An error occurred: {e}")
 
         # After inserting predictions, update entropy scores
-        #game_data = self.prepare_game_data_for_entropy(predictions)
-        #self.entropy_system.update_ebdr_scores(game_data)
+        # game_data = self.prepare_game_data_for_entropy(predictions)
+        # self.entropy_system.update_ebdr_scores(game_data)
 
     def process_prediction(
         self, processed_uids: torch.tensor, predictions: list
@@ -203,14 +200,14 @@ class MinerDataMixin:
         bt.logging.info("miner_data.py update_recent_games called")
         current_time = datetime.now(timezone.utc)
         five_hours_ago = current_time - timedelta(hours=5)
-        
+
         recent_games = self.db_manager.fetch_all(
             """
             SELECT external_id, team_a, team_b, sport, league, event_start_date
             FROM game_data
             WHERE event_start_date < ? AND outcome = 'Unfinished'
             """,
-            (five_hours_ago.isoformat(),)
+            (five_hours_ago.isoformat(),),
         )
         bt.logging.info("Recent games: ")
         bt.logging.info(recent_games)
@@ -223,14 +220,14 @@ class MinerDataMixin:
                 "team_b": team_b,
                 "sport": sport,
                 "league": league,
-                "event_start_date": event_start_date
+                "event_start_date": event_start_date,
             }
             bt.logging.info("Game info: ")
             bt.logging.info(game_info)
             numeric_outcome = self.api_client.determine_winner(game_info)
             bt.logging.info("Outcome: ")
             bt.logging.info(numeric_outcome)
-            
+
             if numeric_outcome is not None:
                 # Update the game outcome in the database
                 self.api_client.update_game_outcome(external_id, numeric_outcome)
@@ -280,7 +277,6 @@ class MinerDataMixin:
         except Exception as e:
             bt.logging.error(f"Database error in get_current_odds: {e}")
             return [0.0, 0.0, 0.0]  # Return default values in case of database error
-
 
     def fetch_local_game_data(self, current_timestamp: str) -> Dict[str, TeamGame]:
         # Calculate timestamp for 15 days ago

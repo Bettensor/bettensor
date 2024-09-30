@@ -22,7 +22,6 @@ from bettensor.protocol import TeamGamePrediction
 from bettensor.validator.utils.scoring.scoring import ScoringSystem
 from .utils.scoring.entropy_system import EntropySystem
 from bettensor.validator.utils.io.sports_data import SportsData
-from bettensor.validator.utils.io.external_api_client import ExternalAPIClient
 from bettensor.validator.utils.scoring.weights_functions import WeightSetter
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 from bettensor.validator.utils.io.miner_data import MinerDataMixin
@@ -81,16 +80,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             parser.add_argument(
                 "--subtensor.chain_endpoint", type=str, help="subtensor endpoint"
             )
-        if not any(arg.dest == "use_bt_api" for arg in parser._actions):
-            parser.add_argument(
-                "--use_bt_api",
-                action="store_true",
-                help="Use the Bettensor API for fetching game data",
-            )
 
         args = parser.parse_args()
 
-        self.use_bt_api = args.use_bt_api
         self.timeout = 12
         self.neuron_config = None
         self.wallet = None
@@ -100,7 +92,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.hotkeys = None
         self.subtensor = None
         self.axon_port = getattr(args, "axon.port", None)
-        self.base_path = ("./bettensor/validator/")
+        self.base_path = "./bettensor/validator/"
         self.max_targets = None
         self.target_group = None
         self.blacklisted_miner_hotkeys = None
@@ -110,11 +102,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.miner_responses = None
         self.db_path = DEFAULT_DB_PATH
         self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
-        self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=60)
-        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(
-            minutes=60
-        )
-     
+        self.last_api_call = datetime.now(timezone.utc) - timedelta(
+            days=15
+        )  # set to 15 days ago to ensure all games are fetched
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -266,14 +256,21 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.target_group = 0
 
         self.db_manager = DatabaseManager(self.db_path)
-        self.scoring_system = ScoringSystem(self.db_path, num_miners=256,max_days=45,reference_date=datetime.now(timezone.utc).date())
-        self.entropy_system = EntropySystem(max_capacity=self.max_targets, max_days=45)
+
+        self.scoring_system = ScoringSystem(
+            self.db_manager,
+            num_miners=256,
+            max_days=45,
+            reference_date=datetime.now(timezone.utc).date(),
+        )
 
         ############## Setup Validator Components ##############
-        self.api_client = ExternalAPIClient() if not self.use_bt_api else BettensorAPIClient(self.db_manager)
+        self.api_client = BettensorAPIClient(self.db_manager)
 
         self.sports_data = SportsData(
-            db_manager=self.db_manager, api_client=self.api_client, entropy_system = self.entropy_system
+            db_manager=self.db_manager,
+            api_client=self.api_client,
+            entropy_system=self.entropy_system,
         )
 
         self.weight_setter = WeightSetter(
@@ -360,7 +357,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
     def save_state(self):
         """saves the state of the validator to a file"""
         bt.logging.info("Saving validator state")
-    
+
         bt.logging.info(f"Last api call, save_state: {self.last_api_call}")
 
         if isinstance(self.last_api_call, str):
@@ -368,7 +365,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         bt.logging.info(f"Last api call, save_state: {self.last_api_call}")
         timestamp = self.last_api_call.timestamp()
-        
 
         # save the state of the validator to file
         torch.save(
@@ -379,7 +375,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 "last_updated_block": self.last_updated_block,
                 "blacklisted_miner_hotkeys": self.blacklisted_miner_hotkeys,
                 "last_api_call": timestamp,
-
             },
             self.base_path + "state/state.pt",
         )
@@ -423,14 +418,19 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 # Convert timestamps back to datetime
                 last_api_call = state["last_api_call"]
                 if last_api_call is None:
-                    self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
+                    self.last_api_call = datetime.now(timezone.utc) - timedelta(
+                        minutes=30
+                    )
                 else:
                     try:
-                        
-                        self.last_api_call = datetime.fromtimestamp(last_api_call, tz=timezone.utc)
-                
+                        self.last_api_call = datetime.fromtimestamp(
+                            last_api_call, tz=timezone.utc
+                        )
+
                     except (ValueError, TypeError, OverflowError) as e:
-                        bt.logging.warning(f"Invalid last_api_call timestamp: {last_api_call}. Using current time. Error: {e}")
+                        bt.logging.warning(
+                            f"Invalid last_api_call timestamp: {last_api_call}. Using current time. Error: {e}"
+                        )
                         self.last_api_call = datetime.now(timezone.utc)
 
             except Exception as e:
@@ -471,17 +471,19 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             bt.logging.trace(f"no local miner blacklist file in path: {blacklist_file}")
 
         return []
-    
+
     def validate_miner_blacklist(self, miner_blacklist) -> bool:
         """validates the miner blacklist. checks if the list is not empty and if all the hotkeys are in the metagraph"""
         blacklist_file = f"{self.base_path}/miner_blacklist.json"
         if not miner_blacklist:
             return False
         if not all(hotkey in self.metagraph.hotkeys for hotkey in miner_blacklist):
-            #update the blacklist with the valid hotkeys
-            valid_hotkeys = [hotkey for hotkey in miner_blacklist if hotkey in self.metagraph.hotkeys]
+            # update the blacklist with the valid hotkeys
+            valid_hotkeys = [
+                hotkey for hotkey in miner_blacklist if hotkey in self.metagraph.hotkeys
+            ]
             self.blacklisted_miner_hotkeys = valid_hotkeys
-            #overwrite the old blacklist with the new blacklist
+            # overwrite the old blacklist with the new blacklist
             with open(blacklist_file, "w", encoding="utf-8") as file:
                 json.dump(valid_hotkeys, file)
         return True
@@ -595,7 +597,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
-    def set_weights(self,scores):
+    def set_weights(self, scores):
         try:
             return self.weight_setter.set_weights(scores)
         except StopIteration:
@@ -603,4 +605,3 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 "StopIteration encountered in set_weights. Handling gracefully."
             )
             return None
- 

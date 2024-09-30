@@ -23,11 +23,12 @@ class BettensorAPIClient(BaseAPIClient):
 
         """
         if last_update_date is None:
-            #set to 1 week ago
-            last_update_date = datetime.now(timezone.utc) - timedelta(days=15)  
+            # set to 1 week ago
+            last_update_date = datetime.now(timezone.utc) - timedelta(days=15)
+
         # Fetch the games from the API
         games = self.get_games(last_update_date)
-        #print one game
+        # print one game
         if len(games) > 0:
             bt.logging.trace(f"Games: {games[0]}")
 

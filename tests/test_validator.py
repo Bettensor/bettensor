@@ -19,7 +19,10 @@ from bettensor.validator.utils.scoring.entropy_system import EntropySystem
 
 
 class TestValidator(unittest.TestCase):
-    @patch('bettensor.validator.utils.io.external_api_client.ExternalAPIClient', autospec=True)
+    @patch(
+        "bettensor.validator.utils.io.external_api_client.ExternalAPIClient",
+        autospec=True,
+    )
     def setUp(self, MockExternalAPIClient):
         # Create a temporary database
         self.temp_db = tempfile.NamedTemporaryFile(delete=False)
@@ -39,7 +42,9 @@ class TestValidator(unittest.TestCase):
         self.mock_api_client.process_game_result = Mock()
 
         # Initialize SportsData with mocks
-        self.sports_data = SportsData(self.db_manager, self.mock_entropy_system, self.mock_api_client)
+        self.sports_data = SportsData(
+            self.db_manager, self.mock_entropy_system, self.mock_api_client
+        )
 
         # Prepare ArgumentParser without adding conflicting arguments
         parser = ArgumentParser()
@@ -76,8 +81,8 @@ class TestValidator(unittest.TestCase):
                 "odds": {
                     "average_home_odds": 1.5,
                     "average_away_odds": 2.5,
-                    "average_tie_odds": None
-                }
+                    "average_tie_odds": None,
+                },
             }
         ]
 
@@ -92,7 +97,7 @@ class TestValidator(unittest.TestCase):
         # Retrieve the inserted game from the database
         game = self.db_manager.fetch_one(
             "SELECT external_id, team_a, team_b FROM game_data WHERE external_id = ?",
-            ("123",)
+            ("123",),
         )
         self.assertIsNotNone(game)
         self.assertEqual(game[0], "123")
@@ -101,13 +106,23 @@ class TestValidator(unittest.TestCase):
 
     def test_update_recent_games_flow(self):
         # Insert a game into the database with event_start_date older than five hours
-        six_hours_ago = datetime.datetime.now(datetime.timezone.utc) - timedelta(hours=6)
+        six_hours_ago = datetime.datetime.now(datetime.timezone.utc) - timedelta(
+            hours=6
+        )
         self.db_manager.execute_query(
             """
             INSERT INTO game_data (team_a, team_b, sport, league, external_id, event_start_date, outcome)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("Team A", "Team B", "Football", "NFL", "123", six_hours_ago.isoformat(), "Unfinished")
+            (
+                "Team A",
+                "Team B",
+                "Football",
+                "NFL",
+                "123",
+                six_hours_ago.isoformat(),
+                "Unfinished",
+            ),
         )
 
         # Define mocked API response to simulate a finished game
@@ -115,7 +130,7 @@ class TestValidator(unittest.TestCase):
             "results": [
                 {
                     "time_status": "3",  # 3 means the game has finished
-                    "ss": "20-27"  # Example score
+                    "ss": "20-27",  # Example score
                 }
             ]
         }
@@ -124,7 +139,9 @@ class TestValidator(unittest.TestCase):
 
         # Spy on the process_game_result method
         original_process_game_result = self.mock_api_client.process_game_result
-        self.mock_api_client.process_game_result = Mock(side_effect=original_process_game_result)
+        self.mock_api_client.process_game_result = Mock(
+            side_effect=original_process_game_result
+        )
 
         # Call update_recent_games which should process the game
         self.validator.update_recent_games()
@@ -136,35 +153,44 @@ class TestValidator(unittest.TestCase):
             "team_b": "Team B",
             "sport": "Football",
             "league": "NFL",
-            "event_start_date": six_hours_ago.isoformat()
+            "event_start_date": six_hours_ago.isoformat(),
         }
-        self.mock_api_client.determine_winner.assert_called_once_with(expected_game_info)
+        self.mock_api_client.determine_winner.assert_called_once_with(
+            expected_game_info
+        )
 
         # Assert process_game_result was called with correct parameters
         self.mock_api_client.process_game_result.assert_called_once_with(
-            "Football",
-            mock_game_data["results"][0],
-            "123",
-            "Team A",
-            "Team B"
+            "Football", mock_game_data["results"][0], "123", "Team A", "Team B"
         )
 
         # Verify that the outcome was updated in the database
         game = self.db_manager.fetch_one(
-            "SELECT outcome FROM game_data WHERE external_id = ?",
-            ("123",)
+            "SELECT outcome FROM game_data WHERE external_id = ?", ("123",)
         )
-        self.assertEqual(game[0], 1)  # 1 represents away team win based on score "20-27"
+        self.assertEqual(
+            game[0], 1
+        )  # 1 represents away team win based on score "20-27"
 
     def test_full_update_flow(self):
         # Insert a game into the database with event_start_date older than five hours
-        six_hours_ago = datetime.datetime.now(datetime.timezone.utc) - timedelta(hours=6)
+        six_hours_ago = datetime.datetime.now(datetime.timezone.utc) - timedelta(
+            hours=6
+        )
         self.db_manager.execute_query(
             """
             INSERT INTO game_data (team_a, team_b, sport, league, external_id, event_start_date, outcome)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("Team A", "Team B", "Football", "NFL", "123", six_hours_ago.isoformat(), "Unfinished")
+            (
+                "Team A",
+                "Team B",
+                "Football",
+                "NFL",
+                "123",
+                six_hours_ago.isoformat(),
+                "Unfinished",
+            ),
         )
 
         # Define mocked API response
@@ -180,8 +206,8 @@ class TestValidator(unittest.TestCase):
                 "odds": {
                     "average_home_odds": 1.5,
                     "average_away_odds": 2.5,
-                    "average_tie_odds": None
-                }
+                    "average_tie_odds": None,
+                },
             }
         ]
         self.mock_api_client.fetch_all_game_data.return_value = mock_games
@@ -193,7 +219,9 @@ class TestValidator(unittest.TestCase):
             self.assertEqual(game_info["external_id"], "123")
             return 0  # 0 represents home team win
 
-        with patch.object(self.mock_api_client, 'determine_winner', side_effect=mock_determine_winner) as mock_det_winner:
+        with patch.object(
+            self.mock_api_client, "determine_winner", side_effect=mock_determine_winner
+        ) as mock_det_winner:
             # Mock process_game_result to track its calls
             self.mock_api_client.process_game_result = Mock(return_value=0)
 
@@ -207,7 +235,7 @@ class TestValidator(unittest.TestCase):
                 "team_b": "Team B",
                 "sport": "Football",
                 "league": "NFL",
-                "event_start_date": six_hours_ago.isoformat()
+                "event_start_date": six_hours_ago.isoformat(),
             }
             mock_det_winner.assert_called_once_with(expected_game_info)
 
@@ -217,13 +245,12 @@ class TestValidator(unittest.TestCase):
                 unittest.mock.ANY,  # Replace with actual game_response if needed
                 "123",
                 "Team A",
-                "Team B"
+                "Team B",
             )
 
             # Verify that the outcome was updated in the database
             game = self.db_manager.fetch_one(
-                "SELECT outcome FROM game_data WHERE external_id = ?",
-                ("123",)
+                "SELECT outcome FROM game_data WHERE external_id = ?", ("123",)
             )
             self.assertEqual(game[0], 0)  # 0 represents home team win
 
@@ -239,6 +266,5 @@ class TestValidator(unittest.TestCase):
         self.assertTrue("API Failure" in str(context.exception))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
-

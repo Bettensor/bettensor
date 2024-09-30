@@ -63,7 +63,6 @@ while [[ $# -gt 0 ]]; do
         --axon.port) AXON_PORT="$2"; shift 2 ;;
         --validator_min_stake) VALIDATOR_MIN_STAKE="$2"; shift 2 ;;
         --disable_auto_update) DISABLE_AUTO_UPDATE="$2"; shift 2 ;;
-        --use_bt_api) USE_BT_API="--use_bt_api"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
         
     esac
@@ -108,37 +107,20 @@ if [ "$NEURON_TYPE" = "miner" ]; then
     DB_HOST="localhost"
     DB_PORT="5432"
     
-    echo "Verifying port and running environment health check..."
-    # Run health check with the additional axon port and db params
-    DB_PARAMS=$(jq -n \
-                  --arg name "$DB_NAME" \
-                  --arg user "$DB_USER" \
-                  --arg password "$DB_PASSWORD" \
-                  --arg host "$DB_HOST" \
-                  --arg port "$DB_PORT" \
-                  '{db_name: $name, db_user: $user, db_password: $password, db_host: $host, db_port: $port}')
-    python3 bettensor/miner/utils/health_check.py "$AXON_PORT" "$DB_PARAMS"
+
 fi
 
 # Prompt for logging level if not provided
 prompt_for_input "Enter logging level (info/debug/trace)" "debug" "LOGGING_LEVEL"
 DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --logging.$LOGGING_LEVEL"
 
-# Prompt for using BT API if not provided (only for validator)
-if [ "$NEURON_TYPE" = "validator" ]; then
-    if [ -z "$USE_BT_API" ]; then
-        prompt_yes_no "Do you want to use the BT API?" "USE_BT_API_CHOICE"
-        if [ "$USE_BT_API_CHOICE" = "true" ]; then
-            USE_BT_API="--use_bt_api"
-        fi
-    fi
-fi
 
 # Prompt for disabling auto-update if not provided
 prompt_yes_no "Do you want to disable auto-update? Warning: this will apply to all running neurons" "DISABLE_AUTO_UPDATE"
 
 # Prompt for starting Flask server
 prompt_yes_no "Would you like to start flask server for connecting to bettensor.com?" "FLASK_SERVER"
+
 
 # Start the neuron with PM2
 if [ "$NEURON_TYPE" = "miner" ]; then

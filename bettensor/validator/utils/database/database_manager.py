@@ -5,6 +5,7 @@ from queue import Queue, Empty
 from bettensor.validator.utils.database.database_init import initialize_database
 import logging
 
+
 class DatabaseManager:
     _instance = None
     _lock = threading.Lock()
@@ -17,18 +18,19 @@ class DatabaseManager:
         return cls._instance
 
     def __init__(self, db_path):
-        self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
-        self.cursor = self.conn.cursor()
-        self.transaction_active = False
-        logging.basicConfig(level=logging.DEBUG)
-        self.logger = logging.getLogger(__name__)
-        self.queue = Queue()
-        self.lock = threading.Lock()
-        self._start_worker()
-        self._initialize_database()
-        self.initialized = True
+        if not hasattr(self, "initialized"):
+            self.db_path = db_path
+            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            self.cursor = self.conn.cursor()
+            self.transaction_active = False
+            logging.basicConfig(level=logging.DEBUG)
+            self.logger = logging.getLogger(__name__)
+            self.queue = Queue()
+            self.lock = threading.Lock()
+            self._initialize_database()
+            self._start_worker()
+            self.initialized = True
 
     def connect(self):
         try:
@@ -78,93 +80,82 @@ class DatabaseManager:
             except Empty:
                 continue
 
-    def execute(self, func, *args, **kwargs):
+    def execute(self, query, params=None, func=None):
         """
         Execute a database operation asynchronously.
 
         Args:
-            func (callable): The function to execute with the cursor.
-            *args: Positional arguments for the function.
-            **kwargs: Keyword arguments for the function.
-        """
-        if not callable(func):
-            raise TypeError("The 'func' argument must be callable")
-        
-        result_queue = kwargs.pop('result_queue', None)
-        self.queue.put((func, args, kwargs, result_queue))
-
-    def execute_query(self, query, params=None, batch=False):
-        """
-        Execute a SQL query synchronously.
-
-        Args:
             query (str): The SQL query to execute.
             params (tuple, list, or list of tuples): Parameters for the SQL query.
-            batch (bool): Whether to execute as a batch operation.
+            func (callable): The function to execute with the cursor.
         """
+        if func is not None and not callable(func):
+            raise TypeError("The 'func' argument must be callable")
+
+        result_queue = Queue()
+
         def _execute(cursor):
-            if batch and isinstance(params, list):
-                cursor.executemany(query, params)
-            elif params:
+            if params:
                 cursor.execute(query, params)
             else:
                 cursor.execute(query)
 
-        self.queue.put((_execute, (), {}, None))
+        self.queue.put((_execute, (), {}, result_queue))
+
+    def execute_query(self, query, params=None):
+        with self.lock:
+            try:
+                if params:
+                    self.cursor.execute(query, params)
+                else:
+                    self.cursor.execute(query)
+                self.conn.commit()
+                # self.logger.debug(f"Query executed successfully: {query}")
+                return self.cursor.rowcount
+            except sqlite3.Error as e:
+                self.logger.error(f"Database error: {e}")
+                self.conn.rollback()
+                raise
+
+    def executemany(self, query, params):
+        with self.lock:
+            try:
+                self.cursor.executemany(query, params)
+                self.conn.commit()
+                # self.logger.debug(f"Executemany query executed successfully. Rows affected: {self.cursor.rowcount}")
+                return self.cursor.rowcount
+            except sqlite3.Error as e:
+                self.logger.error(f"Database error in executemany: {e}")
+                self.conn.rollback()
+                raise
 
     def fetch_one(self, query, params):
-        """
-        Fetch a single record from the database.
-
-        Args:
-            query (str): The SQL query to execute.
-            params (tuple): Parameters for the SQL query.
-
-        Returns:
-            The fetched record.
-        """
-        result_queue = Queue()
-
-        def _execute_fetch(cursor):
-            cursor.execute(query, params)
-            result = cursor.fetchone()
-            return result if result is None else tuple(result)
-
-        self.queue.put((_execute_fetch, (), {}, result_queue))
-        result = result_queue.get()
-        if isinstance(result, Exception):
-            raise result
-        return result
+        with self.lock:
+            try:
+                self.cursor.execute(query, params)
+                result = self.cursor.fetchone()
+                return dict(result) if result else None
+            except sqlite3.Error as e:
+                self.logger.error(f"Database error in fetch_one: {e}")
+                raise
 
     def fetch_all(self, query, params):
-        """
-        Fetch all records from the database.
-
-        Args:
-            query (str): The SQL query to execute.
-            params (tuple): Parameters for the SQL query.
-
-        Returns:
-            List of fetched records.
-        """
-        result_queue = Queue()
-
-        def _execute_fetch(cursor):
-            cursor.execute(query, params)
-            results = cursor.fetchall()
-            return [tuple(row) for row in results]
-
-        self.queue.put((_execute_fetch, (), {}, result_queue))
-        result = result_queue.get()
-        if isinstance(result, Exception):
-            raise result
-        return result
-
+        with self.lock:
+            try:
+                self.cursor.execute(query, params)
+                results = self.cursor.fetchall()
+                return [dict(row) for row in results]
+            except sqlite3.Error as e:
+                self.logger.error(f"Database error in fetch_all: {e}")
+                raise
 
     def _initialize_database(self):
         queries = initialize_database()
-        for query in queries:
-            self.execute_query(query)
+        with self.lock:
+            for query in queries:
+                self.cursor.execute(query)
+            self.conn.commit()
+        self.logger.debug("Database tables created successfully")
 
     def __del__(self):
         if self.conn:

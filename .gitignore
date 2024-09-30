@@ -187,3 +187,6 @@ cert.pem
 key.pem
 podos_soccer_model.pt 
 superprompt.md
+
+test_database.db
+scoring_system_state.json

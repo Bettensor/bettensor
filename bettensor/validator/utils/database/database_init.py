@@ -38,10 +38,10 @@ def initialize_database():
         """
         CREATE TABLE IF NOT EXISTS predictions (
             prediction_id TEXT PRIMARY KEY,
-            game_id TEXT,
-            miner_uid TEXT,
+            game_id INTEGER,
+            miner_uid INTEGER,
             prediction_date TEXT,
-            predicted_outcome TEXT,
+            predicted_outcome INTEGER,
             predicted_odds REAL,
             team_a TEXT,
             team_b TEXT,
@@ -50,7 +50,7 @@ def initialize_database():
             team_b_odds REAL,
             tie_odds REAL,
             is_model_prediction BOOLEAN,
-            outcome TEXT,
+            outcome INTEGER,
             payout REAL,
             sent_to_site INTEGER DEFAULT 0
         )
@@ -58,7 +58,7 @@ def initialize_database():
         """
         CREATE TABLE IF NOT EXISTS game_data (
             game_id TEXT PRIMARY KEY UNIQUE,
-            external_id TEXT UNIQUE,
+            external_id INTEGER UNIQUE,
             team_a TEXT,
             team_b TEXT,
             team_a_odds REAL,
@@ -70,7 +70,7 @@ def initialize_database():
             last_update_date TEXT,
             sport TEXT,
             league TEXT,
-            outcome INTEGER,
+            outcome INTEGER DEFAULT 3,
             active INTEGER
         )
         """,

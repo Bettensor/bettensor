@@ -266,7 +266,7 @@ class GameData(bt.Synapse):
             gamedata_dict = None
         elif synapse_type == "game_data":
             prediction_dict = None
-        
+
             return cls(
                 metadata=metadata,
                 gamedata_dict=gamedata_dict,

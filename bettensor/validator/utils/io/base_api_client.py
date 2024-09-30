@@ -2,6 +2,7 @@ import json
 import bittensor as bt
 from datetime import datetime, timedelta, timezone
 
+
 class BaseAPIClient:
     """
     Base class for handling all sports data API requests.
@@ -27,4 +28,3 @@ class BaseAPIClient:
         """
 
         pass
-

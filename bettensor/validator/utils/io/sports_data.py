@@ -7,7 +7,6 @@ import requests
 import bittensor as bt
 from dateutil import parser
 from .sports_config import sports_config
-from .external_api_client import ExternalAPIClient
 from datetime import datetime, timedelta, timezone
 from ..scoring.entropy_system import EntropySystem
 from .bettensor_api_client import BettensorAPIClient
@@ -28,15 +27,15 @@ class SportsData:
         self.db_manager = db_manager
         self.entropy_system = entropy_system
         self.api_client = api_client
-
         self.all_games = []
 
     def fetch_and_update_game_data(self, last_api_call):
         try:
             all_games = self.api_client.fetch_all_game_data(last_api_call)
-            self.insert_or_update_games(all_games)
+            inserted_ids = self.insert_or_update_games(all_games)
+            self.update_predictions_with_payouts(inserted_ids)
             self.all_games = all_games
-            return all_games
+            return inserted_ids
         except Exception as e:
             bt.logging.error(f"Error fetching game data: {str(e)}")
             raise  # Re-raise the exception
@@ -51,16 +50,16 @@ class SportsData:
         try:
             for game in games:
                 game_id = str(uuid.uuid4())
-                external_id = game["externalId"] if self.is_bettensor_api() else game["game_id"]
-                team_a = game["teamA"] if self.is_bettensor_api() else game["home"]
-                team_b = game["teamB"] if self.is_bettensor_api() else game["away"]
+                external_id = game["externalId"]
+                team_a = game["teamA"]
+                team_b = game["teamB"]
                 sport = game["sport"]
                 league = game["league"]
                 create_date = datetime.now(timezone.utc).isoformat()
                 last_update_date = create_date
                 event_start_date = game["date"]
                 active = 1
-                outcome = game["outcome"] if self.is_bettensor_api() else "Unfinished"
+                outcome = game["outcome"]
 
                 if outcome is None:
                     outcome = "Unfinished"
@@ -79,18 +78,18 @@ class SportsData:
                     )
                 can_tie = sport.lower() == "soccer"
 
-                # Convert outcomes to numeric 
+                # Convert outcomes to numeric
                 if outcome == "TeamAWin":
-                    outcome = 1
-                elif outcome == "TeamBWin":
-                    outcome = 2
-                elif outcome == "Draw":
-                    outcome = 3
-                else:  # Unfinished game
                     outcome = 0
+                elif outcome == "TeamBWin":
+                    outcome = 1
+                elif outcome == "Draw":
+                    outcome = 2
+                else:  # Unfinished game
+                    outcome = 3
 
                 # Set active to 0 if outcome is not "Unfinished"
-                if outcome != 0:
+                if outcome != 3:
                     active = 0
 
                 self.db_manager.execute_query(
@@ -166,5 +165,90 @@ class SportsData:
                 )
         return game_data
 
-    def is_bettensor_api(self):
-        return isinstance(self.api_client, BettensorAPIClient)
+    def update_predictions_with_payouts(self, external_ids):
+        """
+        Retrieve all predictions associated with the provided external IDs, determine if each prediction won,
+        calculate payouts, and update the predictions in the database.
+
+        Args:
+            external_ids (List[str]): List of external_id's of the games that were inserted/updated.
+        """
+        try:
+            if not external_ids:
+                bt.logging.info("No external IDs provided for updating predictions.")
+                return
+
+            # Fetch outcomes for the given external_ids
+            query = """
+                SELECT external_id, outcome
+                FROM game_data
+                WHERE external_id IN ({seq})
+            """.format(
+                seq=",".join(["?"] * len(external_ids))
+            )
+            game_outcomes = self.db_manager.fetch_all(query, tuple(external_ids))
+            game_outcome_map = {
+                external_id: outcome for external_id, outcome in game_outcomes
+            }
+
+            bt.logging.info(f"Fetched outcomes for {len(game_outcomes)} games.")
+
+            # Fetch all predictions associated with the external_ids
+            query = """
+                SELECT prediction_id, miner_uid, game_id, predicted_outcome, predicted_odds, wager
+                FROM predictions
+                WHERE game_id IN ({seq}) 
+            """.format(
+                seq=",".join(["?"] * len(external_ids))
+            )
+            predictions = self.db_manager.fetch_all(query, tuple(external_ids))
+
+            bt.logging.info(f"Fetched {len(predictions)} predictions to process.")
+
+            for prediction in predictions:
+                (
+                    prediction_id,
+                    miner_uid,
+                    game_id,
+                    predicted_outcome,
+                    predicted_odds,
+                    wager,
+                ) = prediction
+                actual_outcome = game_outcome_map.get(game_id)
+
+                if actual_outcome is None:
+                    bt.logging.warning(
+                        f"No outcome found for game {game_id}. Skipping prediction {prediction_id}."
+                    )
+                    continue
+
+                is_winner = predicted_outcome == actual_outcome
+                payout = wager * predicted_odds if is_winner else 0
+
+                update_query = """
+                    UPDATE predictions
+                    SET result = ?, payout = ?, processed = 1
+                    WHERE prediction_id = ?
+                """
+                self.db_manager.execute_query(
+                    update_query, (is_winner, payout, prediction_id)
+                )
+
+                if is_winner:
+                    bt.logging.info(
+                        f"Prediction {prediction_id}: Miner {miner_uid} won. Payout: {payout}"
+                    )
+                else:
+                    bt.logging.info(
+                        f"Prediction {prediction_id}: Miner {miner_uid} lost."
+                    )
+
+            self.db_manager.commit_transaction()
+            bt.logging.info(
+                "All predictions have been processed and updated successfully."
+            )
+
+        except Exception as e:
+            self.db_manager.rollback_transaction()
+            bt.logging.error(f"Error in update_predictions_with_payouts: {e}")
+            raise

@@ -545,8 +545,12 @@ class Application:
             ),  # Use teamaodds as a placeholder
             "Result": max(len(pred["outcome"]) for pred in predictions.values()),
             "Payout": 10,  # Assuming a reasonable width for payout
-            "Sent": max(len(str(pred["validators_sent_to"])) for pred in predictions.values()),
-            "Confirmed": max(len(str(pred["validators_confirmed"])) for pred in predictions.values()),
+            "Sent": max(
+                len(str(pred["validators_sent_to"])) for pred in predictions.values()
+            ),
+            "Confirmed": max(
+                len(str(pred["validators_confirmed"])) for pred in predictions.values()
+            ),
         }
 
         table = Table(box=box.ROUNDED, expand=True, border_style=DARK_GREEN)
@@ -602,7 +606,7 @@ class Application:
                 pred["outcome"],
                 f"${payout:.2f}" if isinstance(payout, (int, float)) else str(payout),
                 str(pred["validators_sent_to"]),
-                str(pred["validators_confirmed"])
+                str(pred["validators_confirmed"]),
             )
 
         if self.predictions_search_mode:

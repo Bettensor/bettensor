@@ -135,8 +135,10 @@ class PredictionsHandler:
         """
         self.db_manager.execute_query(query, (prediction_id,))
 
-    def update_prediction_confirmations(self, prediction_ids: List[str], validator_hotkey: str):
-        placeholders = ','.join(['%s'] * len(prediction_ids))
+    def update_prediction_confirmations(
+        self, prediction_ids: List[str], validator_hotkey: str
+    ):
+        placeholders = ",".join(["%s"] * len(prediction_ids))
         query = f"""
         UPDATE predictions
         SET validators_confirmed = validators_confirmed + 1
