@@ -77,7 +77,7 @@ class ModelParamsTUI:
     def get_all_miner_ids(self):
         with self.db_connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id FROM model_params ORDER BY id")
+                cur.execute("SELECT miner_uid FROM model_params ORDER BY miner_uid")
                 return [row[0] for row in cur.fetchall()]
 
     def load_params(self):
@@ -89,7 +89,7 @@ class ModelParamsTUI:
         with self.db_connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
-                    "SELECT * FROM model_params WHERE id = %s", (self.miner_id,)
+                    "SELECT * FROM model_params WHERE miner_uid = %s", (self.miner_id,)
                 )
                 self.params = cur.fetchone()
 
@@ -112,7 +112,7 @@ class ModelParamsTUI:
                     nfl_kelly_fraction_multiplier = %s,
                     nfl_edge_threshold = %s,
                     nfl_max_bet_percentage = %s
-                WHERE id = %s
+                WHERE miner_uid = %s
                 """,
                     (
                         self.params["model_on"],
