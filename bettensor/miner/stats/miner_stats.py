@@ -312,6 +312,9 @@ class MinerStateManager:
         self.miner_hotkey = miner_hotkey
         self.miner_uid = miner_uid if miner_uid != "default" else None
         self.state = self.load_state()
+    
+    def get_stats(self):
+        return self.state.copy()
 
     def load_state(self) -> Dict[str, Any]:
         if not self.miner_uid:
