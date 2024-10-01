@@ -77,8 +77,8 @@ class MinerStats(BaseModel):
     miner_lifetime_wager_amount: float = Field(
         ..., description="Lifetime wager amount of the miner"
     )
-    miner_lifetime_profit: float = Field(
-        ..., description="Lifetime profit of the miner"
+    miner_lifetime_roi: float = Field(
+        ..., description="Lifetime roi of the miner"
     )
     miner_lifetime_predictions: int = Field(
         ..., description="Lifetime predictions of the miner"
@@ -109,7 +109,7 @@ class MinerStats(BaseModel):
         miner_last_prediction_date = row[14]
         miner_lifetime_earnings = row[15]
         miner_lifetime_wager_amount = row[16]
-        miner_lifetime_profit = row[17]
+        miner_lifetime_roi  = row[17]
         miner_lifetime_predictions = row[18]
         miner_lifetime_wins = row[19]
         miner_lifetime_losses = row[20]
@@ -132,7 +132,7 @@ class MinerStats(BaseModel):
             miner_last_prediction_date=miner_last_prediction_date,
             miner_lifetime_earnings=miner_lifetime_earnings,
             miner_lifetime_wager_amount=miner_lifetime_wager_amount,
-            miner_lifetime_profit=miner_lifetime_profit,
+            miner_lifetime_roi=miner_lifetime_roi,
             miner_lifetime_predictions=miner_lifetime_predictions,
             miner_lifetime_wins=miner_lifetime_wins,
             miner_lifetime_losses=miner_lifetime_losses,
@@ -203,6 +203,9 @@ class TeamGamePrediction(BaseModel):
     model_name: Optional[str] = Field(
         None,
         description="Name of the model that made the prediction - null if submitted by a human",
+    )
+    confidence_score: Optional[float] = Field(
+        None, description="Confidence score of the prediction (model based predictions only)"
     )
     outcome: str = Field(..., description="Outcome of prediction")
     payout: float = Field(

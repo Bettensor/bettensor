@@ -567,25 +567,25 @@ class BettensorMiner(BaseNeuron):
                 bt.logging.info(f"Processing prediction: {prediction}")
 
                 try:
-                    external_id = prediction.get("externalId")
-                    bt.logging.info(f"Extracted external_id: {external_id}")
+                    game_id = prediction.get("game_id")
+                    bt.logging.info(f"Extracted game_id: {game_id}")
 
-                    if not external_id:
+                    if not game_id:
                         bt.logging.warning(
-                            f"Prediction missing externalId: {prediction}"
+                            f"Prediction missing game_id: {prediction}"
                         )
                         results.append(
                             {
                                 "status": "error",
-                                "message": "Prediction missing externalId",
+                                "message": "Prediction missing game_id",
                             }
                         )
                         continue
                     bt.logging.info(
-                        f"Checking if game exists with externalID: {external_id}"
+                        f"Checking if game exists with game_id: {game_id}"
                     )
                     try:
-                        game_exists = self.games_handler.game_exists(external_id)
+                        game_exists = self.games_handler.game_exists(game_id)
                     except Exception as e:
                         bt.logging.error(f"Error checking game existence: {str(e)}")
                         results.append(
@@ -599,11 +599,11 @@ class BettensorMiner(BaseNeuron):
                     bt.logging.info(f"Game exists: {game_exists}")
 
                     if not game_exists:
-                        bt.logging.warning(f"Game with ID {external_id} does not exist")
+                        bt.logging.warning(f"Game with ID {game_id} does not exist")
                         results.append(
                             {
                                 "status": "error",
-                                "message": f"Game with ID {external_id} does not exist",
+                                "message": f"Game with ID {game_id} does not exist",
                             }
                         )
                         continue
@@ -620,14 +620,11 @@ class BettensorMiner(BaseNeuron):
                     # Set initial outcome to 'Unfinished'
                     prediction["outcome"] = "Unfinished"
 
-                    # Map externalId to teamGameID
-                    prediction["team_game_id"] = prediction["external_id"]
-                    del prediction["external_id"]
-
+                    
                     # Ensure all required fields are present
                     required_fields = [
                         "prediction_id",
-                        "team_game_id",
+                        "game_id",
                         "miner_uid",
                         "prediction_date",
                         "predicted_outcome",
@@ -655,7 +652,15 @@ class BettensorMiner(BaseNeuron):
                         continue
 
                     bt.logging.info(f"Adding prediction to database: {prediction}")
-                    # Add the prediction to the database
+                   
+                   # add additional fields to prediction
+                    model_name = None
+                    confidence_score = None
+                    prediction["model_name"] = model_name
+                    prediction["confidence_score"] = confidence_score
+
+                     # Add the prediction to the database
+
                     result = self.predictions_handler.add_prediction(prediction)
                     bt.logging.info(f"Prediction added: {result}")
                     results.append(result)

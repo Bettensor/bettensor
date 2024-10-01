@@ -303,10 +303,10 @@ def get_miner_games():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT externalID
+                    SELECT game_id
                     FROM games
-                    WHERE CAST(eventStartDate AS TIMESTAMP) > NOW()
-                    ORDER BY CAST(eventStartDate AS TIMESTAMP) ASC
+                    WHERE CAST(event_start_date AS TIMESTAMP) > NOW()
+                    ORDER BY CAST(event_start_date AS TIMESTAMP) ASC
                 """
                 )
                 miner_games = [row[0] for row in cur.fetchall()]

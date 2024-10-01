@@ -1243,17 +1243,19 @@ class Application:
                 return
 
             prediction = {
-                "predictionID": str(uuid.uuid4()),
-                "teamGameID": self.selected_game.externalId,
-                "predictionDate": datetime.now(timezone.utc).isoformat(),
-                "predictedOutcome": self.prediction_outcome,
-                "teamA": self.selected_game.teamA,
-                "teamB": self.selected_game.teamB,
+                "prediction_id": str(uuid.uuid4()),
+                "game_id": self.selected_game.game_id,
+                "prediction_date": datetime.now(timezone.utc).isoformat(),
+                "predicted_outcome": self.prediction_outcome,
+                "team_a": self.selected_game.team_a,
+                "team_b": self.selected_game.team_b,
                 "wager": self.prediction_wager,
-                "teamAodds": self.selected_game.teamAodds,
-                "teamBodds": self.selected_game.teamBodds,
-                "tieOdds": self.selected_game.tieOdds,
+                "team_a_odds": self.selected_game.team_a_odds,
+                "team_b_odds": self.selected_game.team_b_odds,
+                "tie_odds": self.selected_game.tie_odds,
                 "outcome": "Unfinished",
+                "model_name": None,
+                "confidence_score": None,
             }
 
             result = self.predictions_handler.add_prediction(prediction)

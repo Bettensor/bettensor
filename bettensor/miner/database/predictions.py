@@ -74,7 +74,7 @@ class PredictionsHandler:
         INSERT INTO predictions (
             prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds,
             team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, outcome,
-            validators_sent_to, validators_confirmed
+            validators_sent_to, validators_confirmed, model_name, confidence_score
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0)
         RETURNING prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds,
             team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, outcome,
@@ -97,6 +97,8 @@ class PredictionsHandler:
                     prediction["team_b_odds"],
                     prediction["tie_odds"],
                     prediction["outcome"],
+                    prediction["model_name"],
+                    prediction["confidence_score"],
                 ),
                 fetch=True,
             )
@@ -136,9 +138,10 @@ class PredictionsHandler:
         query = """
         SELECT p.prediction_id, p.game_id, p.miner_uid, p.prediction_date, p.predicted_outcome,p.predicted_odds,
                p.team_a, p.team_b, p.wager, p.team_a_odds, p.team_b_odds, p.tie_odds, p.outcome,
-               g.team_a as home, g.team_b as away, p.validators_sent_to, p.validators_confirmed
+               g.team_a as home, g.team_b as away, p.validators_sent_to, p.validators_confirmed,
+               p.model_name, p.confidence_score
         FROM predictions p
-        JOIN games g ON p.game_id = g.external_id
+        JOIN games g ON p.game_id = g.game_id
         WHERE p.miner_uid = %s 
         ORDER BY p.prediction_date DESC 
         LIMIT 100
@@ -227,11 +230,11 @@ class PredictionsHandler:
                 model_name = "NFL Model" if sport == "nfl" else "Soccer Model"
                 pred_dict = {
                     "prediction_id": str(uuid.uuid4()),
-                    "game_id": game_data["external_id"],
+                    "game_id": game_data["game_id"],
                     "miner_uid": self.miner_uid,
                     "prediction_date": datetime.now(timezone.utc).isoformat(),
                     "predicted_outcome": game.team_a if prediction["PredictedOutcome"] == "Home Win" else game.team_b if prediction["PredictedOutcome"] == "Away Win" else "Tie",
-                    "predicted_odds": float(prediction["ConfidenceScore"]),
+                    "predicted_odds": game.team_a_odds if prediction["PredictedOutcome"] == "Home Win" else game.team_b_odds if prediction["PredictedOutcome"] == "Away Win" else game.tie_odds,
                     "team_a": game.team_a,
                     "team_b": game.team_b,
                     "wager": float(prediction["recommendedWager"]),
@@ -239,6 +242,7 @@ class PredictionsHandler:
                     "team_b_odds": float(game.team_b_odds),
                     "tie_odds": float(game.tie_odds) if game.tie_odds is not None else None,
                     "model_name": model_name,
+                    "confidence_score": float(prediction["ConfidenceScore"]),
                     "outcome": "Pending",
                     "payout": 0.0, #init payout to 0
                 }
@@ -262,8 +266,9 @@ class PredictionsHandler:
         for game_id, game in game_results.items():
             # bt.logging.debug(f"Processing prediction for game {game_id}")
             query = """
-            SELECT prediction_id, game_id, miner_id, prediction_date, predicted_outcome,
-                   team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, outcome
+            SELECT prediction_id, game_id, miner_uid, prediction_date, predicted_outcome,
+                   team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, outcome,
+                   model_name, confidence_score
             FROM predictions
             WHERE game_id = %s AND outcome = 'Unfinished'
             """
@@ -273,20 +278,22 @@ class PredictionsHandler:
                     prediction_data = {
                         "prediction_id": row["prediction_id"],
                         "game_id": row["game_id"],
-                        "miner_id": row["miner_id"],
+                        "miner_uid": row["miner_uid"],
                         "prediction_date": row["prediction_date"].isoformat()
                         if isinstance(row["prediction_date"], datetime)
                         else row["prediction_date"],
                         "predicted_outcome": row["predicted_outcome"],
                         "team_a": row["team_a"],
-                        "teamB": row["teamb"],
+                        "team_b": row["team_b"],
                         "wager": float(row["wager"]),
                         "team_a_odds": float(row["team_a_odds"]),
                         "team_b_odds": float(row["team_b_odds"]),
                         "tie_odds": float(row["tie_odds"])
-                        if row["tieodds"] is not None
+                        if row["tie_odds"] is not None
                         else None,
                         "outcome": row["outcome"],
+                        "model_name": row["model_name"],
+                        "confidence_score": float(row["confidence_score"]),
                     }
                     prediction = TeamGamePrediction(**prediction_data)
                 except Exception as e:
@@ -295,12 +302,12 @@ class PredictionsHandler:
                     continue
 
                 bt.logging.trace(
-                    f"Processing game outcome for prediction: {prediction.predictionID}, game: {game.id}"
+                    f"Processing game outcome for prediction: {prediction.prediction_id}, game: {game.game_id}"
                 )
 
                 actual_outcome = self._map_game_outcome(game.outcome)
                 predicted_outcome = self._map_predicted_outcome(
-                    prediction.predictedOutcome, game
+                    prediction.predicted_outcome, game
                 )
 
                 bt.logging.debug(
@@ -309,12 +316,12 @@ class PredictionsHandler:
 
                 if actual_outcome == "Unfinished":
                     bt.logging.debug(
-                        f"Game {game_id} is still unfinished. Keeping prediction {prediction.predictionID} as Unfinished."
+                        f"Game {game_id} is still unfinished. Keeping prediction {prediction.prediction_id} as Unfinished."
                     )
                     continue
                 elif actual_outcome == "Unknown":
                     bt.logging.warning(
-                        f"Unknown game outcome '{game.outcome}' for game {game_id}. Keeping prediction {prediction.predictionID} as Unfinished."
+                        f"Unknown game outcome '{game.outcome}' for game {game_id}. Keeping prediction {prediction.prediction_id} as Unfinished."
                     )
                     continue
 
@@ -322,12 +329,12 @@ class PredictionsHandler:
                     "Wager Won" if actual_outcome == predicted_outcome else "Wager Lost"
                 )
                 bt.logging.info(
-                    f"Updated prediction {prediction.predictionID} outcome to {new_outcome}"
+                    f"Updated prediction {prediction.prediction_id} outcome to {new_outcome}"
                 )
 
-                self.update_prediction_outcome(prediction.predictionID, new_outcome)
+                self.update_prediction_outcome(prediction.prediction_id, new_outcome)
                 prediction.outcome = new_outcome  # Update the prediction object
-                updated_predictions[prediction.predictionID] = prediction
+                updated_predictions[prediction.prediction_id] = prediction
 
                 # Calculate earnings
                 self._calculate_earnings(prediction, game)
@@ -338,19 +345,19 @@ class PredictionsHandler:
         self, prediction: TeamGamePrediction, game_data: TeamGame
     ) -> Optional[TeamGamePrediction]:
         bt.logging.trace(
-            f"Processing game outcome for prediction: {prediction.predictionID}, game: {game_data.id}"
+            f"Processing game outcome for prediction: {prediction.prediction_id}, game: {game_data.game_id}"
         )
 
         # Check if the prediction already has a non-"Unfinished" outcome
         if prediction.outcome != "Unfinished":
             bt.logging.debug(
-                f"Prediction {prediction.predictionID} already processed. Skipping."
+                f"Prediction {prediction.prediction_id} already processed. Skipping."
             )
             return prediction
 
         actual_outcome = self._map_game_outcome(game_data.outcome)
         predicted_outcome = self._map_predicted_outcome(
-            prediction.predictedOutcome, game_data
+            prediction.predicted_outcome, game_data
         )
 
         bt.logging.debug(
@@ -365,11 +372,11 @@ class PredictionsHandler:
             new_outcome = "Wager Lost"
 
         if new_outcome != prediction.outcome:
-            query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
-            self.db_manager.execute_query(query, (new_outcome, prediction.predictionID))
+            query = "UPDATE predictions SET outcome = %s WHERE prediction_id = %s"
+            self.db_manager.execute_query(query, (new_outcome, prediction.prediction_id))
             prediction.outcome = new_outcome
             bt.logging.info(
-                f"Updated prediction {prediction.predictionID} outcome to {new_outcome}"
+                f"Updated prediction {prediction.prediction_id} outcome to {new_outcome}"
             )
 
             if new_outcome != "Unfinished":
@@ -440,13 +447,13 @@ class PredictionsHandler:
             predicted_team = prediction
             odds = 1.0  # Default odds
         else:
-            predicted_team = prediction.predictedOutcome
-            if predicted_team == prediction.teamA:
-                odds = prediction.teamAodds
-            elif predicted_team == prediction.teamB:
-                odds = prediction.teamBodds
+            predicted_team = prediction.predicted_outcome
+            if predicted_team == prediction.team_a:
+                odds = prediction.team_a_odds
+            elif predicted_team == prediction.team_b:
+                odds = prediction.team_b_odds
             else:
-                odds = prediction.tieOdds
+                odds = prediction.tie_odds
 
         bt.logging.trace(f"Predicted Team: {predicted_team}, Odds: {odds}")
         bt.logging.trace(f"Result: {result}")
@@ -506,16 +513,18 @@ class PredictionsHandler:
                     if row["tie_odds"] is not None
                     else None,
                     outcome=row["outcome"],
+                    model_name=row["model_name"],
+                    confidence_score=float(row["confidence_score"]),
                 )
-                predictions[row["predictionid"]] = prediction
+                predictions[row["prediction_id"]] = prediction
             except Exception as e:
                 bt.logging.error(f"Error processing prediction: {e}")
                 bt.logging.error(f"Row data: {row}")
         bt.logging.info(f"Retrieved {len(predictions)} recent predictions")
         return predictions
 
-    def get_predictions_for_game(self, external_id: str) -> List[TeamGamePrediction]:
-        # bt.logging.trace(f"Getting predictions for game: {external_id}")
+    def get_predictions_for_game(self, game_id: str) -> List[TeamGamePrediction]:
+
         query = """
         SELECT prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds,
                team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, model_name, confidence_score, outcome
@@ -523,7 +532,7 @@ class PredictionsHandler:
         WHERE game_id = %s
         """
         try:
-            results = self.db_manager.execute_query(query, (external_id,))
+            results = self.db_manager.execute_query(query, (game_id,))
             predictions = []
             for row in results:
                 try:
@@ -538,9 +547,9 @@ class PredictionsHandler:
                         wager=float(row["wager"]),
                         team_a_odds=float(row["team_a_odds"]),
                         team_b_odds=float(row["team_b_odds"]),
-                        tie_odds=float(row["tie_odds"])
-                        if row["tie_odds"] is not None
-                        else None,
+                        tie_odds=float(row["tie_odds"]) if row["tie_odds"] is not None else None,
+                        model_name=row["model_name"],
+                        confidence_score=float(row["confidence_score"]),
                         outcome=row["outcome"],
                     )
                     predictions.append(prediction)
@@ -558,7 +567,7 @@ class PredictionsHandler:
         query = """
         SELECT p.*, g.team_a as home, g.team_b as away
         FROM predictions p
-        JOIN games g ON p.game_id = g.external_id
+        JOIN games g ON p.game_id = g.game_id
         WHERE p.miner_uid = %s
         ORDER BY p.prediction_date DESC
         """
@@ -602,7 +611,7 @@ class PredictionsHandler:
                p.predicted_outcome, g.outcome as game_outcome, 
                p.team_a, p.team_b, p.team_a_odds, p.team_b_odds, p.tie_odds
         FROM predictions p
-        JOIN games g ON p.game_id = g.external_id
+        JOIN games g ON p.game_id = g.game_id
         WHERE p.outcome != 'Unfinished'
         """
         try:
@@ -680,29 +689,29 @@ class PredictionsHandler:
 
     def _calculate_earnings(self, prediction: TeamGamePrediction, game: TeamGame):
         bt.logging.trace(
-            f"Calculating earnings for prediction {prediction.predictionID}"
+            f"Calculating earnings for prediction {prediction.prediction_id}"
         )
 
         earnings = 0
         if prediction.outcome == "Wager Won":
-            if prediction.predictedOutcome == game.teamA:
-                odds = prediction.teamAodds
-            elif prediction.predictedOutcome == game.teamB:
-                odds = prediction.teamBodds
+            if prediction.predicted_outcome == game.team_a:
+                odds = prediction.team_a_odds
+            elif prediction.predicted_outcome == game.team_b:
+                odds = prediction.team_b_odds
             else:  # Tie
-                odds = prediction.tieOdds
+                odds = prediction.tie_odds
 
             earnings = prediction.wager * odds
         elif prediction.outcome == "Wager Lost":
             earnings = 0  # No change in earnings for a lost wager
         else:
             bt.logging.warning(
-                f"Unexpected outcome {prediction.outcome} for prediction {prediction.predictionID}"
+                f"Unexpected outcome {prediction.outcome} for prediction {prediction.prediction_id}"
             )
             return
 
         bt.logging.info(
-            f"Earnings for prediction {prediction.predictionID}: {earnings}"
+            f"Earnings for prediction {prediction.prediction_id}: {earnings}"
         )
 
         # Update miner stats

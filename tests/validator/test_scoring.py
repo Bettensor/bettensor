@@ -330,6 +330,7 @@ class TestScoringSystem(unittest.TestCase):
             bt.logging.debug(
                 f"Top 5 miners for day {day + 1}: {top_miners} with weights {weights[top_miners]}"
             )
+            
     @classmethod
     def verify_game_config(cls, external_id):
         db_result = cls.db_manager.fetch_one(

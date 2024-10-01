@@ -160,7 +160,7 @@ class ScoringData:
             bt.logging.trace("Initializing Miner Stats")
             try:
                 # Check if the miner_stats table is empty
-                count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")["COUNT(*)"]
+                count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")["'COUNT(*)"]
                 bt.logging.trace(f"Miner stats count: {count}")
                 
                 if count == 0:
