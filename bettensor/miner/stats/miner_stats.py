@@ -135,11 +135,11 @@ class MinerStatsHandler:
 
             query = """
             SELECT 
-                p.predictedOutcome, p.outcome, p.wager, p.teamAodds, p.teamBodds, p.tieOdds, p.predictionDate,
-                g.teamA, g.teamB
+                p.predicted_outcome, p.outcome, p.wager, p.team_a_odds, p.team_b_odds, p.tie_odds, p.prediction_date,
+                g.team_a, g.team_b
             FROM predictions p
-            JOIN games g ON p.teamGameID = g.externalID
-            WHERE p.minerID = %s
+            JOIN games g ON p.game_id = g.game_id
+            WHERE p.miner_uid = %s
             """
 
             conn, cur = self.db_manager.connection_pool.getconn(), None
@@ -166,7 +166,7 @@ class MinerStatsHandler:
                     total_wager += pred["wager"]
                     # print(f"DEBUG: Total wager so far: {total_wager}")
 
-                    pred_date = pred.get("predictiondate")
+                    pred_date = pred.get("prediction_date")
                     if pred_date:
                         pred_date = datetime.fromisoformat(pred_date)
                         if pred_date >= today:
@@ -180,12 +180,12 @@ class MinerStatsHandler:
                     # print(f"DEBUG: Prediction details - Outcome: {pred['outcome']}, Predicted: {pred['predictedoutcome']}, Wager: {pred['wager']}, Odds: {pred['teamaodds']}/{pred['teambodds']}/{pred['tieodds']}, Team A: {pred['teama']}, Team B: {pred['teamb']}")
                     if "Wager Won" in pred["outcome"]:
                         total_wins += 1
-                        if pred["predictedoutcome"] == pred["teama"]:
-                            payout = pred["wager"] * pred["teamaodds"]
-                        elif pred["predictedoutcome"] == pred["teamb"]:
-                            payout = pred["wager"] * pred["teambodds"]
-                        elif pred["predictedoutcome"] == "Tie":
-                            payout = pred["wager"] * pred["tieodds"]
+                        if pred["predicted_outcome"] == pred["team_a"]:
+                            payout = pred["wager"] * pred["team_a_odds"]
+                        elif pred["predicted_outcome"] == pred["team_b"]:
+                            payout = pred["wager"] * pred["team_b_odds"]
+                        elif pred["predicted_outcome"] == "Tie":
+                            payout = pred["wager"] * pred["tie_odds"]
                         else:
                             payout = 0
                         # print(f"DEBUG: Wager won. Payout: {payout}")
@@ -371,7 +371,7 @@ class MinerStateManager:
             query = """
             INSERT INTO miner_stats (
                 miner_hotkey, miner_uid, miner_cash, miner_current_incentive, 
-                miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager, 
+                miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager_amount, 
                 miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses, 
                 miner_win_loss_ratio, last_daily_reset
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -381,7 +381,7 @@ class MinerStateManager:
                 miner_current_incentive = EXCLUDED.miner_current_incentive,
                 miner_last_prediction_date = EXCLUDED.miner_last_prediction_date,
                 miner_lifetime_earnings = EXCLUDED.miner_lifetime_earnings,
-                miner_lifetime_wager = EXCLUDED.miner_lifetime_wager,
+                miner_lifetime_wager_amount = EXCLUDED.miner_lifetime_wager_amount,
                 miner_lifetime_predictions = EXCLUDED.miner_lifetime_predictions,
                 miner_lifetime_wins = EXCLUDED.miner_lifetime_wins,
                 miner_lifetime_losses = EXCLUDED.miner_lifetime_losses,

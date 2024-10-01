@@ -200,7 +200,8 @@ class DatabaseManager:
                 miner_lifetime_predictions INTEGER,
                 miner_lifetime_wins INTEGER,
                 miner_lifetime_losses INTEGER,
-                miner_win_loss_ratio REAL
+                miner_win_loss_ratio REAL,
+                last_daily_reset TEXT
             )
             """,
             ),
@@ -476,8 +477,8 @@ class DatabaseManager:
     def remove_default_rows(self):
         bt.logging.info("Checking and removing default rows from all tables")
         tables = {
-            "predictions": "minerID",
-            "games": "gameID",
+            "predictions": "miner_uid",
+            "games": "game_id",
             "miner_stats": "miner_hotkey",
             "model_params": "miner_uid",
             "miner_active": "miner_uid",

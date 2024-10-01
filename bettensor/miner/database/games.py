@@ -68,7 +68,7 @@ class GamesHandler:
 
         params_list = []
         for game_data in game_data_dict_by_id.values():
-            event_start_date = self._ensure_timezone_aware(game_data.eventStartDate)
+            event_start_date = self._ensure_timezone_aware(game_data.event_start_date)
             is_active = (
                 1 if current_time <= datetime.fromisoformat(event_start_date) else 0
             )
