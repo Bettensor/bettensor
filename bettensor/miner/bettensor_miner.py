@@ -193,7 +193,7 @@ class BettensorMiner(BaseNeuron):
     def forward(self, synapse: bt.Synapse) -> bt.Synapse:
         if isinstance(synapse, GameData):
             return self._handle_game_data(synapse)
-        elif isinstance(synapse, Confirmation):
+        elif isinstance(synapse, ConfirmationSynapse):
             return self._handle_confirmation(synapse)
         else:
             raise ValueError(f"Unsupported synapse type: {type(synapse)}")
@@ -256,18 +256,16 @@ class BettensorMiner(BaseNeuron):
 
         return synapse
 
-    def _handle_confirmation(self, synapse: ConfirmationSynapse) -> ConfirmationSynapse:
-        try:
-            # Update the confirmation count in the database
-            self.predictions_handler.update_confirmation(
-                synapse.prediction_id,
-                synapse.validator_hotkey
+    def _handle_confirmation(self, synapse: Confirmation) -> None:
+        bt.logging.debug(f"Processing confirmation from {synapse.dendrite.hotkey}")
+        if synapse.confirmation_dict:
+            prediction_ids = list(synapse.confirmation_dict.keys())
+            self.predictions_handler.update_prediction_confirmations(
+                prediction_ids, synapse.dendrite.hotkey
             )
-            synapse.success = True
-        except Exception as e:
-            bt.logging.error(f"Error handling confirmation: {str(e)}")
-            synapse.success = False
-        return synapse
+        else:
+            bt.logging.warning("Received empty confirmation dict")
+        return None
 
     def _check_version(self, synapse_version):
         if synapse_version > self.subnet_version:
