@@ -283,6 +283,7 @@ class DatabaseManager:
         END $$;
         
         ALTER TABLE model_params
+        ADD COLUMN IF NOT EXISTS miner_uid TEXT,
         ADD COLUMN IF NOT EXISTS nfl_model_on BOOLEAN DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS nfl_minimum_wager_amount FLOAT DEFAULT 20.0,
         ADD COLUMN IF NOT EXISTS nfl_max_wager_amount FLOAT DEFAULT 1000.0,
@@ -290,6 +291,10 @@ class DatabaseManager:
         ADD COLUMN IF NOT EXISTS nfl_kelly_fraction_multiplier FLOAT DEFAULT 1.0,
         ADD COLUMN IF NOT EXISTS nfl_edge_threshold FLOAT DEFAULT 0.02,
         ADD COLUMN IF NOT EXISTS nfl_max_bet_percentage FLOAT DEFAULT 0.7;
+
+        -- Ensure miner_uid is the primary key
+        ALTER TABLE model_params DROP CONSTRAINT IF EXISTS model_params_pkey;
+        ALTER TABLE model_params ADD PRIMARY KEY (miner_uid);
         """
         self.execute_query(query)
 
@@ -313,7 +318,7 @@ class DatabaseManager:
             "nfl_max_bet_percentage": 0.7,
         }
 
-        query = "SELECT * FROM model_params WHERE id = %s"
+        query = "SELECT * FROM model_params WHERE miner_uid = %s"
         result = self.execute_query(query, (miner_uid,))
 
         if not result:
