@@ -20,6 +20,7 @@ def initialize_database():
             miner_current_tier INTEGER,
             miner_current_scoring_window INTEGER,
             miner_current_composite_score REAL,
+            miner_current_entropy_score REAL,
             miner_current_sharpe_ratio REAL,
             miner_current_sortino_ratio REAL,
             miner_current_roi REAL,

@@ -46,24 +46,24 @@ class GamesHandler:
 
         upsert_query = """
         INSERT INTO games (
-            gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, 
-            createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
+            game_id, team_a, team_a_odds, team_b, team_b_odds, sport, league, external_id, 
+            create_date, last_update_date, event_start_date, active, outcome, tie_odds, can_tie
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (externalID) DO UPDATE SET
-            gameID = EXCLUDED.gameID,
-            teamA = EXCLUDED.teamA,
-            teamAodds = EXCLUDED.teamAodds,
-            teamB = EXCLUDED.teamB,
-            teamBodds = EXCLUDED.teamBodds,
+            game_id = EXCLUDED.game_id,
+            team_a = EXCLUDED.team_a,
+            team_a_odds = EXCLUDED.team_a_odds,
+            team_b = EXCLUDED.team_b,
+            team_b_odds = EXCLUDED.team_b_odds,
             sport = EXCLUDED.sport,
             league = EXCLUDED.league,
-            lastUpdateDate = EXCLUDED.lastUpdateDate,
-            eventStartDate = EXCLUDED.eventStartDate,
+            last_update_date = EXCLUDED.last_update_date,
+            event_start_date = EXCLUDED.event_start_date,
             active = EXCLUDED.active,
             outcome = EXCLUDED.outcome,
-            tieOdds = EXCLUDED.tieOdds,
-            canTie = EXCLUDED.canTie
-        RETURNING externalID, (xmax = 0) AS is_new, outcome
+            tie_odds = EXCLUDED.tie_odds,
+            can_tie = EXCLUDED.can_tie
+        RETURNING external_id, (xmax = 0) AS is_new, outcome
         """
 
         params_list = []
@@ -95,7 +95,7 @@ class GamesHandler:
             self.db_manager.execute_batch(upsert_query, params_list)
 
             # Fetch the results of the upsert operation
-            select_query = "SELECT externalID, (xmax = 0) AS is_new, outcome FROM games WHERE externalID = ANY(%s)"
+            select_query = "SELECT external_id, (xmax = 0) AS is_new, outcome FROM games WHERE external_id = ANY(%s)"
             results = self.db_manager.execute_query(
                 select_query,
                 ([game.externalId for game in game_data_dict_by_external_id.values()],),
@@ -103,7 +103,7 @@ class GamesHandler:
 
             for result in results:
                 external_id, is_new, outcome = (
-                    result["externalid"],
+                    result["external_id"],
                     result["is_new"],
                     result["outcome"],
                 )
@@ -141,7 +141,7 @@ class GamesHandler:
 
     def get_game(self, external_id: str) -> Optional[TeamGame]:
         bt.logging.trace(f"Retrieving game with external ID: {external_id}")
-        query = "SELECT * FROM games WHERE externalID = %s"
+        query = "SELECT * FROM games WHERE external_id = %s"
         result = self.db_manager.execute_query(query, (external_id,))
         if result:
             bt.logging.trace(f"Game found: {result[0]}")
@@ -153,30 +153,30 @@ class GamesHandler:
         bt.logging.trace("Retrieving active games")
         query = """
         SELECT * FROM games
-        WHERE active = 1 AND CAST(eventStartDate AS TIMESTAMP WITH TIME ZONE) > NOW()
-        ORDER BY CAST(eventStartDate AS TIMESTAMP WITH TIME ZONE) ASC
+        WHERE active = 1 AND CAST(event_start_date AS TIMESTAMP WITH TIME ZONE) > NOW()
+        ORDER BY CAST(event_start_date AS TIMESTAMP WITH TIME ZONE) ASC
         """
         results = self.db_manager.execute_query(query)
         active_games = {}
         for row in results:
             team_game = TeamGame(
-                id=row["gameid"],
-                teamA=row["teama"],
-                teamAodds=float(row["teamaodds"]),
-                teamB=row["teamb"],
-                teamBodds=float(row["teambodds"]),
+                id=row["game_id"],
+                teamA=row["team_a"],
+                teamAodds=float(row["team_a_odds"]),
+                teamB=row["team_b"],
+                teamBodds=float(row["team_b_odds"]),
                 sport=row["sport"],
                 league=row["league"],
-                externalId=row["externalid"],
-                createDate=self._ensure_iso_format(row["createdate"]),
-                lastUpdateDate=self._ensure_iso_format(row["lastupdatedate"]),
-                eventStartDate=self._ensure_iso_format(row["eventstartdate"]),
+                externalId=row["external_id"],
+                createDate=self._ensure_iso_format(row["create_date"]),
+                lastUpdateDate=self._ensure_iso_format(row["last_update_date"]),
+                eventStartDate=self._ensure_iso_format(row["event_start_date"]),
                 active=bool(row["active"]),
                 outcome=row["outcome"],
-                tieOdds=float(row["tieodds"]) if row["tieodds"] is not None else None,
-                canTie=bool(row["cantie"]),
+                tieOdds=float(row["tie_odds"]) if row["tie_odds"] is not None else None,
+                canTie=bool(row["can_tie"]),
             )
-            active_games[row["externalid"]] = team_game
+            active_games[row["external_id"]] = team_game
         bt.logging.trace(f"Retrieved {len(active_games)} active games")
         return active_games
 
@@ -224,7 +224,7 @@ class GamesHandler:
         bt.logging.trace("Marking old games as inactive")
         current_time = datetime.now(timezone.utc)
         cutoff_date = current_time - self.inactive_game_window
-        query = "UPDATE games SET active = FALSE WHERE eventStartDate < %s"
+        query = "UPDATE games SET active = FALSE WHERE event_start_date < %s"
         self.db_manager.execute_query(query, params=(cutoff_date.isoformat(),))
         bt.logging.trace("Old games marked as inactive")
 
@@ -232,8 +232,8 @@ class GamesHandler:
         query = """
         SELECT externalID 
         FROM games 
-        WHERE eventStartDate > %s 
-        ORDER BY eventStartDate ASC
+        WHERE event_start_date > %s 
+        ORDER BY event_start_date ASC
         """
         current_time = datetime.now(timezone.utc)
         try:
@@ -252,7 +252,7 @@ class GamesHandler:
     def get_games_by_sport(self, sport: str) -> Dict[str, TeamGame]:
         bt.logging.warning(f"Retrieving games by sport: {sport}")
         query = """
-        SELECT gameID, teamA, teamAodds, teamB, teamBodds, sport, league, externalID, createDate, lastUpdateDate, eventStartDate, active, outcome, tieOdds, canTie
+        SELECT game_id, team_a, team_a_odds, team_b, team_b_odds, sport, league, external_id, create_date, last_update_date, event_start_date, active, outcome, tie_odds, can_tie
         FROM games
         WHERE active = 1 AND LOWER(sport) = LOWER(%s)
         """
@@ -260,21 +260,21 @@ class GamesHandler:
         games = {}
         for row in results:
             team_game = TeamGame(
-                id=row["gameid"],
-                teamA=row["teama"],
-                teamB=row["teamb"],
+                id=row["game_id"],
+                teamA=row["team_a"],
+                teamB=row["team_b"],
                 sport=row["sport"],
                 league=row["league"],
-                externalId=row["externalid"],
-                createDate=self._ensure_iso_format(row["createdate"]),
-                lastUpdateDate=self._ensure_iso_format(row["lastupdatedate"]),
-                eventStartDate=self._ensure_iso_format(row["eventstartdate"]),
+                externalId=row["external_id"],
+                createDate=self._ensure_iso_format(row["create_date"]),
+                lastUpdateDate=self._ensure_iso_format(row["last_update_date"]),
+                eventStartDate=self._ensure_iso_format(row["event_start_date"]),
                 active=bool(row["active"]),
                 outcome=row["outcome"],
-                teamAodds=float(row["teamaodds"]),
-                teamBodds=float(row["teambodds"]),
-                tieOdds=float(row["tieodds"]) if row["tieodds"] is not None else None,
-                canTie=bool(row["cantie"]),
+                teamAodds=float(row["team_a_odds"]),
+                teamBodds=float(row["team_b_odds"]),
+                tieOdds=float(row["tie_odds"]) if row["tie_odds"] is not None else None,
+                canTie=bool(row["can_tie"]),
             )
-            games[row["externalid"]] = team_game
+            games[row["external_id"]] = team_game
         return games

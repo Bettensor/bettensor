@@ -160,7 +160,8 @@ class ScoringData:
             bt.logging.trace("Initializing Miner Stats")
             try:
                 # Check if the miner_stats table is empty
-                count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")
+                count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")["COUNT(*)"]
+                bt.logging.trace(f"Miner stats count: {count}")
                 
                 if count == 0:
                     bt.logging.info("Initializing miner_stats table with zero values.")
@@ -174,7 +175,7 @@ class ScoringData:
                         miner_current_sharpe_ratio, miner_current_sortino_ratio,
                         miner_current_roi, miner_current_clv_avg, miner_last_prediction_date,
                         miner_lifetime_earnings, miner_lifetime_wager_amount,
-                        miner_lifetime_profit, miner_lifetime_predictions,
+                        miner_lifetime_roi, miner_lifetime_predictions,
                         miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """
@@ -190,6 +191,7 @@ class ScoringData:
                     
                     # Execute batch insert
                     count = self.db_manager.executemany(insert_query, initial_values)
+                    bt.logging.trace(f"Inserted {count} rows into miner_stats table.")
 
                     
                     bt.logging.info(f"Successfully initialized {count} miners in miner_stats table.")
@@ -208,11 +210,61 @@ class ScoringData:
         try:
             bt.logging.info("Updating miner stats...")
 
-            # Update lifetime statistics (unchanged)
-            # ...
+            # Update lifetime statistics
+            update_lifetime_query = """
+            UPDATE miner_stats
+            SET
+                miner_lifetime_earnings = (
+                    SELECT COALESCE(SUM(payout), 0)
+                    FROM predictions
+                    WHERE predictions.miner_uid = miner_stats.miner_uid
+                ),
+                miner_lifetime_wager_amount = (
+                    SELECT COALESCE(SUM(wager), 0)
+                    FROM predictions
+                    WHERE predictions.miner_uid = miner_stats.miner_uid
+                ),
+                miner_lifetime_predictions = (
+                    SELECT COUNT(*)
+                    FROM predictions
+                    WHERE predictions.miner_uid = miner_stats.miner_uid
+                ),
+                miner_lifetime_wins = (
+                    SELECT COUNT(*)
+                    FROM predictions
+                    WHERE predictions.miner_uid = miner_stats.miner_uid
+                    AND predictions.payout > 0
+                ),
+                miner_lifetime_losses = (
+                    SELECT COUNT(*)
+                    FROM predictions
+                    WHERE predictions.miner_uid = miner_stats.miner_uid
+                    AND predictions.payout = 0
+                ),
+                miner_last_prediction_date = (
+                    SELECT MAX(prediction_date)
+                    FROM predictions
+                    WHERE predictions.miner_uid = miner_stats.miner_uid
+                )
+            """
+            self.db_manager.execute_query(update_lifetime_query)
 
-            # Update derived lifetime statistics (unchanged)
-            # ...
+            # Update derived lifetime statistics
+            update_derived_lifetime_query = """
+            UPDATE miner_stats
+            SET
+                miner_win_loss_ratio = CASE 
+                    WHEN miner_lifetime_losses > 0 
+                    THEN CAST(miner_lifetime_wins AS REAL) / miner_lifetime_losses 
+                    ELSE miner_lifetime_wins 
+                END,
+                miner_lifetime_roi = CASE
+                    WHEN miner_lifetime_wager_amount > 0
+                    THEN (miner_lifetime_earnings - miner_lifetime_wager_amount) / miner_lifetime_wager_amount
+                    ELSE 0
+                END
+            """
+            self.db_manager.execute_query(update_derived_lifetime_query)
 
             # Combined query for updating current statistics
             update_current_query = """

@@ -1010,7 +1010,7 @@ class ScoringSystem:
 
         # Save state at the end of each run
         self.save_state()
-        self.scoring_data.update_miner_stats()
+        self.scoring_data.update_miner_stats(self.current_day)
 
         return weights
 
@@ -1156,7 +1156,7 @@ class ScoringSystem:
         insert_score_query = """
            INSERT OR REPLACE INTO scores 
            (miner_uid, day_id, score_type, clv_score, roi_score, entropy_score, composite_score, sortino_score)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.db_manager.executemany(insert_score_query, score_records)
         bt.logging.info(f"Saved {len(score_records)} score records")

@@ -49,8 +49,8 @@ class PredictionsHandler:
         bt.logging.trace("Updating predictions with miner ID")
         query = """
         UPDATE predictions
-        SET minerID = %s
-        WHERE minerID IS NULL
+        SET miner_uid = %s
+        WHERE miner_uid IS NULL
         """
         try:
             self.db_manager.execute_query(query, params=(self.miner_uid,))
@@ -72,12 +72,12 @@ class PredictionsHandler:
 
         query = """
         INSERT INTO predictions (
-            predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-            teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome,
+            prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds,
+            team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, outcome,
             validators_sent_to, validators_confirmed
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0)
-        RETURNING predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-            teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome,
+        RETURNING prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds,
+            team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, outcome,
             validators_sent_to, validators_confirmed
         """
         
@@ -115,7 +115,7 @@ class PredictionsHandler:
         query = """
         UPDATE predictions
         SET validators_sent_to = validators_sent_to + 1
-        WHERE predictionID = %s
+        WHERE prediction_id = %s
         """
         self.db_manager.execute_query(query, (prediction_id,))
 
@@ -126,7 +126,7 @@ class PredictionsHandler:
         query = f"""
         UPDATE predictions
         SET validators_confirmed = validators_confirmed + 1
-        WHERE predictionID IN ({placeholders})
+        WHERE prediction_id IN ({placeholders})
         AND validators_confirmed < validators_sent_to
         """
         params = prediction_ids
@@ -134,26 +134,26 @@ class PredictionsHandler:
 
     def get_predictions(self, miner_uid):
         query = """
-        SELECT p.predictionID, p.teamGameID, p.minerID, p.predictionDate, p.predictedOutcome,
-               p.teamA, p.teamB, p.wager, p.teamAodds, p.teamBodds, p.tieOdds, p.outcome,
-               g.teamA as home, g.teamB as away, p.validators_sent_to, p.validators_confirmed
+        SELECT p.prediction_id, p.game_id, p.miner_uid, p.prediction_date, p.predicted_outcome,p.predicted_odds,
+               p.team_a, p.team_b, p.wager, p.team_a_odds, p.team_b_odds, p.tie_odds, p.outcome,
+               g.team_a as home, g.team_b as away, p.validators_sent_to, p.validators_confirmed
         FROM predictions p
-        JOIN games g ON p.teamGameID = g.externalID
-        WHERE p.minerID = %s 
-        ORDER BY p.predictionDate DESC 
+        JOIN games g ON p.game_id = g.external_id
+        WHERE p.miner_uid = %s 
+        ORDER BY p.prediction_date DESC 
         LIMIT 100
         """
         try:
             results = self.db_manager.execute_query(query, (miner_uid,))
             predictions = {}
             for row in results:
-                if row["predictiondate"] is not None:
-                    row["predictiondate"] = (
-                        row["predictiondate"].isoformat()
-                        if isinstance(row["predictiondate"], datetime)
-                        else row["predictiondate"]
+                if row["prediction_date"] is not None:
+                    row["prediction_date"] = (
+                        row["prediction_date"].isoformat()
+                        if isinstance(row["prediction_date"], datetime)
+                        else row["prediction_date"]
                     )
-                predictions[row["predictionid"]] = TeamGamePrediction(**row)
+                predictions[row["prediction_id"]] = TeamGamePrediction(**row)
             return predictions
         except Exception as e:
             bt.logging.error(f"Error getting predictions: {str(e)}")
@@ -227,7 +227,7 @@ class PredictionsHandler:
                 model_name = "NFL Model" if sport == "nfl" else "Soccer Model"
                 pred_dict = {
                     "prediction_id": str(uuid.uuid4()),
-                    "game_id": game_data["game_id"],
+                    "game_id": game_data["external_id"],
                     "miner_uid": self.miner_uid,
                     "prediction_date": datetime.now(timezone.utc).isoformat(),
                     "predicted_outcome": game.team_a if prediction["PredictedOutcome"] == "Home Win" else game.team_b if prediction["PredictedOutcome"] == "Away Win" else "Tie",
@@ -262,28 +262,28 @@ class PredictionsHandler:
         for game_id, game in game_results.items():
             # bt.logging.debug(f"Processing prediction for game {game_id}")
             query = """
-            SELECT predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-                   teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
+            SELECT prediction_id, game_id, miner_id, prediction_date, predicted_outcome,
+                   team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, outcome
             FROM predictions
-            WHERE teamGameID = %s AND outcome = 'Unfinished'
+            WHERE game_id = %s AND outcome = 'Unfinished'
             """
             results = self.db_manager.execute_query(query, (game_id,))
             for row in results:
                 try:
                     prediction_data = {
-                        "predictionID": row["predictionid"],
-                        "teamGameID": row["teamgameid"],
-                        "minerID": row["minerid"],
-                        "predictionDate": row["predictiondate"].isoformat()
-                        if isinstance(row["predictiondate"], datetime)
-                        else row["predictiondate"],
-                        "predictedOutcome": row["predictedoutcome"],
-                        "teamA": row["teama"],
+                        "prediction_id": row["prediction_id"],
+                        "game_id": row["game_id"],
+                        "miner_id": row["miner_id"],
+                        "prediction_date": row["prediction_date"].isoformat()
+                        if isinstance(row["prediction_date"], datetime)
+                        else row["prediction_date"],
+                        "predicted_outcome": row["predicted_outcome"],
+                        "team_a": row["team_a"],
                         "teamB": row["teamb"],
                         "wager": float(row["wager"]),
-                        "teamAodds": float(row["teamaodds"]),
-                        "teamBodds": float(row["teambodds"]),
-                        "tieOdds": float(row["tieodds"])
+                        "team_a_odds": float(row["team_a_odds"]),
+                        "team_b_odds": float(row["team_b_odds"]),
+                        "tie_odds": float(row["tie_odds"])
                         if row["tieodds"] is not None
                         else None,
                         "outcome": row["outcome"],
