@@ -190,7 +190,7 @@ class ModelParamsTUI:
 
     def toggle_edit_mode(self):
         key = list(self.params.keys())[self.cursor_position + 1]
-        if key == "model_on":
+        if key in ["model_on", "nfl_model_on"]:
             self.params[key] = not self.params[key]
             self.save_params()
             self.update_view()
@@ -251,7 +251,7 @@ class ModelParamsTUI:
                 )
                 if self.edit_mode and i - 1 == self.cursor_position:
                     value = f"{self.edit_value}▋"
-                elif key == "model_on":
+                elif key in ["model_on", "nfl_model_on"]:
                     value = "On" if value else "Off"
                 table.add_row(key.replace("_", " ").title(), str(value), style=style)
 
