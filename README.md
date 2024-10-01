@@ -87,7 +87,6 @@ btcli subnet register --netuid 181 --wallet.name <YOUR_COLDKEY> --wallet.hotkey 
 
 For detailed instructions on setting up and running a Bettensor validator, please refer to our [Validator Guide](docs/validating.md). This document covers:
 
-- Obtaining necessary API keys
 - Setting up the environment
 - Running the validator
 - Recommended logging settings
@@ -114,24 +113,14 @@ Whether you're new to Bettensor or an experienced miner, the Miner Guide provide
 
 
 ## Incentive Mechanism and Scoring
-- Miners get a simulated daily balance of $1000 which is reset daily at 00:00 UTC. 
-- Miners can select games to predict on by placing a **simulated** moneyline wager. 
-- Odds for the wager are updated frequently from sportsbook APIs, and recorded by the validator upon submission of a prediction.
-- When a game concludes, the outcome of the simulated wager is calculated with the Odds that were recorded on submission. The miner, if they won, then recieves an "earnings balance" equal to the simulated wager amount multiplied by the Odds of their prediction at time of submission.
-- Losses don't count against the earnings balance. Only wins affect it.
-- Validators score miners on their earnings history. There is an exponential decay algorithm used to incentivize new predictions; old predictions decrease in value over time. The top 50% of miners receive 90% of emissions. In the future, a few hundred predictions will be required to give a sufficient sample size, but that is not yet implemented.
-
-This design incentivizes the best miners to provide their greatest alpha and be rewarded accordingly.
+The incentive mechanism is intricate and rewards the best miners disproportionately. Details around the mechanism can be found [here](https://nickel5.substack.com/p/sports-prediction-and-betting-models).
 
 
-## Details for Current Release Version (v1.0.0, Beta)
+## Details for Current Release Version (v2.0.0, Beta)
 
->[!CAUTION]
->This is a Beta release of BetTensor. We expect instability and frequent updates. Please contact us on discord if you have any issues or suggestions.
-
-- Currently Supported Sports: Baseball, Football (Soccer)
-- Currently available base models: (Football (Soccer): UEFA Teams)
-- Requires Bittensor==v6.9.3. Support for Bittensor v7.x is coming soon.
+- Currently Supported Sports: Baseball, Football (Soccer), American Football
+- Currently available base models: (Football (Soccer): UEFA Teams, NFL)
+- Requires Bittensor==v6.9.4. Support for Bittensor v7.x is coming soon.
 
 
 
