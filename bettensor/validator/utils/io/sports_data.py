@@ -1,6 +1,7 @@
 import os
 import json
 import time
+from typing import List
 import uuid
 import sqlite3
 import requests
@@ -64,18 +65,10 @@ class SportsData:
                 if outcome is None:
                     outcome = "Unfinished"
 
-                if self.is_bettensor_api():
-                    team_a_odds = game["teamAOdds"]
-                    team_b_odds = game["teamBOdds"]
-                    tie_odds = game.get("tieOdds", 0.0)
-                else:
-                    team_a_odds = game["odds"]["average_home_odds"]
-                    team_b_odds = game["odds"]["average_away_odds"]
-                    tie_odds = (
-                        0.0
-                        if sport.lower() == "football"
-                        else game["odds"].get("average_tie_odds", 0)
-                    )
+                team_a_odds = game["teamAOdds"]
+                team_b_odds = game["teamBOdds"]
+                tie_odds = game.get("tieOdds", 0.0)
+
                 can_tie = sport.lower() == "soccer"
 
                 # Convert outcomes to numeric
@@ -252,3 +245,9 @@ class SportsData:
             self.db_manager.rollback_transaction()
             bt.logging.error(f"Error in update_predictions_with_payouts: {e}")
             raise
+
+    
+
+
+
+

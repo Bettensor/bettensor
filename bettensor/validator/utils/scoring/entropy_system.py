@@ -52,24 +52,17 @@ class EntropySystem:
             return
 
         self.game_pools[game_id] = {}
-        for i in range(num_outcomes + 1):
-            if i < len(
-                odds
-            ):  # Ensure we don't access an index that doesn't exist in odds
+        for i in range(num_outcomes):
+            if i < len(odds):
                 self.game_pools[game_id][i] = {
                     "predictions": [],
                     "entropy_score": self.calculate_initial_entropy(odds[i]),
                 }
             else:
                 bt.logging.warning(
-                    f"Odds not provided for outcome {i} in game {game_id}. Using default."
+                    f"Odds not provided for outcome {i} in game {game_id}. Outcome pool not initialized."
                 )
-                self.game_pools[game_id][i] = {
-                    "predictions": [],
-                    "entropy_score": self.calculate_initial_entropy(
-                        2.0
-                    ),  # Default odds
-                }
+                # Outcome pool is not initialized
 
         bt.logging.debug(
             f"Added new game {game_id} with {num_outcomes} outcomes. Odds: {odds}"

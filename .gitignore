@@ -190,3 +190,6 @@ superprompt.md
 
 test_database.db
 scoring_system_state.json
+child_certificate.pem
+private_key.pem
+test_database.*

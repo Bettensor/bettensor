@@ -12,7 +12,7 @@ def initialize_database():
         CREATE TABLE IF NOT EXISTS miner_stats (
             miner_hotkey TEXT PRIMARY KEY,
             miner_coldkey TEXT,
-            miner_uid TEXT,
+            miner_uid INTEGER,
             miner_rank INTEGER,
             miner_status TEXT,
             miner_cash REAL,
@@ -28,7 +28,7 @@ def initialize_database():
             miner_last_prediction_date TEXT,
             miner_lifetime_earnings REAL,
             miner_lifetime_wager_amount REAL,
-            miner_lifetime_profit REAL,
+            miner_lifetime_roi REAL,
             miner_lifetime_predictions INTEGER,
             miner_lifetime_wins INTEGER,
             miner_lifetime_losses INTEGER,
@@ -88,6 +88,32 @@ def initialize_database():
             correct_predictions INT,
             total_wager REAL,
             total_earnings REAL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scores (
+            miner_uid INTEGER,
+            day_id INTEGER,
+            score_type TEXT,
+            tier_id INTEGER,
+            clv_score REAL,
+            roi_score REAL,
+            sortino_score REAL,
+            entropy_score REAL,
+            composite_score REAL,
+            PRIMARY KEY (miner_uid, day_id, tier_id),
+            FOREIGN KEY (miner_uid) REFERENCES miner_stats(miner_uid)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS score_state (
+            state_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            current_day INTEGER,
+            current_date TEXT,
+            reference_date TEXT,
+            invalid_uids TEXT, -- Serialized list or JSON string
+            valid_uids TEXT,   -- Serialized list or JSON string
+            last_update_date TEXT
         )
         """,
     ]

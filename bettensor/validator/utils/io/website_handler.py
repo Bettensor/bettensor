@@ -1,170 +1,102 @@
-import sqlite3
 import requests
 import json
 from datetime import datetime
 import bittensor as bt
 from bettensor.validator.bettensor_validator import BettensorValidator
 from argparse import ArgumentParser
+from bettensor.validator.utils.database.database_manager import DatabaseManager
 
 # Initialize the parser and validator
 parser = ArgumentParser()
 validator = BettensorValidator(parser=parser)
 
+# Initialize the DatabaseManager
+db_manager = DatabaseManager('./data/validator.db')
 
-def create_keys_table(db_path: str):
+def create_keys_table():
     """
     Creates keys table in db
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS keys (
-            hotkey TEXT PRIMARY KEY,
-            coldkey TEXT
-        )
-    """
+    query = """
+    CREATE TABLE IF NOT EXISTS keys (
+        hotkey TEXT PRIMARY KEY,
+        coldkey TEXT
     )
-    conn.commit()
-    conn.close()
+    """
+    db_manager.execute_query(query)
 
-
-def get_or_update_coldkey(db_path: str, hotkey: str) -> str:
+def get_or_update_coldkey(hotkey: str) -> str:
     """
     Retrieves coldkey from metagraph if it doesn't exist in keys table
     """
     validator.initialize_connection()  # Ensure subtensor is initialized
 
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Check if the hotkey exists in the keys table
-    cursor.execute("SELECT coldkey FROM keys WHERE hotkey = ?", (hotkey,))
-    result = cursor.fetchone()
+    query = "SELECT coldkey FROM keys WHERE hotkey = ?"
+    result = db_manager.fetch_one(query, (hotkey,))
 
     if result:
-        conn.close()
-        return result[0]
+        return result['coldkey']
     else:
         # If not found, fetch from Metagraph and insert into the database
         validator.sync_metagraph()
         for neuron in validator.metagraph.neurons:
             if neuron.hotkey == hotkey:
                 coldkey = neuron.coldkey
-                cursor.execute(
-                    "INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)",
-                    (hotkey, coldkey),
-                )
-                conn.commit()
-                conn.close()
+                insert_query = "INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)"
+                db_manager.execute_query(insert_query, (hotkey, coldkey))
                 return coldkey
 
         # If coldkey is not found, insert "dummy_coldkey"
-        cursor.execute(
-            "INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)",
-            (hotkey, "dummy_coldkey"),
-        )
-        conn.commit()
-        conn.close()
+        insert_query = "INSERT INTO keys (hotkey, coldkey) VALUES (?, ?)"
+        db_manager.execute_query(insert_query, (hotkey, "dummy_coldkey"))
         return "dummy_coldkey"
 
-
-def fetch_predictions_from_db(db_path):
+def fetch_predictions_from_db():
     """
     Fetch predictions from the SQLite3 database.
 
-    :param db_path: Path to the SQLite3 database file
     :return: List of dictionaries containing prediction data
     """
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row  # This allows accessing columns by name
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    tables = cursor.fetchall()
-
-    cursor.execute("PRAGMA table_info(predictions)")
-    columns = cursor.fetchall()
-
-    # Construct the query based on the actual columns in the table
-    available_columns = [col[1] for col in columns]
-    query_columns = [
-        col
-        for col in [
-            "prediction_id",
-            "game_id",
-            "miner_id",
-            "prediction_date",
-            "predicted_outcome",
-            "predicted_odds",
-            "team_a",
-            "team_b",
-            "wager",
-            "team_a_odds",
-            "team_b_odds",
-            "tie_odds",
-            "is_model_prediction",
-            "outcome",
-            "payout",
-            "sent_to_site",
-        ]
-        if col in available_columns
-    ]
-
-    query = f"SELECT {', '.join(query_columns)} FROM predictions WHERE sent_to_site = 0"
-
+    query = """
+    SELECT prediction_id, game_id, miner_id, prediction_date, predicted_outcome,
+           predicted_odds, team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds,
+           is_model_prediction, outcome, payout, sent_to_site
+    FROM predictions
+    WHERE sent_to_site = 0
+    """
+    
     try:
-        cursor.execute(query)
-        rows = cursor.fetchall()
-
-        predictions = [dict(row) for row in rows]
+        predictions = db_manager.fetch_all(query)
         return predictions
-    except sqlite3.OperationalError as e:
-        bt.logging.trace(e)
+    except Exception as e:
+        bt.logging.error(f"Error fetching predictions: {e}")
         return []
-    finally:
-        conn.close()
 
-
-def update_sent_status(db_path, prediction_ids):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
+def update_sent_status(prediction_ids):
+    query = "UPDATE predictions SET sent_to_site = 1 WHERE predictionID = ?"
     try:
-        cursor.executemany(
-            "UPDATE predictions SET sent_to_site = 1 WHERE predictionID = ?",
-            [(pid,) for pid in prediction_ids],
-        )
-        conn.commit()
-        print(f"Updated sent_to_site status for {len(prediction_ids)} predictions")
-    except sqlite3.Error as e:
-        print(f"Error updating sent_to_site status: {e}")
-    finally:
-        conn.close()
+        db_manager.executemany(query, [(pid,) for pid in prediction_ids])
+        bt.logging.info(f"Updated sent_to_site status for {len(prediction_ids)} predictions")
+    except Exception as e:
+        bt.logging.error(f"Error updating sent_to_site status: {e}")
 
-
-def send_predictions(predictions, db_path):
+def send_predictions(predictions):
     """
     Send predictions to the Bettensor API.
 
     :param predictions: List of dictionaries containing prediction data
-    :param db_path: Path to the SQLite3 database file
-    :return: Tuple of (status_code, API response content)
+    :return: API response status code
     """
     url = "https://www.bettensor.com/API/Predictions/"
 
     transformed_data = []
 
     for prediction in predictions:
-        hotkey = prediction["minerId"]
-        # try:
-        # coldkey = get_or_update_coldkey(db_path, hotkey)
-        # except ValueError as e:
-        # bt.logging.error(e)
-        coldkey = "dummy_coldkey"
-        # Newer Schema will be sent as metadata for now
+        hotkey = prediction["miner_id"]
+        coldkey = get_or_update_coldkey(hotkey)
+
         metadata = {
-            "miner_uid": prediction["miner_uid"],
+            "miner_uid": prediction.get("miner_uid"),
             "miner_hotkey": hotkey,
             "miner_coldkey": coldkey,
             "prediction_date": prediction["prediction_date"],
@@ -180,7 +112,7 @@ def send_predictions(predictions, db_path):
         }
 
         transformed_prediction = {
-            "externalGameId": prediction["game_id"],  # external id
+            "externalGameId": prediction["game_id"],
             "minerHotkey": hotkey,
             "minerColdkey": coldkey,
             "predictionDate": prediction["prediction_date"],
@@ -192,9 +124,7 @@ def send_predictions(predictions, db_path):
 
         try:
             date = datetime.strptime(prediction["prediction_date"], "%Y-%m-%d %H:%M:%S")
-            transformed_prediction["prediction_date"] = date.strftime(
-                "%Y-%m-%dT%H:%M:%S.%fZ"
-            )
+            transformed_prediction["prediction_date"] = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         except ValueError:
             pass
 
@@ -203,37 +133,31 @@ def send_predictions(predictions, db_path):
     headers = {"Content-Type": "application/json"}
 
     bt.logging.info(f"Sending {len(transformed_data)} predictions to API")
-    bt.logging.debug(
-        f"First prediction (for debugging): {json.dumps(transformed_data[0], indent=2)}"
-    )
-    print(transformed_data)
+    bt.logging.debug(f"First prediction (for debugging): {json.dumps(transformed_data[0], indent=2)}")
+
     try:
-        response = requests.post(
-            url, data=json.dumps(transformed_data), headers=headers
-        )
-        if response.status_code == 200 or response.status_code == 201:
-            update_sent_status(db_path, [p["prediction_id"] for p in predictions])
+        response = requests.post(url, data=json.dumps(transformed_data), headers=headers)
+        if response.status_code in [200, 201]:
+            update_sent_status([p["prediction_id"] for p in predictions])
         bt.logging.info(f"Response status code: {response.status_code}")
         bt.logging.debug(f"Response content: {response.text}")
         return response.status_code
 
     except requests.exceptions.RequestException as e:
         bt.logging.error(f"Error sending predictions: {e}")
-        return None, str(e)
+        return None
 
-
-def fetch_and_send_predictions(db_path):
+def fetch_and_send_predictions():
     """
     Fetch predictions from the database and send them to the API.
 
-    :param db_path: Path to the SQLite3 database file
-    :return: API response
+    :return: API response status code
     """
-    create_keys_table(db_path)  # Ensure the keys table exists
-    predictions = fetch_predictions_from_db(db_path)
+    create_keys_table()  # Ensure the keys table exists
+    predictions = fetch_predictions_from_db()
     if predictions:
         bt.logging.debug("Sending predictions to the Bettensor website.")
-        return send_predictions(predictions, db_path)
+        return send_predictions(predictions)
     else:
-        print("No new predictions found in the database.")
+        bt.logging.info("No new predictions found in the database.")
         return None

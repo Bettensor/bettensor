@@ -10,6 +10,7 @@ class ScoringData:
     def __init__(self, db_manager, num_miners):
         self.db_manager = db_manager
         self.num_miners = num_miners
+        self.init_miner_stats()
 
     def preprocess_for_scoring(self, date_str):
         bt.logging.debug(f"Preprocessing for scoring on date: {date_str}")
@@ -88,7 +89,7 @@ class ScoringData:
                 outcome,
                 active
             FROM game_data
-            WHERE DATE(event_start_date) = DATE(?) AND active = 0
+            WHERE DATE(event_start_date) = DATE(?) AND outcome != 3
         """
         return self.db_manager.fetch_all(query, (date_str,))
 
@@ -147,3 +148,123 @@ class ScoringData:
             )
         else:
             bt.logging.debug("All predictions reference valid closed games.")
+
+    def init_miner_stats(self, num_miners: int = 256):
+            """
+            Populate miner_stats table with initial zero values for all miners if the table is empty.
+
+            Args:
+                db_manager: The database manager object.
+                num_miners (int): The number of miners to initialize. Defaults to 256.
+            """
+            bt.logging.trace("Initializing Miner Stats")
+            try:
+                # Check if the miner_stats table is empty
+                count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")
+                
+                if count == 0:
+                    bt.logging.info("Initializing miner_stats table with zero values.")
+                    
+                    # Prepare the insert query
+                    insert_query = """
+                    INSERT INTO miner_stats (
+                        miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_status,
+                        miner_cash, miner_current_incentive, miner_current_tier,
+                        miner_current_scoring_window, miner_current_composite_score,
+                        miner_current_sharpe_ratio, miner_current_sortino_ratio,
+                        miner_current_roi, miner_current_clv_avg, miner_last_prediction_date,
+                        miner_lifetime_earnings, miner_lifetime_wager_amount,
+                        miner_lifetime_profit, miner_lifetime_predictions,
+                        miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                    
+                    # Prepare batch of initial values for all miners
+                    initial_values: List[tuple] = [
+                        (f"hotkey_{i}", f"coldkey_{i}", i, 0, "active",
+                        0.0, 0.0, 0, 0, 0.0,
+                        0.0, 0.0, 0.0, 0.0, None,
+                        0.0, 0.0, 0.0, 0, 0, 0, 0.0)
+                        for i in range(num_miners)
+                    ]
+                    
+                    # Execute batch insert
+                    count = self.db_manager.executemany(insert_query, initial_values)
+
+                    
+                    bt.logging.info(f"Successfully initialized {count} miners in miner_stats table.")
+                else:
+                    bt.logging.info("miner_stats table is not empty. Skipping initialization.")
+            
+            except Exception as e:
+                bt.logging.error(f"Error initializing miner_stats: {str(e)}")
+                raise
+
+    def update_miner_stats(self, current_day):
+        """
+        Queries relevant tables to keep the miner stats rows up to date.
+        This method updates both lifetime and current statistics for each miner.
+        """
+        try:
+            bt.logging.info("Updating miner stats...")
+
+            # Update lifetime statistics (unchanged)
+            # ...
+
+            # Update derived lifetime statistics (unchanged)
+            # ...
+
+            # Combined query for updating current statistics
+            update_current_query = """
+            UPDATE miner_stats
+            SET
+                miner_current_composite_score = (
+                    SELECT composite_score
+                    FROM scores
+                    WHERE scores.miner_uid = miner_stats.miner_uid
+                    AND scores.day_id = ?
+                    AND scores.score_type = 'daily'
+                ),
+                miner_current_tier = (
+                    SELECT tier_id
+                    FROM scores
+                    WHERE scores.miner_uid = miner_stats.miner_uid
+                    AND scores.day_id = ?
+                    AND scores.score_type = 'daily'
+                ),
+                miner_current_clv_avg = (
+                    SELECT clv_score
+                    FROM scores
+                    WHERE scores.miner_uid = miner_stats.miner_uid
+                    AND scores.day_id = ?
+                    AND scores.score_type = 'daily'
+                ),
+                miner_current_roi = (
+                    SELECT roi_score
+                    FROM scores
+                    WHERE scores.miner_uid = miner_stats.miner_uid
+                    AND scores.day_id = ?
+                    AND scores.score_type = 'daily'
+                ),
+                miner_current_sortino_ratio = (
+                    SELECT sortino_score
+                    FROM scores
+                    WHERE scores.miner_uid = miner_stats.miner_uid
+                    AND scores.day_id = ?
+                    AND scores.score_type = 'daily'
+                ),
+                miner_current_entropy_score = (
+                    SELECT entropy_score
+                    FROM scores
+                    WHERE scores.miner_uid = miner_stats.miner_uid
+                    AND scores.day_id = ?
+                    AND scores.score_type = 'daily'
+                )
+            """
+            self.db_manager.execute_query(update_current_query, (current_day,) * 6)
+
+            bt.logging.info("Miner stats updated successfully.")
+
+        except Exception as e:
+            bt.logging.error(f"Error updating miner stats: {str(e)}")
+            raise

@@ -285,7 +285,7 @@ class MinerDataMixin:
         ).isoformat()
 
         query = """
-            SELECT game_id, team_a, team_b, sport, league, external_id, create_date, last_update_date, event_start_date, active, outcome, team_a_odds, team_b_odds, tie_odds, can_tie
+            SELECT external_id, team_a, team_b, sport, league, create_date, last_update_date, event_start_date, active, outcome, team_a_odds, team_b_odds, tie_odds, can_tie
             FROM game_data
             WHERE event_start_date > ? OR (event_start_date BETWEEN ? AND ?)
         """
@@ -297,21 +297,21 @@ class MinerDataMixin:
         gamedata_dict = {}
         for row in rows:
             team_game = TeamGame(
-                game_id=row[0],  # External ID from API
-                team_a=row[1],
-                team_b=row[2],
-                sport=row[3],
-                league=row[4],
-                create_date=row[6],
-                last_update_date=row[7],
-                event_start_date=row[8],
-                active=bool(row[9]),
-                outcome=row[10],
-                team_a_odds=row[11],
-                team_b_odds=row[12],
-                tie_odds=row[13],
-                can_tie=bool(row[14]),
+                game_id=row["external_id"],  # External ID from API
+                team_a=row["team_a"],
+                team_b=row["team_b"],
+                sport=row["sport"],
+                league=row["league"],
+                create_date=row["create_date"],
+                last_update_date=row["last_update_date"],
+                event_start_date=row["event_start_date"],
+                active=bool(row["active"]),
+                outcome=row["outcome"],
+                team_a_odds=row["team_a_odds"],
+                team_b_odds=row["team_b_odds"],
+                tie_odds=row["tie_odds"],
+                can_tie=bool(row["can_tie"]),
             )
-            gamedata_dict[row[0]] = team_game
+            gamedata_dict[row["external_id"]] = team_game
 
         return gamedata_dict

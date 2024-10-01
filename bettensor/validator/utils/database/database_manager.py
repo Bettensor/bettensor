@@ -42,16 +42,31 @@ class DatabaseManager:
             raise
 
     def begin_transaction(self):
-        self.transaction_active = True
-        self.conn.execute("BEGIN")
+        with self.lock:
+            if not self.transaction_active:
+                self.conn.execute("BEGIN")
+                self.transaction_active = True
+                self.logger.debug("Transaction started.")
+            else:
+                self.logger.warning("Transaction already active.")
 
     def commit_transaction(self):
-        self.conn.commit()
-        self.transaction_active = False
+        with self.lock:
+            if self.transaction_active:
+                self.conn.commit()
+                self.transaction_active = False
+                self.logger.debug("Transaction committed.")
+            else:
+                self.logger.warning("No active transaction to commit.")
 
     def rollback_transaction(self):
-        self.conn.rollback()
-        self.transaction_active = False
+        with self.lock:
+            if self.transaction_active:
+                self.conn.rollback()
+                self.transaction_active = False
+                self.logger.debug("Transaction rolled back.")
+            else:
+                self.logger.warning("No active transaction to rollback.")
 
     def _start_worker(self):
         threading.Thread(target=self._worker, daemon=True).start()
@@ -61,22 +76,17 @@ class DatabaseManager:
             try:
                 func, args, kwargs, result_queue = self.queue.get(timeout=1)
                 with self.lock:
-                    conn = sqlite3.connect(self.db_path)
-                    cursor = conn.cursor()
                     try:
                         if callable(func):
-                            result = func(cursor)
+                            result = func(*args, **kwargs)
                         else:
                             raise TypeError("The 'func' argument must be callable")
-                        conn.commit()
                         if result_queue is not None:
                             result_queue.put(result)
                     except Exception as e:
                         if result_queue is not None:
                             result_queue.put(e)
                         bt.logging.error(f"Error in database operation: {str(e)}")
-                    finally:
-                        conn.close()
             except Empty:
                 continue
 
@@ -94,13 +104,14 @@ class DatabaseManager:
 
         result_queue = Queue()
 
-        def _execute(cursor):
+        def _execute():
             if params:
-                cursor.execute(query, params)
+                self.cursor.execute(query, params)
             else:
-                cursor.execute(query)
+                self.cursor.execute(query)
 
         self.queue.put((_execute, (), {}, result_queue))
+        return result_queue
 
     def execute_query(self, query, params=None):
         with self.lock:
@@ -129,20 +140,26 @@ class DatabaseManager:
                 self.conn.rollback()
                 raise
 
-    def fetch_one(self, query, params):
+    def fetch_one(self, query, params=None):
         with self.lock:
             try:
-                self.cursor.execute(query, params)
+                if params:
+                    self.cursor.execute(query, params)
+                else:
+                    self.cursor.execute(query)
                 result = self.cursor.fetchone()
                 return dict(result) if result else None
             except sqlite3.Error as e:
                 self.logger.error(f"Database error in fetch_one: {e}")
                 raise
 
-    def fetch_all(self, query, params):
+    def fetch_all(self, query, params=None):
         with self.lock:
             try:
-                self.cursor.execute(query, params)
+                if params:
+                    self.cursor.execute(query, params)
+                else:
+                    self.cursor.execute(query)
                 results = self.cursor.fetchall()
                 return [dict(row) for row in results]
             except sqlite3.Error as e:
@@ -162,4 +179,4 @@ class DatabaseManager:
             self.conn.close()
 
     def is_transaction_active(self):
-        return self._transaction_active
+        return self.transaction_active

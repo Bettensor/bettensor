@@ -22,9 +22,10 @@ from bettensor.miner.interfaces.redis_interface import RedisInterface
 from bettensor.miner.models.model_utils import SoccerPredictor, MinerConfig
 import uuid
 from datetime import datetime, timezone
+from bittensor import Synapse
 from bettensor.miner.utils.health_check import run_health_check
 import asyncio
-from bettensor.protocol import GameData, ConfirmationSynapse
+from bettensor.protocol import GameData, Confirmation
 
 
 class BettensorMiner(BaseNeuron):
@@ -190,10 +191,10 @@ class BettensorMiner(BaseNeuron):
         # Initialize MinerConfig
         self.miner_config = MinerConfig()
 
-    def forward(self, synapse: bt.Synapse) -> bt.Synapse:
+    def forward(self, synapse: GameData) -> Synapse:
         if isinstance(synapse, GameData):
             return self._handle_game_data(synapse)
-        elif isinstance(synapse, ConfirmationSynapse):
+        elif isinstance(synapse, Confirmation):
             return self._handle_confirmation(synapse)
         else:
             raise ValueError(f"Unsupported synapse type: {type(synapse)}")

@@ -103,16 +103,17 @@ class TestScoringSystem(unittest.TestCase):
             for game_num in range(num_games):
                 external_id = day * 1000 + game_num
                 cls.daily_external_ids[day].append(external_id)
-                can_tie = np.random.choice([True, False])
+                can_tie = bool(np.random.choice([True, False]))
                 tie_odds = round(np.random.uniform(2.0, 5.5), 2) if can_tie else None
+                num_outcomes = 3 if can_tie else 2
                 outcome = (
-                    np.random.randint(0, 3) if can_tie else np.random.randint(0, 2)
+                    np.random.randint(0, num_outcomes)
                 )
                 team_a_odds = round(np.random.uniform(1.5, 4.5), 2)
                 team_b_odds = round(np.random.uniform(1.5, 4.5), 2)
 
                 # Correctly initialize the game with the appropriate number of outcomes
-                num_outcomes = 3 if can_tie else 2
+                
                 odds = (
                     [team_a_odds, team_b_odds, tie_odds]
                     if can_tie
@@ -183,15 +184,13 @@ class TestScoringSystem(unittest.TestCase):
                     wager = min(wager, 1000 - total_wager)
                     total_wager += wager
                     external_id = int(np.random.choice(daily_ids))
-
+                    bt.logging.debug(f"Selected game {external_id} for prediction")
                     # Retrieve can_tie for the selected game
-                    result = cls.db_manager.fetch_one(
-                        "SELECT can_tie FROM game_data WHERE external_id = ?",
-                        (external_id,),
-                    )
-                    can_tie_game = result["can_tie"] if result else False
-
-                    # Determine possible outcomes based on can_tie
+                    can_tie_game = cls.verify_game_config(external_id)
+                    if can_tie_game is None:
+                        bt.logging.error(f"Unable to verify configuration for game {external_id}")
+                        continue  # Skip this prediction
+                    
                     if can_tie_game:
                         predicted_outcome = np.random.randint(0, 3)  # 0, 1, or 2 (tie)
                     else:
@@ -331,6 +330,21 @@ class TestScoringSystem(unittest.TestCase):
             bt.logging.debug(
                 f"Top 5 miners for day {day + 1}: {top_miners} with weights {weights[top_miners]}"
             )
+    @classmethod
+    def verify_game_config(cls, external_id):
+        db_result = cls.db_manager.fetch_one(
+            "SELECT can_tie FROM game_data WHERE external_id = ?",
+            (external_id,)
+        )
+        db_can_tie = db_result["can_tie"] if db_result else None
+        
+        entropy_game = cls.scoring_system.entropy_system.game_pools.get(external_id)
+        entropy_can_tie = len(entropy_game) == 3 if entropy_game else None
+        
+        if db_can_tie != entropy_can_tie:
+            bt.logging.error(f"Inconsistency for game {external_id}: DB can_tie={db_can_tie}, Entropy can_tie={entropy_can_tie}")
+            return False
+        return db_can_tie
 
 
 if __name__ == "__main__":

@@ -51,9 +51,8 @@ class ScoringSystem:
 
         self.reference_date = reference_date
         self.invalid_uids = []
-        self.base_path = "./bettensor/validator/state/"
         self.epsilon = 1e-8  # Small constant to prevent division by zero
-
+        self.db_manager = db_manager
         # Initialize tier configurations
         self.tier_configs = [
             {
@@ -103,6 +102,7 @@ class ScoringSystem:
         # Initialize score arrays
         self.clv_scores = np.zeros((num_miners, max_days))
         self.roi_scores = np.zeros((num_miners, max_days))
+        self.sortino_scores = np.zeros((num_miners, max_days))
         self.amount_wagered = np.zeros((num_miners, max_days))
         self.entropy_scores = np.zeros((num_miners, max_days))
         self.tiers = np.ones((num_miners, max_days), dtype=int)
@@ -115,7 +115,7 @@ class ScoringSystem:
         # Scoring weights
         self.clv_weight = 0.30
         self.roi_weight = 0.30
-        self.ssi_weight = 0.30
+        self.sortino_weight = 0.30
         self.entropy_weight = 0.10
         self.entropy_window = self.max_days
 
@@ -126,12 +126,20 @@ class ScoringSystem:
         self.current_date = datetime.now(timezone.utc)  # Initialize current_date
         self.last_update_date = None
 
-        # Try to load state from file
-        state_file_path = self.base_path + "scoring_system_state.json"
-        self.load_state(state_file_path)
+        # Try to load state from database
+        self.init = self.load_state()
 
         # Handle potential downtime
         self.advance_day(self.current_date)
+
+        self.tier_mapping = {
+            0: "daily",  # Daily score
+            1: "tier_1",
+            2: "tier_2",
+            3: "tier_3",
+            4: "tier_4",
+            5: "tier_5"
+        }
 
     def advance_day(self, current_date):
         if self.last_update_date is None:
@@ -188,11 +196,8 @@ class ScoringSystem:
         bt.logging.info(f"Updating scores for day {self.current_day}")
         try:
             if predictions.size > 0 and closing_line_odds.size > 0 and results.size > 0:
-                # Extract game IDs from predictions
-
                 self._update_raw_scores(predictions, closing_line_odds, results)
                 self._update_composite_scores()
-
                 self.log_score_summary()
             else:
                 bt.logging.warning("No data available for score update.")
@@ -201,9 +206,9 @@ class ScoringSystem:
             raise
 
     def _update_raw_scores(self, predictions, closing_line_odds, results):
-        bt.logging.debug(f"Predictions shape: {predictions.shape}")
-        bt.logging.debug(f"Closing line odds shape: {closing_line_odds.shape}")
-        bt.logging.debug(f"Results shape: {results.shape}")
+        bt.logging.trace(f"Predictions shape: {predictions.shape}")
+        bt.logging.trace(f"Closing line odds shape: {closing_line_odds.shape}")
+        bt.logging.trace(f"Results shape: {results.shape}")
 
         # Extract unique game IDs from predictions and convert to a list of integers
         game_ids = np.unique(predictions[:, 1]).astype(int).tolist()
@@ -217,11 +222,11 @@ class ScoringSystem:
         roi_scores = self._calculate_roi_scores(predictions, results)
         self.roi_scores[:, self.current_day] = roi_scores
 
-        # Corrected: Extract miner_id from index 0 and wager from index 5
+        # Extract miner_id from index 0 and wager from index 5
         for pred in predictions:
             try:
-                miner_id = int(pred[0])  # Corrected index for miner_uid
-                wager = float(pred[5])  # Corrected index for wager
+                miner_id = int(pred[0])  
+                wager = float(pred[5])  
             except (IndexError, ValueError) as e:
                 bt.logging.error(f"Error extracting miner_id or wager: {e}")
                 continue  # Skip this prediction if extraction fails
@@ -389,7 +394,7 @@ class ScoringSystem:
         Returns:
             np.ndarray: Array of Sortino ratios.
         """
-        risk_free_rate = 0.02  # Assuming a 2% risk-free rate, adjust as needed
+        risk_free_rate = 0.00  # Assuming a 2% risk-free rate, adjust as needed
         excess_returns = roi - risk_free_rate
 
         if excess_returns.ndim == 1:
@@ -435,7 +440,7 @@ class ScoringSystem:
         daily_composite_scores = (
             self.clv_weight * clv_normalized
             + self.roi_weight * roi_normalized
-            + self.ssi_weight * sortino_normalized
+            + self.sortino_weight * sortino_normalized
             + self.entropy_weight * entropy_normalized
         )
 
@@ -576,7 +581,7 @@ class ScoringSystem:
         """
         config = self.tier_configs[tier]
         cumulative_wager = self._get_cumulative_wager(miner, config["window"])
-        meets_requirement = cumulative_wager >= config["min_wager"]
+        meets_requirement = cumulative_wager >= config["min_wager"] 
 
         if meets_requirement:
             pass
@@ -587,7 +592,7 @@ class ScoringSystem:
 
         return meets_requirement
 
-    def manage_tiers(self):
+    def manage_tiers(self,invalid_uids,valid_uids):
         bt.logging.info("Managing tiers")
 
         try:
@@ -598,6 +603,8 @@ class ScoringSystem:
             bt.logging.info(
                 f"Current tiers before management: {np.bincount(current_tiers, minlength=self.num_tiers)}"
             )
+
+            bt.logging.info(f"Assigned {len(self.empty_uids)} empty slots")
 
             # Step 1: Check for and perform demotions
             for tier in range(
@@ -681,13 +688,17 @@ class ScoringSystem:
                                                Shape: [miners]
             tier_config (dict): Configuration for the tier.
         """
+        # Ignore tiers 0 and 1
+        if tier <= 1:
+            return
+
         required_slots = tier_config["capacity"]
         current_miners = np.where(current_tiers == tier)[0]
         open_slots = required_slots - len(current_miners)
 
         if open_slots > 0:
-            # Identify eligible miners from the lower tier (tier - 1)
-            lower_tier_miners = np.where(current_tiers == tier - 1)[0]
+            # Identify eligible miners from all lower valid tiers (2 to tier - 1)
+            lower_tier_miners = np.where((current_tiers >= 2) & (current_tiers < tier))[0]
             eligible_miners = [
                 miner
                 for miner in lower_tier_miners
@@ -704,7 +715,7 @@ class ScoringSystem:
             for miner in sorted_eligible[:open_slots]:
                 current_tiers[miner] = tier
                 bt.logging.info(
-                    f"Miner {miner} promoted to tier {tier -1} to fill empty slot"
+                    f"Miner {miner} promoted to tier {tier - 1} from tier {current_tiers[miner] - 1} to fill empty slot"
                 )
 
     def _get_cumulative_wager(self, miner, window):
@@ -896,9 +907,33 @@ class ScoringSystem:
     def scoring_run(self, date, invalid_uids, valid_uids):
         bt.logging.info(f"=== Starting scoring run for date: {date} ===")
 
-        # Update invalid and valid UIDs
+        # Update invalid, valid, and empty UIDs
         self.invalid_uids = set(invalid_uids)
         self.valid_uids = set(valid_uids)
+        self.empty_uids = set(range(self.num_miners)) - self.valid_uids - self.invalid_uids
+
+        # Create boolean masks for each category
+        empty_mask = np.zeros(self.num_miners, dtype=bool)
+        empty_mask[list(self.empty_uids)] = True
+
+        invalid_mask = np.zeros(self.num_miners, dtype=bool)
+        invalid_mask[list(self.invalid_uids)] = True
+
+        valid_mask = np.zeros(self.num_miners, dtype=bool)
+        valid_mask[list(self.valid_uids)] = True
+
+        # Set tiers using boolean masks
+        if self.init:
+            self.tiers[:, self.current_day] = 2  # Default to tier 2 for valid UIDs, only set if no previous state exists
+            self.init = False
+
+        self.tiers[empty_mask, self.current_day] = 0
+        self.tiers[invalid_mask, self.current_day] = 1
+
+        bt.logging.info(f"Assigned {len(self.empty_uids)} empty slots to tier 0.")
+        bt.logging.info(f"Assigned {len(self.invalid_uids)} invalid UIDs to tier 1.")
+        bt.logging.info(f"Assigned {len(self.valid_uids)} valid UIDs to tier 2.")
+
 
         current_date = self._ensure_datetime(date)
         self.advance_day(current_date)
@@ -944,7 +979,9 @@ class ScoringSystem:
                 f"No predictions for date {date_str}. Skipping score update."
             )
 
-        self.manage_tiers()
+        self.manage_tiers(self.invalid_uids,self.valid_uids)
+
+       
 
         # Calculate weights using the existing method
         weights = self.calculate_weights()
@@ -972,7 +1009,8 @@ class ScoringSystem:
         bt.logging.info(f"=== Completed scoring run for date: {date_str} ===")
 
         # Save state at the end of each run
-        self.save_state(self.base_path + "scoring_system_state.json")
+        self.save_state()
+        self.scoring_data.update_miner_stats()
 
         return weights
 
@@ -992,7 +1030,7 @@ class ScoringSystem:
         self.current_day = days_since_reference % self.max_days
 
         # Reset tiers to 1 for the current day, using modulo for wraparound
-        self.tiers[:, self.current_day] = 1
+        self.tiers[:, self._get_day_index(self.current_day)] = 1
 
     def reset_all_miners_to_tier_1(self):
         """
@@ -1044,95 +1082,150 @@ class ScoringSystem:
         else:
             array[:, self._get_day_index(day), tier] = value
 
-    def save_state(self, file_path):
+    def save_state(self):
         """
-        Save the current state of the ScoringSystem to a JSON file.
-
-        Args:
-            file_path (str): The path to save the JSON file.
-        """
-
-        def convert_numpy(obj):
-            if isinstance(obj, np.integer):
-                return int(obj)
-            elif isinstance(obj, np.floating):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, dict):
-                return {k: convert_numpy(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_numpy(elem) for elem in obj]
-            else:
-                return obj
-
-        # Save the current day, date, reference date, and scores
-        state = {
-            "current_day": self.current_day,
-            "current_date": self.current_date.isoformat()
-            if self.current_date
-            else None,
-            "reference_date": self.reference_date.isoformat(),
-            "clv_scores": self.clv_scores,
-            "roi_scores": self.roi_scores,
-            "amount_wagered": self.amount_wagered,
-            "entropy_scores": self.entropy_scores,
-            "tiers": self.tiers,
-            "composite_scores": self.composite_scores,
-            "invalid_uids": list(self.invalid_uids),
-            "valid_uids": list(self.valid_uids),
-        }
-
-        with open(file_path, "w") as f:
-            json.dump(convert_numpy(state), f)
-
-        bt.logging.info(f"ScoringSystem state saved to {file_path}")
-
-    def load_state(self, file_path):
-        """
-        Load the state of the ScoringSystem from a JSON file.
-
-        Args:
-            file_path (str): The path to load the JSON file from.
+        Save the current state of the ScoringSystem to the database.
         """
         try:
-            with open(file_path, "r") as f:
-                state = json.load(f)
+            self.db_manager.begin_transaction()
 
-            self.current_day = int(state["current_day"])
-            self.current_date = (
-                datetime.fromisoformat(state["current_date"])
-                if state["current_date"]
-                else None
-            )
-            self.reference_date = datetime.fromisoformat(state["reference_date"])
-            self.clv_scores = np.array(state["clv_scores"])
-            self.roi_scores = np.array(state["roi_scores"])
-            self.amount_wagered = np.array(state["amount_wagered"])
-            self.entropy_scores = np.array(state["entropy_scores"])
-            self.tiers = np.array(state["tiers"])
-            self.composite_scores = np.array(state["composite_scores"])
-            self.invalid_uids = set(state["invalid_uids"])
-            self.valid_uids = set(state["valid_uids"])
+            # Serialize invalid_uids and valid_uids
+            invalid_uids_json = json.dumps(list(int(uid) for uid in self.invalid_uids))
+            valid_uids_json = json.dumps(list(int(uid) for uid in self.valid_uids))
 
-            bt.logging.info(f"ScoringSystem state loaded from {file_path}")
+            # Insert or update the latest state in score_state table
+            insert_state_query = """
+                INSERT INTO score_state (current_day, current_date, reference_date, invalid_uids, valid_uids, last_update_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(state_id) DO UPDATE SET
+                    current_day=excluded.current_day,
+                    current_date=excluded.current_date,
+                    reference_date=excluded.reference_date,
+                    invalid_uids=excluded.invalid_uids,
+                    valid_uids=excluded.valid_uids,
+                    last_update_date=excluded.last_update_date
+            """
+            params = (
+                self.current_day,
+                self.current_date.isoformat() if self.current_date else None,
+                self.reference_date.isoformat(),
+                invalid_uids_json,
+                valid_uids_json,
+                self.last_update_date.isoformat() if self.last_update_date else None
+            )
 
-        except FileNotFoundError:
-            bt.logging.warning(
-                f"No state file found at {file_path}. Starting with fresh state."
-            )
-        except json.JSONDecodeError:
-            bt.logging.error(
-                f"Error decoding JSON from {file_path}. Starting with fresh state."
-            )
-        except KeyError as e:
-            bt.logging.error(
-                f"Missing key in state file: {e}. Starting with fresh state."
-            )
+            self.db_manager.execute_query(insert_state_query, params)
+
+            # Now save scores
+            self.save_scores()
+
+            self.db_manager.commit_transaction()
+            bt.logging.info("ScoringSystem state saved to database.")
+
         except Exception as e:
-            bt.logging.error(
-                f"Unexpected error loading state: {e}. Starting with fresh state."
-            )
+            self.db_manager.rollback_transaction()
+            bt.logging.error(f"Error saving state to database: {e}")
+            raise
+
+    def save_scores(self):
+        num_miners, num_days, num_scores = self.composite_scores.shape
+        bt.logging.info(f"Saving scores for {num_miners} miners, {num_days} days, {num_scores} scores (1 daily + 5 tiers)")
+        
+        score_records = []
+        for miner in range(num_miners):
+            for day in range(num_days):
+                clv = self.clv_scores[miner, day]
+                roi = self.roi_scores[miner, day]
+                entropy = self.entropy_scores[miner, day]
+                sortino = self.sortino_scores[miner, day]
+                for score_index in range(num_scores):
+                    score_type = self.tier_mapping[score_index]
+                    composite = self.composite_scores[miner, day, score_index]
+                    score_records.append((
+                        miner,
+                        day,
+                        score_type,
+                        clv,
+                        roi,
+                        entropy,
+                        composite,
+                        sortino
+                    ))
+        
+        # Batch insert using executemany
+        insert_score_query = """
+           INSERT OR REPLACE INTO scores 
+           (miner_uid, day_id, score_type, clv_score, roi_score, entropy_score, composite_score, sortino_score)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        self.db_manager.executemany(insert_score_query, score_records)
+        bt.logging.info(f"Saved {len(score_records)} score records")
+
+    def load_state(self):
+        """
+        Load the state of the ScoringSystem from the database.
+        """
+        try:
+            # Fetch the latest state from score_state table
+            fetch_state_query = """
+                SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, last_update_date
+                FROM score_state
+                ORDER BY state_id DESC
+                LIMIT 1
+            """
+            state = self.db_manager.fetch_one(fetch_state_query, None)
+            if state:
+                self.current_day = state["current_day"]
+                self.current_date = datetime.fromisoformat(state["current_date"]) if state["current_date"] else None
+                if self.current_date and self.current_date.tzinfo is None:
+                    self.current_date = self.current_date.replace(tzinfo=timezone.utc)
+                self.reference_date = datetime.fromisoformat(state["reference_date"])
+                if self.reference_date.tzinfo is None:
+                    self.reference_date = self.reference_date.replace(tzinfo=timezone.utc)
+                self.invalid_uids = set(json.loads(state["invalid_uids"]))
+                self.valid_uids = set(json.loads(state["valid_uids"]))
+                self.last_update_date = datetime.fromisoformat(state["last_update_date"]) if state["last_update_date"] else None
+                if self.last_update_date and self.last_update_date.tzinfo is None:
+                    self.last_update_date = self.last_update_date.replace(tzinfo=timezone.utc)
+                bt.logging.info("ScoringSystem state loaded from database.")
+            else:
+                bt.logging.warning("No state found in database. Starting with default state.")
+                return True #initial state
+
+            # Load scores
+            self.load_scores()
+            return False
+
+        except Exception as e:
+            bt.logging.error(f"Error loading state from database: {e}")
+            raise
+
+
+    def load_scores(self):
+        """
+        Load the scores from the database.
+        """
+        try:
+            fetch_scores_query = """
+                SELECT miner_uid, day_id, tier_id, clv_score, roi_score, entropy_score, composite_score
+                FROM scores
+            """
+            scores = self.db_manager.fetch_all(fetch_scores_query, None)
+            for score in scores:
+                miner_uid = score["miner_uid"]
+                day_id = score["day_id"]
+                tier_id = score["tier_id"]
+                self.clv_scores[miner_uid, day_id] = float(score["clv_score"]) if score["clv_score"] is not None else np.nan
+                self.roi_scores[miner_uid, day_id] = float(score["roi_score"]) if score["roi_score"] is not None else np.nan
+                self.entropy_scores[miner_uid, day_id] = float(score["entropy_score"]) if score["entropy_score"] is not None else np.nan
+                self.sortino_scores[miner_uid, day_id] = float(score["sortino_score"]) if score["sortino_score"] is not None else np.nan
+                self.composite_scores[miner_uid, day_id, tier_id] = float(score["composite_score"]) if score["composite_score"] is not None else np.nan
+
+            bt.logging.info("Scores loaded from database.")
+
+        except Exception as e:
+            bt.logging.error(f"Error loading scores from database: {e}")
+            raise
 
     def _normalize_scores(self, scores):
         min_score = np.nanmin(scores)
@@ -1161,4 +1254,4 @@ class ScoringSystem:
         self.amount_wagered[miner_uid] = 0
         self.composite_scores[miner_uid] = 0
         self.entropy_scores[miner_uid] = 0
-        self.tiers[miner_uid] = 0 if miner_uid in self.invalid_uids else 1
+        self.tiers[miner_uid] = 1 if miner_uid in self.invalid_uids else 2

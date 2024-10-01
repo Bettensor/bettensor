@@ -270,7 +270,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.sports_data = SportsData(
             db_manager=self.db_manager,
             api_client=self.api_client,
-            entropy_system=self.entropy_system,
+            entropy_system=self.scoring_system.entropy_system,
         )
 
         self.weight_setter = WeightSetter(
@@ -315,9 +315,8 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                             f"index '{i}' has mismatching hotkey. old hotkey: '{self.hotkeys[i]}', new hotkey: '{hotkey}. resetting score to 0.0"
                         )
                         self.scores[i] = 0.0
-                        # TODO: CALL scoring.register_miner() to update the scores.
-                        self.scoring.register_miner(self.metagraph.hotkeys[i])
-                        # TODO: CALL miner_tracking.update_miner_state() to update the miner's stats.
+                        self.scoring_system.reset_miner(i)
+                        
             else:
                 bt.logging.info(
                     f"init default scores because of state and metagraph hotkey length mismatch. expected: {len(self.metagraph.hotkeys)} had: {len(self.hotkeys)}"
