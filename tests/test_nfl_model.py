@@ -1,13 +1,15 @@
 import unittest
 from unittest.mock import MagicMock, patch
 import bittensor
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from bettensor.miner.database.predictions import PredictionsHandler
 from bettensor.miner.models.model_utils import NFLPredictor, KellyFractionNet
 from bettensor.protocol import TeamGame, TeamGamePrediction
 from datetime import datetime, timezone
 import joblib
 import torch
-import os
 import scipy.sparse
 
 
@@ -152,93 +154,93 @@ class TestNFLPredictions(unittest.TestCase):
         current_time = datetime.now(timezone.utc).isoformat()
         games = {
             "game1": TeamGame(
-                id="game1",
-                teamA="New England Patriots",
-                teamB="Buffalo Bills",
-                teamAodds=3.8,
-                teamBodds=3.1,
-                tieOdds=1.0,
+                game_id="game1",
+                team_a="New England Patriots",
+                team_b="Buffalo Bills",
+                team_a_odds=3.8,
+                team_b_odds=3.1,
+                tie_odds=1.0,
                 sport="nfl",
                 league="NFL",
-                externalId="ext1",
-                createDate=current_time,
-                lastUpdateDate=current_time,
-                eventStartDate=current_time,
+                external_id="ext1",
+                create_date=current_time,
+                last_update_date=current_time,
+                event_start_date=current_time,
                 active=True,
                 outcome="Unfinished",
-                canTie=False,
+                can_tie=False,
                 schedule_week=1,
             ),
             "game2": TeamGame(
-                id="game2",
-                teamA="Green Bay Packers",
-                teamB="Chicago Bears",
-                teamAodds=1.9,
-                teamBodds=2.0,
-                tieOdds=3.0,
+                game_id="game2",
+                team_a="Green Bay Packers",
+                team_b="Chicago Bears",
+                team_a_odds=1.9,
+                team_b_odds=2.0,
+                tie_odds=3.0,
                 sport="nfl",
                 league="NFL",
-                externalId="ext2",
-                createDate=current_time,
-                lastUpdateDate=current_time,
-                eventStartDate=current_time,
+                external_id="ext2",
+                create_date=current_time,
+                last_update_date=current_time,
+                event_start_date=current_time,
                 active=True,
                 outcome="Unfinished",
-                canTie=False,
+                can_tie=False,
                 schedule_week=1,
             ),
             "game3": TeamGame(
-                id="game3",
-                teamA="Dallas Cowboys",
-                teamB="Philadelphia Eagles",
-                teamAodds=2.2,
-                teamBodds=1.7,
-                tieOdds=3.5,
+                game_id="game3",
+                team_a="Dallas Cowboys",
+                team_b="Philadelphia Eagles",
+                team_a_odds=2.2,
+                team_b_odds=1.7,
+                tie_odds=3.5,
                 sport="nfl",
                 league="NFL",
-                externalId="ext3",
-                createDate=current_time,
-                lastUpdateDate=current_time,
-                eventStartDate=current_time,
+                external_id="ext3",
+                create_date=current_time,
+                last_update_date=current_time,
+                event_start_date=current_time,
                 active=True,
                 outcome="Unfinished",
-                canTie=False,
+                can_tie=False,
                 schedule_week=1,
             ),
             "game4": TeamGame(
-                id="game4",
-                teamA="Kansas City Chiefs",
-                teamB="Las Vegas Raiders",
-                teamAodds=2.5,
-                teamBodds=1.3,
-                tieOdds=4.0,
+                game_id="game4",
+                team_a="Kansas City Chiefs",
+                team_b="Las Vegas Raiders",
+                team_a_odds=2.5,
+                team_b_odds=1.3,
+                tie_odds=4.0,
                 sport="nfl",
                 league="NFL",
-                externalId="ext4",
-                createDate=current_time,
-                lastUpdateDate=current_time,
-                eventStartDate=current_time,
+                external_id="ext4",
+                create_date=current_time,
+                last_update_date=current_time,
+                event_start_date=current_time,
                 active=True,
                 outcome="Unfinished",
-                canTie=False,
+                can_tie=False,
                 schedule_week=1,
             ),
             "game5": TeamGame(
-                id="game5",
-                teamA="San Francisco 49ers",
-                teamB="Seattle Seahawks",
-                teamAodds=1.6,
-                teamBodds=2.5,
-                tieOdds=3.8,
+                game_id="game5",
+                team_a="San Francisco 49ers",
+                team_b="Seattle Seahawks",
+                team_a_odds=1.6,
+                team_b_odds=2.5,
+                tie_odds=3.8,
                 sport="nfl",
                 league="NFL",
-                externalId="ext5",
-                createDate=current_time,
-                lastUpdateDate=current_time,
-                eventStartDate=current_time,
+                external_id="ext5",
+                create_date=current_time,
+                last_update_date=current_time,
+                event_start_date=current_time,
                 active=True,
                 outcome="Unfinished",
-                canTie=False,
+                can_tie=False,
                 schedule_week=1,
             ),
         }
@@ -247,29 +249,29 @@ class TestNFLPredictions(unittest.TestCase):
         print("Processed predictions:")
         for game_id, prediction in predictions.items():
             print(f"Game {game_id}:")
-            print(f"  Predicted Outcome: {prediction.predictedOutcome}")
+            print(f"  Predicted Outcome: {prediction.predicted_outcome}")
             print(f"  Wager: {prediction.wager}")
-            print(f"  Team A: {prediction.teamA}")
-            print(f"  Team B: {prediction.teamB}")
-            print(f"  Team A Odds: {prediction.teamAodds}")
-            print(f"  Team B Odds: {prediction.teamBodds}")
+            print(f"  Team A: {prediction.team_a}")
+            print(f"  Team B: {prediction.team_b}")
+            print(f"  Team A Odds: {prediction.team_a_odds}")
+            print(f"  Team B Odds: {prediction.team_b_odds}")
             print()
 
         self.assertEqual(len(predictions), 5)
         for game_id, prediction in predictions.items():
             self.assertIsInstance(prediction, TeamGamePrediction)
             self.assertIn(
-                prediction.predictedOutcome, [prediction.teamA, prediction.teamB]
+                prediction.predicted_outcome, [prediction.team_a, prediction.team_b]
             )
             self.assertGreaterEqual(prediction.wager, 0)
             self.assertLess(prediction.wager, 1000)
 
         print("Raw predictions from NFLPredictor:")
         raw_predictions = nfl_predictor.predict_games(
-            home_teams=[game.teamA for game in games.values()],
-            away_teams=[game.teamB for game in games.values()],
+            home_teams=[game.team_a for game in games.values()],
+            away_teams=[game.team_b for game in games.values()],
             odds=[
-                [game.teamAodds, game.tieOdds, game.teamBodds]
+                [game.team_a_odds, game.tie_odds, game.team_b_odds]
                 for game in games.values()
             ],
         )

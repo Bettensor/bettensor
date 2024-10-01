@@ -60,8 +60,7 @@ class PredictionsHandler:
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
     def add_prediction(self, prediction: Dict[str, Any]):
-        # print(f"DEBUG: Adding prediction: {prediction}")
-        # Deduct wager before adding prediction
+        bt.logging.debug(f"Attempting to add prediction: {prediction}")
         wager_amount = prediction.get("wager", 0)
         bt.logging.debug(f"Attempting to deduct wager: {wager_amount}")
         if not self.stats_handler.deduct_wager(wager_amount):
@@ -81,48 +80,33 @@ class PredictionsHandler:
             teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome,
             validators_sent_to, validators_confirmed
         """
-        params = (
-            prediction["predictionID"],
-            prediction["teamGameID"],
-            self.miner_uid,
-            prediction["predictionDate"],
-            prediction["predictedOutcome"],
-            prediction["teamA"],
-            prediction["teamB"],
-            prediction["wager"],
-            prediction["teamAodds"],
-            prediction["teamBodds"],
-            prediction["tieOdds"],
-            prediction["outcome"],
-        )
-
+        
         try:
-            bt.logging.debug(f"Executing query: {query}")
-            bt.logging.debug(f"Query parameters: {params}")
-            result = self.db_manager.execute_query(query, params)
-            # print(f"DEBUG: Prediction added, result: {result}")
+            result = self.db_manager.execute_query(
+                query,
+                (
+                    prediction["prediction_id"],
+                    prediction["game_id"],
+                    prediction["miner_uid"],
+                    prediction["prediction_date"],
+                    prediction["predicted_outcome"],
+                    prediction["team_a"],
+                    prediction["team_b"],
+                    prediction["wager"],
+                    prediction["team_a_odds"],
+                    prediction["team_b_odds"],
+                    prediction["tie_odds"],
+                    prediction["outcome"],
+                ),
+                fetch=True,
+            )
             if result:
-                inserted_row = result[0] if isinstance(result, list) else result
-                self.stats_handler.update_on_prediction(
-                    {
-                        "wager": prediction.get("wager", 0),
-                        "predictionDate": prediction.get("predictionDate"),
-                    }
-                )
-                bt.logging.debug(
-                    f"Prediction {prediction['predictionID']} added successfully: {inserted_row}"
-                )
-                return {
-                    "status": "success",
-                    "message": f"Prediction {prediction['predictionID']} added successfully",
-                    "data": inserted_row,
-                }
+                bt.logging.debug(f"Successfully added prediction: {result[0]}")
+                return {"status": "success", "prediction": result[0]}
             else:
-                bt.logging.error("No row returned after insertion")
-                bt.logging.error(f"Database result: {result}")
-                return {"status": "error", "message": "No row returned after insertion"}
+                bt.logging.error("Failed to add prediction")
+                return {"status": "error", "message": "Failed to add prediction"}
         except Exception as e:
-            # print(f"DEBUG: Error adding prediction: {str(e)}")
             bt.logging.error(f"Error adding prediction: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
             return {"status": "error", "message": f"Error adding prediction: {str(e)}"}
@@ -208,14 +192,14 @@ class PredictionsHandler:
         matched_games = []
         for game_id, game in games.items():
             if sport == "soccer":
-                home_match = self.get_best_match(game.teamA, encoded_teams, sport)
-                away_match = self.get_best_match(game.teamB, encoded_teams, sport)
+                home_match = self.get_best_match(game.team_a, encoded_teams, sport)
+                away_match = self.get_best_match(game.team_b, encoded_teams, sport)
             else:
                 home_match = model.db_manager.predictions_handler.get_best_match(
-                    game.teamA, encoded_teams, sport
+                    game.team_a, encoded_teams, sport
                 )
                 away_match = model.db_manager.predictions_handler.get_best_match(
-                    game.teamB, encoded_teams, sport
+                    game.team_b, encoded_teams, sport
                 )
 
             if home_match and away_match:
@@ -224,7 +208,7 @@ class PredictionsHandler:
                         "game_id": game_id,
                         "home_team": home_match,
                         "away_team": away_match,
-                        "odds": [game.teamAodds, game.tieOdds, game.teamBodds],
+                        "odds": [game.team_a_odds, game.tie_odds, game.team_b_odds],
                         "original_game": game,
                     }
                 )
@@ -240,27 +224,23 @@ class PredictionsHandler:
 
             for game_data, prediction in zip(matched_games, model_predictions):
                 game = game_data["original_game"]
+                model_name = "NFL Model" if sport == "nfl" else "Soccer Model"
                 pred_dict = {
-                    "predictionID": str(uuid.uuid4()),
-                    "teamGameID": game_data["game_id"],
-                    "minerID": self.miner_uid,
-                    "predictionDate": datetime.now(timezone.utc).isoformat(),
-                    "predictedOutcome": game.teamA
-                    if prediction["PredictedOutcome"] == "Home Win"
-                    else game.teamB
-                    if prediction["PredictedOutcome"] == "Away Win"
-                    else "Tie",
-                    "wager": float(
-                        prediction["recommendedWager"]
-                    ),  # Convert to Python float
-                    "teamAodds": float(game.teamAodds),  # Convert to Python float
-                    "teamBodds": float(game.teamBodds),  # Convert to Python float
-                    "tieOdds": float(game.tieOdds)
-                    if game.tieOdds is not None
-                    else None,  # Convert to Python float
-                    "outcome": "unfinished",
-                    "teamA": game.teamA,
-                    "teamB": game.teamB,
+                    "prediction_id": str(uuid.uuid4()),
+                    "game_id": game_data["game_id"],
+                    "miner_uid": self.miner_uid,
+                    "prediction_date": datetime.now(timezone.utc).isoformat(),
+                    "predicted_outcome": game.team_a if prediction["PredictedOutcome"] == "Home Win" else game.team_b if prediction["PredictedOutcome"] == "Away Win" else "Tie",
+                    "predicted_odds": float(prediction["ConfidenceScore"]),
+                    "team_a": game.team_a,
+                    "team_b": game.team_b,
+                    "wager": float(prediction["recommendedWager"]),
+                    "team_a_odds": float(game.team_a_odds),
+                    "team_b_odds": float(game.team_b_odds),
+                    "tie_odds": float(game.tie_odds) if game.tie_odds is not None else None,
+                    "model_name": model_name,
+                    "outcome": "Pending",
+                    "payout": 0.0,  # Initialize payout to 0
                 }
                 predictions[game_data["game_id"]] = TeamGamePrediction(**pred_dict)
                 self.add_prediction(pred_dict)
