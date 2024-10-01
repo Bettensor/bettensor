@@ -221,8 +221,18 @@ class DatabaseManager:
                 nfl_kelly_fraction_multiplier FLOAT,
                 nfl_edge_threshold FLOAT,
                 nfl_max_bet_percentage FLOAT
-            )
-            """,
+            );
+
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT FROM information_schema.columns 
+                    WHERE table_name = 'model_params' AND column_name = 'id'
+                ) THEN
+                    ALTER TABLE model_params RENAME COLUMN id TO miner_uid;
+                END IF;
+            END $$;
+            """
             ),
             (
                 "miner_active",
@@ -299,29 +309,25 @@ class DatabaseManager:
         self.execute_query(query)
 
     def ensure_miner_params_exist(self, miner_uid):
-        if not miner_uid or miner_uid == "default":
-            return
-
-        default_params = {
-            "model_on": False,
-            "wager_distribution_steepness": 1,
-            "fuzzy_match_percentage": 80,
-            "minimum_wager_amount": 1.0,
-            "max_wager_amount": 100.0,
-            "top_n_games": 10,
-            "nfl_model_on": False,
-            "nfl_minimum_wager_amount": 1.0,
-            "nfl_max_wager_amount": 100.0,
-            "nfl_top_n_games": 5,
-            "nfl_kelly_fraction_multiplier": 1.0,
-            "nfl_edge_threshold": 0.02,
-            "nfl_max_bet_percentage": 0.7,
-        }
-
         query = "SELECT * FROM model_params WHERE miner_uid = %s"
         result = self.execute_query(query, (miner_uid,))
 
         if not result:
+            default_params = {
+                "model_on": False,
+                "wager_distribution_steepness": 1,
+                "fuzzy_match_percentage": 80,
+                "minimum_wager_amount": 1.0,
+                "max_wager_amount": 100.0,
+                "top_n_games": 10,
+                "nfl_model_on": False,
+                "nfl_minimum_wager_amount": 1.0,
+                "nfl_max_wager_amount": 100.0,
+                "nfl_top_n_games": 5,
+                "nfl_kelly_fraction_multiplier": 1.0,
+                "nfl_edge_threshold": 0.02,
+                "nfl_max_bet_percentage": 0.7,
+            }
             insert_query = """
             INSERT INTO model_params (
                 miner_uid, model_on, wager_distribution_steepness, fuzzy_match_percentage,
@@ -472,7 +478,7 @@ class DatabaseManager:
             "predictions": "minerID",
             "games": "gameID",
             "miner_stats": "miner_hotkey",
-            "model_params": "id",
+            "model_params": "miner_uid",
             "miner_active": "miner_uid",
         }
 
