@@ -11,7 +11,7 @@ from flask import (
     g,
     make_response,
     current_app,
-)  # maybe remove current_app
+)
 from flask_cors import CORS
 import redis
 from werkzeug.serving import run_simple
@@ -33,6 +33,8 @@ from datetime import datetime, timedelta
 import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
+from cryptography import x509
+from datetime import timezone
 
 bt.logging.set_trace(True)
 bt.logging.set_debug(True)
@@ -64,15 +66,14 @@ limiter = Limiter(
 API_BASE_URL = "https://dev-bettensor-api.azurewebsites.net"
 CERT_ENDPOINT = "/Certificate"
 CHILD_CERT_PATH = os.path.join(os.path.dirname(__file__), "child_certificate.pem")
+PRIVATE_KEY_PATH = os.path.join(os.path.dirname(__file__), "private_key.pem")
 
 
-def fetch_and_store_child_cert():
+def fetch_and_store_child_cert(cert_path, key_path):
     try:
         password = os.environ.get("CERT_PASSWORD", "default_password")
         ip_address = requests.get("https://api.ipify.org").text
-        url = (
-            f"{API_BASE_URL}{CERT_ENDPOINT}?ipAddress={ip_address}&password={password}"
-        )
+        url = f"{API_BASE_URL}{CERT_ENDPOINT}?ipAddress={ip_address}&password={password}"
 
         bt.logging.info(f"Attempting to fetch certificate from {url}")
         response = requests.get(url, verify=True)
@@ -83,45 +84,54 @@ def fetch_and_store_child_cert():
         if response.status_code == 200:
             pfx_data = response.content
             
-            # Save the raw PFX data
-            with open(CHILD_CERT_PATH, "wb") as cert_file:
-                cert_file.write(pfx_data)
+            # convert PFX to PEM
+            private_key, certificate, _ = pkcs12.load_key_and_certificates(pfx_data, password.encode())
 
-            bt.logging.info(
-                f"Child certificate downloaded and saved to {CHILD_CERT_PATH}"
-            )
-            return CHILD_CERT_PATH
+            # save private key
+            with open(key_path, 'wb') as f:
+                f.write(private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption()
+                ))
+
+            with open(cert_path, 'wb') as f:
+                f.write(certificate.public_bytes(serialization.Encoding.PEM))
+
+            bt.logging.info(f"Certificate converted and saved to {cert_path}")
+            bt.logging.info(f"Private key saved to {key_path}")
+
+            return cert_path, key_path
         else:
-            bt.logging.error(
-                f"Failed to download child certificate. Status code: {response.status_code}"
-            )
+            bt.logging.error(f"Failed to download child certificate. Status code: {response.status_code}")
             bt.logging.error(f"Response content: {response.text}")
-            return None
+            return None, None
     except Exception as e:
-        bt.logging.error(
-            f"Exception occurred while downloading child certificate: {str(e)}"
-        )
-        return None
+        bt.logging.error(f"Exception occurred while downloading child certificate: {str(e)}")
+        return None, None
 
 
 def is_certificate_valid(cert_path):
+    if not os.path.exists(cert_path):
+        bt.logging.error(f"Certificate file not found at {cert_path}")
+        return False
     try:
         with open(cert_path, "rb") as cert_file:
-            pfx_data = cert_file.read()
-        password = os.environ.get("CERT_PASSWORD", "default_password").encode()
-        
-        # Try to load the certificate without parsing it
-        private_key, certificate, _ = pkcs12.load_key_and_certificates(pfx_data, password)
-        
-        now = datetime.now()
-        return certificate.not_valid_before <= now <= certificate.not_valid_after
+            cert_data = cert_file.read()
+        certificate = x509.load_pem_x509_certificate(cert_data)
+        now = datetime.now(timezone.utc)
+        return certificate.not_valid_before_utc <= now <= certificate.not_valid_after_utc
     except Exception as e:
         bt.logging.error(f"Error checking certificate validity: {str(e)}")
         return False
 
 
 if not os.path.exists(CHILD_CERT_PATH) or not is_certificate_valid(CHILD_CERT_PATH):
-    fetch_and_store_child_cert()
+    bt.logging.info("Downloading and converting child certificate...")
+    cert_path, key_path = fetch_and_store_child_cert(CHILD_CERT_PATH, PRIVATE_KEY_PATH)
+    if not cert_path or not key_path:
+        bt.logging.error("Failed to download or convert child certificate. Exiting.")
+        sys.exit(1)
 
 
 def token_required(f):
@@ -343,53 +353,40 @@ def handle_exception(e):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--port", type=int, default=5000, help="Port to run the server on"
-    )
-    parser.add_argument(
-        "--host", type=str, default="0.0.0.0", help="Host to run the server on"
-    )
+    parser.add_argument("--port", type=int, default=5000, help="Port to run the server on")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to run the server on")
     args = parser.parse_args()
 
-    cert_path = os.path.join(os.path.dirname(__file__), "child_certificate.pem")
-    key_path = os.path.join(os.path.dirname(__file__), "private_key.pem")
-
-    if not os.path.exists(cert_path) or not is_certificate_valid(cert_path):
-        bt.logging.info("Downloading child certificate...")
-        cert_path = fetch_and_store_child_cert()
-        if not cert_path:
-            bt.logging.error("Failed to download child certificate. Exiting.")
+    if not os.path.exists(CHILD_CERT_PATH) or not os.path.exists(PRIVATE_KEY_PATH) or not is_certificate_valid(CHILD_CERT_PATH):
+        bt.logging.info("Downloading and converting child certificate...")
+        cert_path, key_path = fetch_and_store_child_cert(CHILD_CERT_PATH, PRIVATE_KEY_PATH)
+        if not cert_path or not key_path:
+            bt.logging.error("Failed to download or convert child certificate. Exiting.")
+            sys.exit(1)
+        
+        if not is_certificate_valid(CHILD_CERT_PATH):
+            bt.logging.error("Downloaded certificate is not valid. Exiting.")
             sys.exit(1)
 
-    if not os.path.exists(key_path):
-        bt.logging.info("Generating a new private key...")
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.hazmat.primitives import serialization
-        import datetime
-
-        key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=2048,
-        )
-
-        with open(key_path, "wb") as f:
-            f.write(
-                key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.TraditionalOpenSSL,
-                    encryption_algorithm=serialization.NoEncryption(),
-                )
-            )
-    else:
-        with open(key_path, "rb") as f:
-            key_data = f.read()
-        key = serialization.load_pem_private_key(
-            key_data,
-            password=None,
-        )
-
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile=CHILD_CERT_PATH, keyfile=PRIVATE_KEY_PATH)
+    except ssl.SSLError as e:
+        bt.logging.error(f"Failed to load SSL certificate: {e}")
+        bt.logging.error("Attempting to re-download and convert the certificate...")
+        cert_path, key_path = fetch_and_store_child_cert(CHILD_CERT_PATH, PRIVATE_KEY_PATH)
+        if not cert_path or not key_path:
+            bt.logging.error("Failed to download or convert child certificate. Exiting.")
+            sys.exit(1)
+        if not is_certificate_valid(CHILD_CERT_PATH):
+            bt.logging.error("Downloaded certificate is not valid. Exiting.")
+            sys.exit(1)
+        try:
+            context.load_cert_chain(certfile=CHILD_CERT_PATH, keyfile=PRIVATE_KEY_PATH)
+        except ssl.SSLError as e:
+            bt.logging.error(f"Failed to load SSL certificate after re-download: {e}")
+            bt.logging.error("Exiting due to SSL certificate issues.")
+            sys.exit(1)
 
     server_start_time = time.time()
 
