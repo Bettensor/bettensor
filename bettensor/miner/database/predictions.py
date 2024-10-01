@@ -408,11 +408,11 @@ class PredictionsHandler:
 
     def _map_predicted_outcome(self, outcome, game_data):
         if isinstance(game_data, dict):
-            team_a = game_data.get("teama") or game_data.get("teamA")
-            team_b = game_data.get("teamb") or game_data.get("teamB")
+            team_a = game_data.get("team_a") 
+            team_b = game_data.get("team_b")
         else:
-            team_a = getattr(game_data, "teamA", None)
-            team_b = getattr(game_data, "teamB", None)
+            team_a = getattr(game_data, "team_a", None)
+            team_b = getattr(game_data, "team_b", None)
 
         if outcome in ["Team A Win", "Home Win"] or outcome == team_a:
             return "Team A Win"
@@ -474,36 +474,36 @@ class PredictionsHandler:
     def get_recent_predictions(self, limit=100):
         bt.logging.trace(f"Getting recent predictions (limit: {limit})")
         query = """
-        SELECT predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-               teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
+        SELECT prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds,
+               team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, model_name, confidence_score, outcome
         FROM predictions
-        WHERE minerID = %s AND outcome = 'Unfinished'
-        ORDER BY predictionDate DESC
+        WHERE miner_uid = %s AND outcome = 'Unfinished'
+        ORDER BY prediction_date DESC
         LIMIT %s
         """
         results = self.db_manager.execute_query(query, (self.miner_uid, limit))
         predictions = {}
         for row in results:
             try:
-                if row["predictiondate"] is not None:
-                    row["predictiondate"] = (
-                        row["predictiondate"].isoformat()
-                        if isinstance(row["predictiondate"], datetime)
-                        else row["predictiondate"]
+                if row["prediction_date"] is not None:
+                    row["prediction_date"] = (
+                        row["prediction_date"].isoformat()
+                        if isinstance(row["prediction_date"], datetime)
+                        else row["prediction_date"]
                     )
                 prediction = TeamGamePrediction(
-                    predictionID=row["predictionid"],
-                    teamGameID=row["teamgameid"],
-                    minerID=row["minerid"],
-                    predictionDate=row["predictiondate"],
-                    predictedOutcome=row["predictedoutcome"],
-                    teamA=row["teama"],
-                    teamB=row["teamb"],
+                    prediction_id=row["prediction_id"],
+                    game_id=row["game_id"],
+                    miner_uid=row["miner_uid"],
+                    prediction_date=row["prediction_date"],
+                    predicted_outcome=row["predicted_outcome"],
+                    team_a=row["team_a"],
+                    team_b=row["team_b"],
                     wager=float(row["wager"]),
-                    teamAodds=float(row["teamaodds"]),
-                    teamBodds=float(row["teambodds"]),
-                    tieOdds=float(row["tieodds"])
-                    if row["tieodds"] is not None
+                    team_a_odds=float(row["team_a_odds"]),
+                    team_b_odds=float(row["team_b_odds"]),
+                    tie_odds=float(row["tie_odds"])
+                    if row["tie_odds"] is not None
                     else None,
                     outcome=row["outcome"],
                 )
@@ -517,10 +517,10 @@ class PredictionsHandler:
     def get_predictions_for_game(self, external_id: str) -> List[TeamGamePrediction]:
         # bt.logging.trace(f"Getting predictions for game: {external_id}")
         query = """
-        SELECT predictionID, teamGameID, minerID, predictionDate, predictedOutcome,
-               teamA, teamB, wager, teamAodds, teamBodds, tieOdds, outcome
+        SELECT prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds,
+               team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, model_name, confidence_score, outcome
         FROM predictions
-        WHERE teamGameID = %s
+        WHERE game_id = %s
         """
         try:
             results = self.db_manager.execute_query(query, (external_id,))
@@ -528,18 +528,18 @@ class PredictionsHandler:
             for row in results:
                 try:
                     prediction = TeamGamePrediction(
-                        predictionID=row["predictionid"],
-                        teamGameID=row["teamgameid"],
-                        minerID=row["minerid"],
-                        predictionDate=row["predictiondate"],
-                        predictedOutcome=row["predictedoutcome"],
-                        teamA=row["teama"],
-                        teamB=row["teamb"],
+                        prediction_id=row["prediction_id"],
+                        game_id=row["game_id"],
+                        miner_uid=row["miner_uid"],
+                        prediction_date=row["prediction_date"],
+                        predicted_outcome=row["predicted_outcome"],
+                        team_a=row["team_a"],
+                        team_b=row["team_b"],
                         wager=float(row["wager"]),
-                        teamAodds=float(row["teamaodds"]),
-                        teamBodds=float(row["teambodds"]),
-                        tieOdds=float(row["tieodds"])
-                        if row["tieodds"] is not None
+                        team_a_odds=float(row["team_a_odds"]),
+                        team_b_odds=float(row["team_b_odds"]),
+                        tie_odds=float(row["tie_odds"])
+                        if row["tie_odds"] is not None
                         else None,
                         outcome=row["outcome"],
                     )
@@ -556,16 +556,16 @@ class PredictionsHandler:
     def get_predictions_with_teams(self, miner_uid):
         bt.logging.debug(f"Getting predictions with teams for miner: {miner_uid}")
         query = """
-        SELECT p.*, g.teamA as home, g.teamB as away
+        SELECT p.*, g.team_a as home, g.team_b as away
         FROM predictions p
-        JOIN games g ON p.teamGameID = g.externalID
-        WHERE p.minerID = %s
-        ORDER BY p.predictionDate DESC
+        JOIN games g ON p.game_id = g.external_id
+        WHERE p.miner_uid = %s
+        ORDER BY p.prediction_date DESC
         """
         try:
             results = self.db_manager.execute_query(query, (miner_uid,))
             # print(f"Retrieved {len(results)} predictions with teams")
-            return {row["predictionid"]: row for row in results}
+            return {row["prediction_id"]: row for row in results}
         except Exception as e:
             # print(f"Error getting predictions with teams: {str(e)}")
             bt.logging.error(traceback.format_exc())
@@ -598,11 +598,11 @@ class PredictionsHandler:
     def check_and_correct_prediction_outcomes(self):
         bt.logging.info("Starting to check and correct prediction outcomes")
         query = """
-        SELECT p.predictionID, p.teamGameID, p.outcome as prediction_outcome, 
-               p.predictedOutcome, g.outcome as game_outcome, 
-               p.teamA, p.teamB, p.teamAodds, p.teamBodds, p.tieOdds
+        SELECT p.prediction_id, p.game_id, p.outcome as prediction_outcome, 
+               p.predicted_outcome, g.outcome as game_outcome, 
+               p.team_a, p.team_b, p.team_a_odds, p.team_b_odds, p.tie_odds
         FROM predictions p
-        JOIN games g ON p.teamGameID = g.externalID
+        JOIN games g ON p.game_id = g.external_id
         WHERE p.outcome != 'Unfinished'
         """
         try:
@@ -612,7 +612,7 @@ class PredictionsHandler:
             for row in results:
                 prediction_id = row["predictionid"]
                 prediction_outcome = row["prediction_outcome"]
-                predicted_outcome = row["predictedoutcome"]
+                predicted_outcome = row["predicted_outcome"]
                 game_outcome = row["game_outcome"]
 
                 if game_outcome == "Unfinished" or game_outcome is None:
@@ -674,7 +674,7 @@ class PredictionsHandler:
         bt.logging.debug(
             f"Updating prediction {prediction_id} outcome to {new_outcome}"
         )
-        query = "UPDATE predictions SET outcome = %s WHERE predictionID = %s"
+        query = "UPDATE predictions SET outcome = %s WHERE prediction_id = %s"
         self.db_manager.execute_query(query, (new_outcome, prediction_id))
         bt.logging.info(f"Updated prediction {prediction_id} outcome to {new_outcome}")
 
