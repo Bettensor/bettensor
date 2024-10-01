@@ -25,7 +25,6 @@ from datetime import datetime, timezone
 from bittensor import Synapse
 from bettensor.miner.utils.health_check import run_health_check
 import asyncio
-from bettensor.protocol import GameData, Confirmation
 
 
 class BettensorMiner(BaseNeuron):
