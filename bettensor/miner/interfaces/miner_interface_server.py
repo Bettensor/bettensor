@@ -82,20 +82,10 @@ def fetch_and_store_child_cert():
 
         if response.status_code == 200:
             pfx_data = response.content
-            password = password.encode()
-            private_key, certificate, _ = pkcs12.load_key_and_certificates(
-                pfx_data, password
-            )
-
-            cert_pem = certificate.public_bytes(encoding=serialization.Encoding.PEM)
-            key_pem = private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption(),
-            )
-
+            
+            # Save the raw PFX data
             with open(CHILD_CERT_PATH, "wb") as cert_file:
-                cert_file.write(cert_pem + key_pem)
+                cert_file.write(pfx_data)
 
             bt.logging.info(
                 f"Child certificate downloaded and saved to {CHILD_CERT_PATH}"
@@ -119,9 +109,10 @@ def is_certificate_valid(cert_path):
         with open(cert_path, "rb") as cert_file:
             pfx_data = cert_file.read()
         password = os.environ.get("CERT_PASSWORD", "default_password").encode()
-        private_key, certificate, _ = pkcs12.load_key_and_certificates(
-            pfx_data, password
-        )
+        
+        # Try to load the certificate without parsing it
+        private_key, certificate, _ = pkcs12.load_key_and_certificates(pfx_data, password)
+        
         now = datetime.now()
         return certificate.not_valid_before <= now <= certificate.not_valid_after
     except Exception as e:
@@ -398,10 +389,7 @@ if __name__ == "__main__":
         )
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    with open(cert_path, "rb") as cert_file:
-        pfx_data = cert_file.read()
-    password = os.environ.get("CERT_PASSWORD", "default_password").encode()
-    context.load_cert_chain(certfile=cert_path, password=password)
+    context.load_cert_chain(certfile=cert_path, keyfile=key_path)
 
     server_start_time = time.time()
 

@@ -376,6 +376,7 @@ class MinerStateManager:
                 miner_win_loss_ratio, last_daily_reset
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (miner_hotkey) DO UPDATE SET
+                miner_uid = EXCLUDED.miner_uid,
                 miner_cash = EXCLUDED.miner_cash,
                 miner_current_incentive = EXCLUDED.miner_current_incentive,
                 miner_last_prediction_date = EXCLUDED.miner_last_prediction_date,
@@ -389,8 +390,7 @@ class MinerStateManager:
             """
             params = (
                 self.miner_hotkey,
-                self.miner_uid if self.miner_uid != "default" else None,
-                self.miner_uid if self.miner_uid != "default" else None,
+                self.miner_uid,
                 state.get("miner_cash", 0),
                 state.get("miner_current_incentive", 0),
                 state.get("miner_last_prediction_date"),
