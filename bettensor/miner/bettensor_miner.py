@@ -24,7 +24,6 @@ import uuid
 from datetime import datetime, timezone
 from bettensor.miner.utils.health_check import run_health_check
 import asyncio
-from bettensor.protocol import GameData, ConfirmationSynapse
 
 
 class BettensorMiner(BaseNeuron):
@@ -193,7 +192,7 @@ class BettensorMiner(BaseNeuron):
     def forward(self, synapse: bt.Synapse) -> bt.Synapse:
         if isinstance(synapse, GameData):
             return self._handle_game_data(synapse)
-        elif isinstance(synapse, ConfirmationSynapse):
+        elif isinstance(synapse, Confirmation):
             return self._handle_confirmation(synapse)
         else:
             raise ValueError(f"Unsupported synapse type: {type(synapse)}")
