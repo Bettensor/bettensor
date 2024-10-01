@@ -324,7 +324,7 @@ class DatabaseManager:
         if not result:
             insert_query = """
             INSERT INTO model_params (
-                id, model_on, wager_distribution_steepness, fuzzy_match_percentage,
+                miner_uid, model_on, wager_distribution_steepness, fuzzy_match_percentage,
                 minimum_wager_amount, max_wager_amount, top_n_games,
                 nfl_model_on, nfl_minimum_wager_amount, nfl_max_wager_amount,
                 nfl_top_n_games, nfl_kelly_fraction_multiplier, nfl_edge_threshold,
