@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from bettensor.miner.utils.health_check import run_health_check
 import asyncio
+from bettensor.protocol import GameData, ConfirmationSynapse
 
 
 class BettensorMiner(BaseNeuron):
@@ -189,18 +190,13 @@ class BettensorMiner(BaseNeuron):
         # Initialize MinerConfig
         self.miner_config = MinerConfig()
 
-    def forward(self, synapse: GameData | Confirmation) -> GameData | Confirmation:
-        bt.logging.info(f"Miner: Received synapse from {synapse.dendrite.hotkey}")
-
-        print(
-            f"Synapse version: {synapse.metadata.subnet_version}, our version: {self.subnet_version}"
-        )
-        self._check_version(synapse.metadata.subnet_version)
-
+    def forward(self, synapse: bt.Synapse) -> bt.Synapse:
         if isinstance(synapse, GameData):
             return self._handle_game_data(synapse)
         elif isinstance(synapse, Confirmation):
             return self._handle_confirmation(synapse)
+        else:
+            raise ValueError(f"Unsupported synapse type: {type(synapse)}")
 
     def _handle_game_data(self, synapse: GameData) -> GameData:
         bt.logging.debug(f"Processing game data: {len(synapse.gamedata_dict)} games")
@@ -260,16 +256,18 @@ class BettensorMiner(BaseNeuron):
 
         return synapse
 
-    def _handle_confirmation(self, synapse: Confirmation) -> None:
-        bt.logging.debug(f"Processing confirmation from {synapse.dendrite.hotkey}")
-        if synapse.confirmation_dict:
-            prediction_ids = list(synapse.confirmation_dict.keys())
-            self.predictions_handler.update_prediction_confirmations(
-                prediction_ids, synapse.dendrite.hotkey
+    def _handle_confirmation(self, synapse: ConfirmationSynapse) -> ConfirmationSynapse:
+        try:
+            # Update the confirmation count in the database
+            self.predictions_handler.update_confirmation(
+                synapse.prediction_id,
+                synapse.validator_hotkey
             )
-        else:
-            bt.logging.warning("Received empty confirmation dict")
-        return None
+            synapse.success = True
+        except Exception as e:
+            bt.logging.error(f"Error handling confirmation: {str(e)}")
+            synapse.success = False
+        return synapse
 
     def _check_version(self, synapse_version):
         if synapse_version > self.subnet_version:
