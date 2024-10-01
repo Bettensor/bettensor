@@ -263,7 +263,7 @@ class DatabaseManager:
     def ensure_model_params_table_exists(self):
         query = """
         CREATE TABLE IF NOT EXISTS model_params (
-            id TEXT PRIMARY KEY,
+            miner_uid TEXT PRIMARY KEY,
             model_on BOOLEAN,
             wager_distribution_steepness INTEGER,
             fuzzy_match_percentage INTEGER,
@@ -319,7 +319,7 @@ class DatabaseManager:
             bt.logging.info(f"Created default model parameters for miner: {miner_uid}")
 
     def get_model_params(self, miner_id):
-        query = "SELECT * FROM model_params WHERE id = %s"
+        query = "SELECT * FROM model_params WHERE miner_uid = %s"
         result = self.execute_query(query, (miner_id,))
         return result[0] if result else None
 
@@ -339,7 +339,7 @@ class DatabaseManager:
             nfl_kelly_fraction_multiplier = %s,
             nfl_edge_threshold = %s,
             nfl_max_bet_percentage = %s
-        WHERE id = %s
+        WHERE miner_uid = %s
         """
         self.execute_query(query, (*params.values(), miner_uid))
 
@@ -419,7 +419,7 @@ class DatabaseManager:
         return result[0]["count"] > 0 if result else False
 
     def ensure_miner_model_params(self, miner_uid):
-        query = "SELECT * FROM model_params WHERE id = %s"
+        query = "SELECT * FROM model_params WHERE miner_uid = %s"
         result = self.execute_query(query, (miner_uid,))
 
         if not result:
@@ -440,7 +440,7 @@ class DatabaseManager:
             }
             insert_query = """
             INSERT INTO model_params (
-                id, model_on, wager_distribution_steepness, fuzzy_match_percentage,
+                miner_uid, model_on, wager_distribution_steepness, fuzzy_match_percentage,
                 minimum_wager_amount, max_wager_amount, top_n_games,
                 nfl_model_on, nfl_minimum_wager_amount, nfl_max_wager_amount,
                 nfl_top_n_games, nfl_kelly_fraction_multiplier, nfl_edge_threshold,

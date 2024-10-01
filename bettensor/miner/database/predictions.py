@@ -240,7 +240,7 @@ class PredictionsHandler:
                     "tie_odds": float(game.tie_odds) if game.tie_odds is not None else None,
                     "model_name": model_name,
                     "outcome": "Pending",
-                    "payout": 0.0,  # Initialize payout to 0
+                    "payout": 0.0, #init payout to 0
                 }
                 predictions[game_data["game_id"]] = TeamGamePrediction(**pred_dict)
                 self.add_prediction(pred_dict)
