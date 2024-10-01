@@ -271,6 +271,17 @@ class DatabaseManager:
             max_wager_amount FLOAT,
             top_n_games INTEGER
         );
+        
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT FROM information_schema.columns 
+                WHERE table_name = 'model_params' AND column_name = 'id'
+            ) THEN
+                ALTER TABLE model_params RENAME COLUMN id TO miner_uid;
+            END IF;
+        END $$;
+        
         ALTER TABLE model_params
         ADD COLUMN IF NOT EXISTS nfl_model_on BOOLEAN DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS nfl_minimum_wager_amount FLOAT DEFAULT 20.0,
