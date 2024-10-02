@@ -1244,6 +1244,7 @@ class Application:
 
             prediction = {
                 "prediction_id": str(uuid.uuid4()),
+                "miner_uid": self.miner_uid,
                 "game_id": self.selected_game.game_id,
                 "prediction_date": datetime.now(timezone.utc).isoformat(),
                 "predicted_outcome": self.prediction_outcome,
