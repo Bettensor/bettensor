@@ -1,3 +1,4 @@
+import traceback
 import pytz
 import bittensor as bt
 import numpy as np
@@ -160,7 +161,7 @@ class ScoringData:
             bt.logging.trace("Initializing Miner Stats")
             try:
                 # Check if the miner_stats table is empty
-                count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")["'COUNT(*)"]
+                count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")["COUNT(*)"]
                 bt.logging.trace(f"Miner stats count: {count}")
                 
                 if count == 0:
@@ -202,13 +203,47 @@ class ScoringData:
                 bt.logging.error(f"Error initializing miner_stats: {str(e)}")
                 raise
 
-    def update_miner_stats(self, current_day):
+    def update_miner_stats(self, current_day, incentives: List[float]):
         """
         Queries relevant tables to keep the miner stats rows up to date.
         This method updates both lifetime and current statistics for each miner.
         """
         try:
-            bt.logging.info("Updating miner stats...")
+            self.db_manager.begin_transaction()
+            
+            bt.logging.info(f"Updating miner stats for day {current_day}...")
+
+            #  Debug query for table schemas
+            # debug_schema_query = """
+            # SELECT 
+            #     (SELECT GROUP_CONCAT(name || ' ' || type) FROM pragma_table_info('scores')) as scores_schema,
+            #     (SELECT GROUP_CONCAT(name || ' ' || type) FROM pragma_table_info('miner_stats')) as miner_stats_schema
+            # """
+            # schema_info = self.db_manager.fetch_one(debug_schema_query)
+            # bt.logging.debug(f"Scores schema: {schema_info['scores_schema']}")
+            # bt.logging.debug(f"Miner stats schema: {schema_info['miner_stats_schema']}")
+
+            # # Debug: Check for existing data
+            # scores_count = self.db_manager.fetch_one("SELECT COUNT(*) as count FROM scores WHERE day_id = ? AND score_type = 'daily'", (current_day,))
+            # miner_stats_count = self.db_manager.fetch_one("SELECT COUNT(*) as count FROM miner_stats", ())
+            # bt.logging.debug(f"Scores for day {current_day}: {scores_count['count']}")
+            # bt.logging.debug(f"Total miner_stats entries: {miner_stats_count['count']}")
+
+            # # Debug: Sample data
+            # sample_scores = self.db_manager.fetch_all("SELECT * FROM scores WHERE day_id = ? AND score_type = 'daily' LIMIT 5", (current_day,))
+            # sample_miner_stats = self.db_manager.fetch_all("SELECT * FROM miner_stats LIMIT 5", ())
+            # bt.logging.debug(f"Sample scores: {sample_scores}")
+            # bt.logging.debug(f"Sample miner_stats: {sample_miner_stats}")
+
+            # # Debug: Check scores table structure
+            # scores_structure_query = "PRAGMA table_info(scores)"
+            # scores_structure = self.db_manager.fetch_all(scores_structure_query)
+            # bt.logging.debug(f"Scores table structure: {scores_structure}")
+
+            # # Debug: Check for existing data in scores table
+            # sample_scores_query = f"SELECT * FROM scores WHERE day_id = {current_day} AND score_type = 'daily' LIMIT 5"
+            # sample_scores = self.db_manager.fetch_all(sample_scores_query)
+            # bt.logging.debug(f"Sample scores data: {sample_scores}")
 
             # Update lifetime statistics
             update_lifetime_query = """
@@ -266,57 +301,90 @@ class ScoringData:
             """
             self.db_manager.execute_query(update_derived_lifetime_query)
 
-            # Combined query for updating current statistics
-            update_current_query = """
-            UPDATE miner_stats
-            SET
-                miner_current_composite_score = (
-                    SELECT composite_score
-                    FROM scores
-                    WHERE scores.miner_uid = miner_stats.miner_uid
-                    AND scores.day_id = ?
-                    AND scores.score_type = 'daily'
-                ),
-                miner_current_tier = (
-                    SELECT tier_id
-                    FROM scores
-                    WHERE scores.miner_uid = miner_stats.miner_uid
-                    AND scores.day_id = ?
-                    AND scores.score_type = 'daily'
-                ),
-                miner_current_clv_avg = (
-                    SELECT clv_score
-                    FROM scores
-                    WHERE scores.miner_uid = miner_stats.miner_uid
-                    AND scores.day_id = ?
-                    AND scores.score_type = 'daily'
-                ),
-                miner_current_roi = (
-                    SELECT roi_score
-                    FROM scores
-                    WHERE scores.miner_uid = miner_stats.miner_uid
-                    AND scores.day_id = ?
-                    AND scores.score_type = 'daily'
-                ),
-                miner_current_sortino_ratio = (
-                    SELECT sortino_score
-                    FROM scores
-                    WHERE scores.miner_uid = miner_stats.miner_uid
-                    AND scores.day_id = ?
-                    AND scores.score_type = 'daily'
-                ),
-                miner_current_entropy_score = (
-                    SELECT entropy_score
-                    FROM scores
-                    WHERE scores.miner_uid = miner_stats.miner_uid
-                    AND scores.day_id = ?
-                    AND scores.score_type = 'daily'
-                )
+            # Fetch all relevant scores and sum of wagers
+            fetch_scores_query = """
+            SELECT s.miner_uid, s.composite_score, s.tier_id, s.clv_score, s.roi_score, s.sortino_score, s.entropy_score,
+                COALESCE(SUM(p.wager), 0) as total_wager
+            FROM scores s
+            LEFT JOIN predictions p ON s.miner_uid = p.miner_uid AND DATE(p.prediction_date) = DATE(?)
+            WHERE s.day_id = ? AND s.score_type = 'daily'
+            GROUP BY s.miner_uid
             """
-            self.db_manager.execute_query(update_current_query, (current_day,) * 6)
+            scores = self.db_manager.fetch_all(fetch_scores_query, (current_day, current_day))
+            bt.logging.info(f"Fetched {len(scores)} score entries for day {current_day}")
 
-            bt.logging.info("Miner stats updated successfully.")
+            # Debug: Show a sample of fetched scores
+            bt.logging.debug(f"Sample of fetched scores: {scores[:5]}")
+
+            # Update miner_stats one by one for each score component
+            update_count = 0
+            for score in scores:
+                update_queries = [
+                    """
+                    UPDATE miner_stats
+                    SET miner_current_composite_score = ?
+                    WHERE miner_uid = ?
+                    """,
+                    """
+                    UPDATE miner_stats
+                    SET miner_current_tier = ?
+                    WHERE miner_uid = ?
+                    """,
+                    """
+                    UPDATE miner_stats
+                    SET miner_current_clv_avg = ?
+                    WHERE miner_uid = ?
+                    """,
+                    """
+                    UPDATE miner_stats
+                    SET miner_current_roi = ?
+                    WHERE miner_uid = ?
+                    """,
+                    """
+                    UPDATE miner_stats
+                    SET miner_current_sortino_ratio = ?
+                    WHERE miner_uid = ?
+                    """,
+                    """
+                    UPDATE miner_stats
+                    SET miner_current_entropy_score = ?
+                    WHERE miner_uid = ?
+                    """
+                ]
+
+                for query, value in zip(update_queries, [
+                    score['composite_score'],
+                    score['tier_id'],
+                    score['clv_score'],
+                    score['roi_score'],
+                    score['sortino_score'],
+                    score['entropy_score']
+                ]):
+                    rows_affected = self.db_manager.execute_query(query, (value, score['miner_uid']))
+                    update_count += rows_affected
+
+            bt.logging.info(f"Updated {update_count} miner stat entries")
+
+            # Verify the updates
+            verify_query = """
+            SELECT COUNT(*) as count
+            FROM miner_stats
+            WHERE miner_current_composite_score > 0
+            """
+            verify_result = self.db_manager.fetch_one(verify_query)
+            bt.logging.info(f"Miner stats with non-zero composite score after update: {verify_result['count']}")
+
+            self.db_manager.commit_transaction()
+            bt.logging.info("Miner stats update transaction committed successfully.")
 
         except Exception as e:
+            self.db_manager.rollback_transaction()
             bt.logging.error(f"Error updating miner stats: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
             raise
+        finally:
+            # Double-check the results
+            final_check = self.db_manager.fetch_one("SELECT COUNT(*) as count FROM miner_stats WHERE miner_current_composite_score > 0", ())
+            bt.logging.info(f"Final check - Miner stats with non-zero composite score: {final_check['count']}")
+
+        bt.logging.info("Miner stats update process completed.")

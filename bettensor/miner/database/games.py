@@ -48,7 +48,7 @@ class GamesHandler:
         INSERT INTO games (
             game_id, team_a, team_a_odds, team_b, team_b_odds, sport, league,
             create_date, last_update_date, event_start_date, active, outcome, tie_odds, can_tie
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (game_id) DO UPDATE SET
             game_id = EXCLUDED.game_id,
             team_a = EXCLUDED.team_a,
@@ -59,7 +59,7 @@ class GamesHandler:
             league = EXCLUDED.league,
             last_update_date = EXCLUDED.last_update_date,
             event_start_date = EXCLUDED.event_start_date,
-            active = EXCLUDED.active,
+            active = EXCLUDED.active::integer,
             outcome = EXCLUDED.outcome,
             tie_odds = EXCLUDED.tie_odds,
             can_tie = EXCLUDED.can_tie
@@ -69,9 +69,6 @@ class GamesHandler:
         params_list = []
         for game_data in game_data_dict_by_id.values():
             event_start_date = self._ensure_timezone_aware(game_data.event_start_date)
-            is_active = (
-                1 if current_time <= datetime.fromisoformat(event_start_date) else 0
-            )
             params = (
                 game_data.game_id,
                 game_data.team_a,
@@ -83,7 +80,7 @@ class GamesHandler:
                 self._ensure_timezone_aware(game_data.create_date),
                 self._ensure_timezone_aware(game_data.last_update_date),
                 event_start_date,
-                is_active,
+                int(game_data.active),
                 game_data.outcome,
                 game_data.tie_odds,
                 game_data.can_tie,

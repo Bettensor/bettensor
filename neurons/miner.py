@@ -206,7 +206,10 @@ def main(miner: BettensorMiner):
                 bt.logging.info(
                     f"NFL Model on: {miner.predictions_handler.models['nfl'].nfl_model_on}"
                 )
+                
+
                 if miner.predictions_handler.models["nfl"].nfl_model_on:
+                    bt.logging.info("NFL Model on, getting games")
                     nfl_games = miner.games_handler.get_games_by_sport("nfl")
                     bt.logging.info(f"Retrieved {len(nfl_games)} active NFL games")
                     miner_cash = miner.stats_handler.get_miner_cash()
@@ -242,9 +245,10 @@ def main(miner: BettensorMiner):
                             )
                         else:
                             bt.logging.info("No NFL games to process")
+                bt.logging.info(f"Waiting for Synapses, please be patient...")
 
-                miner.step += 1
-                time.sleep(1)
+            miner.step += 1
+            time.sleep(1)
 
         # If someone intentionally stops the miner, it'll safely terminate operations.
         except KeyboardInterrupt:

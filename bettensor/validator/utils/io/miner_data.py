@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict
 import bittensor as bt
 import torch
-from bettensor.protocol import TeamGame, TeamGamePrediction
+from bettensor.protocol import GameData, TeamGame, TeamGamePrediction
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 
 
@@ -34,6 +34,8 @@ class MinerDataMixin:
 
         for uid, prediction_dict in predictions.items():
             for prediction_id, res in prediction_dict.items():
+                return_dict = {}
+
                 if int(uid) not in processed_uids:
                     continue
 
@@ -47,6 +49,8 @@ class MinerDataMixin:
                 prediction_date = today_utc
                 predicted_outcome = res.predicted_outcome
                 wager = res.wager
+                model_name = res.model_name
+                confidence_score = res.confidence_score
 
                 if wager <= 0:
                     bt.logging.warning(
@@ -127,8 +131,8 @@ class MinerDataMixin:
                     # Insert new prediction
                     self.db_manager.execute_query(
                         """
-                        INSERT INTO predictions (prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, can_overwrite, outcome)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO predictions (prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, can_overwrite, outcome, model_name, confidence_score)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             prediction_id,
@@ -144,16 +148,51 @@ class MinerDataMixin:
                             tie_odds,
                             False,
                             outcome,
+                            model_name,
+                            confidence_score,
                         ),
                     )
                     self.db_manager.commit_transaction()
+                    return_dict[prediction_id] = res
+
+
+
                 except Exception as e:
                     self.db_manager.rollback_transaction()
                     bt.logging.error(f"An error occurred: {e}")
 
+        self.send_confirmation_synapse(miner_uid, return_dict)
+
         # After inserting predictions, update entropy scores
         # game_data = self.prepare_game_data_for_entropy(predictions)
         # self.entropy_system.update_ebdr_scores(game_data)
+
+    def send_confirmation_synapse(self,miner_uid, predictions):
+        """
+        Sends a confirmation synapse to the miner
+
+        Args:
+            miner_uid: the uid of the miner
+            predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
+        """
+        synapse = GameData.create(
+            db_path=self.db_path,
+            wallet=self.wallet,
+            subnet_version=self.subnet_version,
+            neuron_uid=miner_uid,
+            synapse_type="confirmation",
+            confirmation_dict=predictions,
+        )
+
+        #get axon for uid
+        axon = self.metagraph.axons[miner_uid]
+
+        self.dendrite.call(
+            target_axon=axon,
+            synapse=synapse,
+            timeout=12,
+            deserialize=True,
+        )
 
     def process_prediction(
         self, processed_uids: torch.tensor, predictions: list

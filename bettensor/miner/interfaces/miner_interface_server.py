@@ -228,6 +228,12 @@ def submit_predictions():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@app.route('/test', methods=['GET'])
+def test():
+    bt.logging.info("Test route accessed")
+    return "Server is running", 200
+
+
 @app.route("/heartbeat", methods=["GET"])
 @limiter.exempt
 @token_required
@@ -399,3 +405,13 @@ if __name__ == "__main__":
         use_reloader=False,
         threaded=True,
     )
+
+
+
+    class DebugSSLContext(ssl.SSLContext):
+        def wrap_socket(self, *args, **kwargs):
+            bt.logging.info("SSL handshake initiated")
+            return super().wrap_socket(*args, **kwargs)
+
+    context = DebugSSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=CHILD_CERT_PATH, keyfile=PRIVATE_KEY_PATH)

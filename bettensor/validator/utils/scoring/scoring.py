@@ -121,6 +121,7 @@ class ScoringSystem:
 
         self.scoring_data = ScoringData(db_manager, num_miners)
         self.entropy_system = EntropySystem(num_miners, max_days)
+        self.incentives = []
 
         self.current_day = 0
         self.current_date = datetime.now(timezone.utc)  # Initialize current_date
@@ -1207,7 +1208,7 @@ class ScoringSystem:
         """
         try:
             fetch_scores_query = """
-                SELECT miner_uid, day_id, tier_id, clv_score, roi_score, entropy_score, composite_score
+                SELECT miner_uid, day_id, tier_id, clv_score, roi_score, entropy_score, composite_score, sortino_score
                 FROM scores
             """
             scores = self.db_manager.fetch_all(fetch_scores_query, None)

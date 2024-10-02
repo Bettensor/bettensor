@@ -8,7 +8,7 @@ from typing import Tuple
 import bittensor as bt
 import sqlite3
 from bettensor.base.neuron import BaseNeuron
-from bettensor.protocol import Confirmation, Metadata, GameData
+from bettensor.protocol import Metadata, GameData
 from bettensor.miner.stats.miner_stats import MinerStateManager, MinerStatsHandler
 import datetime
 import os
@@ -191,9 +191,10 @@ class BettensorMiner(BaseNeuron):
         self.miner_config = MinerConfig()
 
     def forward(self, synapse: GameData) -> Synapse:
-        if isinstance(synapse, GameData):
+
+        if synapse.metadata.synapse_type == "game_data":
             return self._handle_game_data(synapse)
-        elif isinstance(synapse, Confirmation):
+        elif synapse.metadata.synapse_type == "confirmation":
             return self._handle_confirmation(synapse)
         else:
             raise ValueError(f"Unsupported synapse type: {type(synapse)}")
@@ -256,7 +257,7 @@ class BettensorMiner(BaseNeuron):
 
         return synapse
 
-    def _handle_confirmation(self, synapse: Confirmation) -> None:
+    def _handle_confirmation(self, synapse: GameData) -> None:
         bt.logging.debug(f"Processing confirmation from {synapse.dendrite.hotkey}")
         if synapse.confirmation_dict:
             prediction_ids = list(synapse.confirmation_dict.keys())

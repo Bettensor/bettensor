@@ -246,6 +246,7 @@ class GameData(bt.Synapse):
     metadata: Optional[Metadata]
     gamedata_dict: Optional[Dict[str, TeamGame]]
     prediction_dict: Optional[Dict[str, TeamGamePrediction]]
+    confirmation_dict: Optional[Dict[str, TeamGamePrediction]]
     error: Optional[str]
 
     @classmethod
@@ -258,6 +259,7 @@ class GameData(bt.Synapse):
         synapse_type: str,
         gamedata_dict: Dict[str, TeamGame] = None,
         prediction_dict: Dict[str, TeamGamePrediction] = None,
+        confirmation_dict: Dict[str, TeamGamePrediction] = None,
     ):
         metadata = Metadata.create(
             wallet=wallet,
@@ -281,35 +283,3 @@ class GameData(bt.Synapse):
         return self.gamedata_dict, self.prediction_dict, self.metadata
 
 
-class Confirmation(bt.Synapse):
-    """
-    This class defines the confirmation object for a prediction. Sent to specific neurons for confirmation of predictions.
-    """
-
-    metadata: Optional[Metadata]
-    confirmation_dict: Optional[Dict[str, TeamGamePrediction]]
-    error: Optional[str]
-
-    @classmethod
-    def create(
-        cls,
-        wallet: bt.wallet,
-        subnet_version: str,
-        neuron_uid: int,
-        synapse_type: str,
-        confirmation_dict: Dict[str, TeamGamePrediction] = None,
-    ):
-        metadata = Metadata.create(
-            wallet=wallet,
-            subnet_version=subnet_version,
-            neuron_uid=str(neuron_uid),  # Convert to string here
-            synapse_type=synapse_type,
-        )
-        return cls(
-            metadata=metadata,
-            confirmation_dict=confirmation_dict,
-            synapse_type=synapse_type,
-        )
-
-    def deserialize(self):
-        return self.confirmation_dict, self.metadata

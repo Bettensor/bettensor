@@ -166,7 +166,7 @@ class DatabaseManager:
                 create_date TEXT,
                 last_update_date TEXT,
                 event_start_date TEXT,
-                active BOOLEAN,
+                active INTEGER,
                 outcome TEXT,
                 team_a_odds REAL,
                 team_b_odds REAL,

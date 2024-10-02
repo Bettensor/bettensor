@@ -277,6 +277,9 @@ def scoring_run(validator, current_time):
         valid_uids = set(list_of_uids)
         # Combine blacklisted_uids and uids_not_to_query
         invalid_uids = set(blacklisted_uids + uids_not_to_query)
+
+        
+
         validator.scores = validator.scoring_system.scoring_run(
             current_time, invalid_uids, valid_uids
         )
