@@ -251,7 +251,7 @@ def send_data_to_website_server(validator):
     current_block = validator.subtensor.block
 
     try:
-        result = fetch_and_send_predictions("data/validator.db")
+        result = fetch_and_send_predictions()
         bt.logging.info(f"Result status: {result}")
         if result:
             bt.logging.info("Predictions fetched and sent successfully")

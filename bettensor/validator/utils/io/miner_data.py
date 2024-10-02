@@ -161,7 +161,7 @@ class MinerDataMixin:
                     self.db_manager.rollback_transaction()
                     bt.logging.error(f"An error occurred: {e}")
 
-        self.send_confirmation_synapse(miner_uid, return_dict)
+            self.send_confirmation_synapse(uid, return_dict)
 
         # After inserting predictions, update entropy scores
         # game_data = self.prepare_game_data_for_entropy(predictions)

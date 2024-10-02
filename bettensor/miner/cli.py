@@ -506,7 +506,7 @@ class Application:
                 if self.predictions_search_query.lower() in v["home"].lower()
                 or self.predictions_search_query.lower() in v["away"].lower()
                 or self.predictions_search_query.lower()
-                in v["predictedoutcome"].lower()
+                in v["predicted_outcome"].lower()
                 or self.predictions_search_query.lower() in v["outcome"].lower()
             }
             logging.debug(f"Filtered to {len(filtered_predictions)} predictions")
@@ -533,7 +533,7 @@ class Application:
                 len(self.format_date(pred["predictiondate"]))
                 for pred in predictions.values()
             ),
-            "Game ID": max(len(pred["teamgameid"]) for pred in predictions.values()),
+            "Game ID": max(len(pred["game_id"]) for pred in predictions.values()),
             "Home": max(len(pred["home"]) for pred in predictions.values()),
             "Away": max(len(pred["away"]) for pred in predictions.values()),
             "Predicted Outcome": max(
@@ -541,7 +541,7 @@ class Application:
             ),
             "Wager": max(len(f"${pred['wager']:.2f}") for pred in predictions.values()),
             "Wager Odds": max(
-                len(f"{pred['teamaodds']:.2f}") for pred in predictions.values()
+                len(f"{pred['team_a_odds']:.2f}") for pred in predictions.values()
             ),  # Use teamaodds as a placeholder
             "Result": max(len(pred["outcome"]) for pred in predictions.values()),
             "Payout": 10,  # Assuming a reasonable width for payout
@@ -578,12 +578,12 @@ class Application:
         )
         for pred in predictions_to_display:
             # Calculate wager odds based on the predicted outcome
-            if pred["predictedoutcome"] == pred["home"]:
-                wager_odds = pred["teamaodds"]
-            elif pred["predictedoutcome"] == pred["away"]:
-                wager_odds = pred["teambodds"]
+            if pred["predicted_outcome"] == pred["home"]:
+                wager_odds = pred["team_a_odds"]
+            elif pred["predicted_outcome"] == pred["away"]:
+                wager_odds = pred["team_b_odds"]
             else:
-                wager_odds = pred["tieodds"] if "tieodds" in pred else "N/A"
+                wager_odds = pred["tie_odds"] if "tie_odds" in pred else "N/A"
 
             # Calculate payout
             if pred["outcome"] == "Wager Won":
@@ -594,11 +594,11 @@ class Application:
                 payout = "Pending"
 
             table.add_row(
-                self.format_date(pred["predictiondate"]),
-                pred["teamgameid"],
+                self.format_date(pred["prediction_date"]),
+                pred["game_id"],
                 pred["home"],
                 pred["away"],
-                pred["predictedoutcome"],
+                pred["predicted_outcome"],
                 f"${pred['wager']:.2f}",
                 f"{wager_odds:.2f}"
                 if isinstance(wager_odds, (int, float))
@@ -640,8 +640,8 @@ class Application:
                 k: v
                 for k, v in games.items()
                 if self.search_query.lower() in v.sport.lower()
-                or self.search_query.lower() in v.teamA.lower()
-                or self.search_query.lower() in v.teamB.lower()
+                or self.search_query.lower() in v.team_a.lower()
+                or self.search_query.lower() in v.team_b.lower()
             }
 
         if not games:
@@ -660,8 +660,8 @@ class Application:
 
         max_widths = {
             "Sport": max((len(game.sport) for game in games.values()), default=10),
-            "Team A": max((len(game.teamA) for game in games.values()), default=10),
-            "Team B": max((len(game.teamB) for game in games.values()), default=10),
+            "Team A": max((len(game.team_a) for game in games.values()), default=10),
+            "Team B": max((len(game.team_b) for game in games.values()), default=10),
             "Start Date": len("YYYY-MM-DD HH:MM"),
             "Team A Odds": len("100.00"),
             "Team B Odds": len("100.00"),
@@ -689,12 +689,12 @@ class Application:
             style = "reverse" if i == self.cursor_position else ""
             table.add_row(
                 game.sport,
-                game.teamA,
-                game.teamB,
-                self.format_event_start_date(game.eventStartDate),
-                f"{game.teamAodds:.2f}",
-                f"{game.teamBodds:.2f}",
-                f"{game.tieOdds:.2f}" if game.tieOdds is not None else "N/A",
+                game.team_a,
+                game.team_b,
+                self.format_event_start_date(game.event_start_date),
+                f"{game.team_a_odds:.2f}",
+                f"{game.team_b_odds:.2f}",
+                f"{game.tie_odds:.2f}" if game.tie_odds is not None else "N/A",
                 style=style,
             )
 
@@ -765,18 +765,18 @@ class Application:
         table.add_column("Value", style=GOLD)
 
         table.add_row("Sport", self.selected_game.sport)
-        table.add_row("Team A", self.selected_game.teamA)
-        table.add_row("Team B", self.selected_game.teamB)
+        table.add_row("Team A", self.selected_game.team_a)
+        table.add_row("Team B", self.selected_game.team_b)
         table.add_row(
             "Start Date",
             self.format_event_start_date(self.selected_game.eventStartDate),
         )
-        table.add_row("Team A Odds", f"{self.selected_game.teamAodds:.2f}")
-        table.add_row("Team B Odds", f"{self.selected_game.teamBodds:.2f}")
+        table.add_row("Team A Odds", f"{self.selected_game.team_a_odds:.2f}")
+        table.add_row("Team B Odds", f"{self.selected_game.team_b_odds:.2f}")
         table.add_row(
             "Tie Odds",
-            f"{self.selected_game.tieOdds:.2f}"
-            if self.selected_game.tieOdds is not None
+            f"{self.selected_game.tie_odds:.2f}"
+            if self.selected_game.tie_odds is not None
             else "N/A",
         )
         table.add_row("Predicted Outcome", self.prediction_outcome or "Not selected")

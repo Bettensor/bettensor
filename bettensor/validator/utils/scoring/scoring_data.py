@@ -203,7 +203,7 @@ class ScoringData:
                 bt.logging.error(f"Error initializing miner_stats: {str(e)}")
                 raise
 
-    def update_miner_stats(self, current_day, incentives: List[float]):
+    def update_miner_stats(self, current_day):
         """
         Queries relevant tables to keep the miner stats rows up to date.
         This method updates both lifetime and current statistics for each miner.

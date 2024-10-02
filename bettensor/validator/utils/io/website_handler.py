@@ -58,7 +58,7 @@ def fetch_predictions_from_db():
     :return: List of dictionaries containing prediction data
     """
     query = """
-    SELECT prediction_id, game_id, miner_id, prediction_date, predicted_outcome,
+    SELECT prediction_id, game_id, miner_uid, prediction_date, predicted_outcome,
            predicted_odds, team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds,
            is_model_prediction, outcome, payout, sent_to_site
     FROM predictions
