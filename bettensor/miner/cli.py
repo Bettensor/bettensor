@@ -736,7 +736,7 @@ class Application:
             0  # Reset the last prediction time when entering a new prediction
         )
         self.last_prediction_id = None  # Reset the last prediction ID
-        self.can_tie = selected_game.canTie  # Store the canTie value
+        self.can_tie = selected_game.can_tie  # Store the canTie value
 
     def generate_enter_prediction_view(self):
         if not self.games_handler or not self.miner_uid:
