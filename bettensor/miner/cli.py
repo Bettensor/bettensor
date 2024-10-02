@@ -769,7 +769,7 @@ class Application:
         table.add_row("Team B", self.selected_game.team_b)
         table.add_row(
             "Start Date",
-            self.format_event_start_date(self.selected_game.eventStartDate),
+            self.format_event_start_date(self.selected_game.event_start_date),
         )
         table.add_row("Team A Odds", f"{self.selected_game.team_a_odds:.2f}")
         table.add_row("Team B Odds", f"{self.selected_game.team_b_odds:.2f}")
