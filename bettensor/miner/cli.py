@@ -1011,13 +1011,13 @@ class Application:
             "a", filter=Condition(lambda: self.current_view == "enter_prediction")
         )
         def _(event):
-            self.prediction_outcome = self.selected_game.teamA
+            self.prediction_outcome = self.selected_game.team_a
 
         @self.kb.add(
             "b", filter=Condition(lambda: self.current_view == "enter_prediction")
         )
         def _(event):
-            self.prediction_outcome = self.selected_game.teamB
+            self.prediction_outcome = self.selected_game.team_b
 
         @self.kb.add(
             "t",
