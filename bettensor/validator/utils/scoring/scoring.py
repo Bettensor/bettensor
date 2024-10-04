@@ -806,7 +806,7 @@ class ScoringSystem:
             ("Entropy", self.entropy_scores),
             ("Sortino", self.sortino_scores),
             ("Composite", self.composite_scores),
-
+            
         ]:
             current_scores = self._get_array_for_day(score_array, self.current_day)
             bt.logging.info(
