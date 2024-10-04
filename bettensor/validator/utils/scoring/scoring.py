@@ -211,9 +211,9 @@ class ScoringSystem:
         bt.logging.trace(f"Closing line odds shape: {closing_line_odds.shape}")
         bt.logging.trace(f"Results shape: {results.shape}")
 
-        # Extract unique game IDs from predictions and convert to a list of integers
-        game_ids = np.unique(predictions[:, 1]).astype(int).tolist()
-        bt.logging.debug(f"Unique game IDs: {game_ids}")
+        # Extract unique external_ids from predictions
+        external_ids = np.unique(predictions[:, 1]).astype(int).tolist()
+        bt.logging.debug(f"Unique external_ids: {external_ids}")
 
         # Calculate CLV scores for all predictions
         clv_scores = self._calculate_clv_scores(predictions, closing_line_odds)
@@ -222,6 +222,10 @@ class ScoringSystem:
         # Calculate ROI scores for all predictions
         roi_scores = self._calculate_roi_scores(predictions, results)
         self.roi_scores[:, self.current_day] = roi_scores
+
+        # Calculate Sortino scores for all predictions
+        sortino_scores = self._calculate_sortino_scores(predictions, results)
+        self.sortino_scores[:, self.current_day] = sortino_scores
 
         # Extract miner_id from index 0 and wager from index 5
         for pred in predictions:
@@ -259,7 +263,7 @@ class ScoringSystem:
 
         # Update entropy scores
         entropy_scores = self.entropy_system.get_current_ebdr_scores(
-            self.current_date, self.current_day, game_ids
+            self.current_date, self.current_day, external_ids
         )
         self._set_array_for_day(self.entropy_scores, self.current_day, entropy_scores)
 
@@ -288,22 +292,22 @@ class ScoringSystem:
         clv_scores = np.zeros(self.num_miners)
         prediction_counts = np.zeros(self.num_miners)
 
-        # Create a mapping from game_id to index in closing_line_odds
-        unique_game_ids = np.unique(predictions[:, 1])
-        game_id_to_index = {game_id: idx for idx, game_id in enumerate(unique_game_ids)}
+        # Create a mapping from external_id to index in closing_line_odds
+        unique_external_ids = np.unique(predictions[:, 1])
+        external_id_to_index = {external_id: idx for idx, external_id in enumerate(unique_external_ids)}
 
         for pred in predictions:
-            miner_id, game_id, predicted_outcome, predicted_odds, payout, wager = pred
+            miner_id, external_id, predicted_outcome, predicted_odds, payout, wager = pred
             miner_id = int(miner_id)
-            game_id = int(game_id)
+            external_id = int(external_id)
             predicted_outcome = int(predicted_outcome)
 
             if 0 <= miner_id < self.num_miners:
                 if (
-                    game_id in game_id_to_index
+                    external_id in external_id_to_index
                     and predicted_outcome < closing_line_odds.shape[1]
                 ):
-                    closing_odds_index = game_id_to_index[game_id]
+                    closing_odds_index = external_id_to_index[external_id]
                     closing_odds = closing_line_odds[
                         closing_odds_index, predicted_outcome
                     ]
@@ -315,18 +319,18 @@ class ScoringSystem:
                             prediction_counts[miner_id] += 1
                         else:
                             bt.logging.warning(
-                                f"Invalid CLV value for miner {miner_id} on game {game_id}."
+                                f"Invalid CLV value for miner {miner_id} on external_id {external_id}."
                             )
                     elif predicted_outcome == 2:
                         continue  # Tie outcome
                         # bt.logging.trace(f"No tie odds for game {game_id}. Skipping CLV calculation for this prediction.")
                     else:
                         bt.logging.warning(
-                            f"Closing odds are zero for game {game_id}, outcome {predicted_outcome}."
+                            f"Closing odds are zero for external_id {external_id}, outcome {predicted_outcome}."
                         )
                 else:
                     bt.logging.warning(
-                        f"Invalid game_id or predicted_outcome: {game_id}, {predicted_outcome}"
+                        f"Invalid external_id or predicted_outcome: {external_id}, {predicted_outcome}"
                     )
             else:
                 bt.logging.warning(
@@ -345,10 +349,10 @@ class ScoringSystem:
 
         Args:
             predictions (np.ndarray): Structured prediction data with shape (num_predictions, 6).
-            results (np.ndarray): Array of game results with shape (num_games,).
+            results (np.ndarray): Array of game results with shape (num_games, 2).
 
         Returns:
-            np.ndarray: ROI scores with shape (num_miners,).
+            np.ndarray: ROI scores with shape (num_miners,), representing percentage returns.
         """
         if predictions.size == 0 or results.size == 0:
             bt.logging.error("Predictions or game results are empty.")
@@ -357,69 +361,117 @@ class ScoringSystem:
         roi_scores = np.zeros(self.num_miners)
         prediction_counts = np.zeros(self.num_miners)
 
+        # Create a dictionary mapping external_id to outcome
+        game_outcomes = dict(results)
+
         for pred in predictions:
             miner_id, game_id, predicted_outcome, predicted_odds, payout, wager = pred
             miner_id = int(miner_id)
             game_id = int(game_id)
-            # predicted_outcome and predicted_odds are not directly used for ROI
 
-            if wager == 0:
+            # Fetch the actual outcome
+            actual_outcome = game_outcomes.get(game_id)
+            if actual_outcome is None:
                 bt.logging.error(
-                    f"Wager is zero for miner {miner_id} on game {game_id}. Skipping ROI calculation."
+                    f"No actual outcome found for game_id {game_id}. Skipping ROI calculation for miner {miner_id}."
                 )
                 continue
 
-            roi = (payout - wager) / wager
+            if wager == 0:
+                bt.logging.error(
+                    f"Wager is zero for miner {miner_id} on game_id {game_id}. Skipping ROI calculation."
+                )
+                continue
+
+            roi = (payout - wager) / wager  # ROI as a percentage
+
+            # bt.logging.debug(
+            #     f"Miner {miner_id} | Game ID (External ID) {game_id} | Predicted Outcome: {predicted_outcome} | "
+            #     f"Actual Outcome: {actual_outcome} | Wager: {wager} | Payout: {payout} | ROI: {roi}"
+            # )
 
             if np.isfinite(roi):
                 roi_scores[miner_id] += roi
                 prediction_counts[miner_id] += 1
             else:
                 bt.logging.error(
-                    f"Invalid ROI value for miner {miner_id} on game {game_id}."
+                    f"Invalid ROI value ({roi}) for miner {miner_id} on game_id {game_id}."
                 )
 
-        # Avoid division by zero and compute average ROI per miner
+        # Compute average ROI per miner without normalization
         mask = prediction_counts > 0
         roi_scores[mask] /= prediction_counts[mask]
 
+        bt.logging.info(
+            f"ROI Scores - min: {roi_scores.min():.4f}, max: {roi_scores.max():.4f}, mean: {roi_scores.mean():.4f}"
+        )
+
         return roi_scores
 
-    def _calculate_sortino_scores(self, roi):
+    def _calculate_sortino_scores(self, predictions, results):
         """
-        Calculate the Sortino ratios for the given ROI scores.
+        Calculate Sortino ratios for miners based on individual prediction outcomes.
 
         Args:
-            roi (np.ndarray): Array of ROI scores.
+            predictions (np.ndarray): Structured prediction data with shape (num_predictions, 6).
+            results (np.ndarray): Array of game results with shape (num_games, 2).
 
         Returns:
-            np.ndarray: Array of Sortino ratios.
+            np.ndarray: Sortino ratios with shape (num_miners,).
         """
-        risk_free_rate = 0.00  # Assuming a 2% risk-free rate, adjust as needed
-        excess_returns = roi - risk_free_rate
+        if predictions.size == 0 or results.size == 0:
+            bt.logging.error("Predictions or game results are empty.")
+            return np.zeros(self.num_miners)
 
-        if excess_returns.ndim == 1:
-            # Handle one-dimensional array (single day)
-            sortino_ratios = np.zeros(self.num_miners)
-            for miner in range(self.num_miners):
-                if np.isnan(excess_returns[miner]):
-                    sortino_ratios[miner] = 0
-                else:
-                    downside_returns = np.minimum(
-                        excess_returns[miner] - excess_returns[miner], 0
-                    )
-                    downside_deviation = np.sqrt(np.mean(downside_returns**2))
-                    sortino_ratios[miner] = excess_returns[miner] / (
-                        downside_deviation + self.epsilon
-                    )
-        else:
-            # Handle two-dimensional array (multiple days)
-            expected_return = np.nanmean(excess_returns, axis=1)
-            downside_returns = np.minimum(
-                excess_returns - expected_return[:, np.newaxis], 0
-            )
-            downside_deviation = np.sqrt(np.nanmean(downside_returns**2, axis=1))
-            sortino_ratios = expected_return / (downside_deviation + self.epsilon)
+        sortino_ratios = np.zeros(self.num_miners)
+        returns = np.zeros(self.num_miners, dtype=object)
+        for miner_id in range(self.num_miners):
+            returns[miner_id] = []
+
+        game_outcomes = dict(results)
+
+        risk_free_rate = 0.00  # Adjust as needed
+        max_sortino_ratio = 10.0  # Set a maximum cap for Sortino ratio
+        epsilon = 0.01  # Increased epsilon to avoid division by very small numbers
+
+        for pred in predictions:
+            miner_id, game_id, predicted_outcome, predicted_odds, payout, wager = pred
+            miner_id = int(miner_id)
+            game_id = int(game_id)
+
+            actual_outcome = game_outcomes.get(game_id)
+            if actual_outcome is None:
+                bt.logging.error(f"No actual outcome found for game_id {game_id}. Skipping this prediction.")
+                continue
+
+            if wager == 0:
+                bt.logging.error(f"Wager is zero for miner {miner_id} on game_id {game_id}. Skipping this prediction.")
+                continue
+
+            return_rate = (payout - wager) / wager - risk_free_rate
+            returns[miner_id].append(return_rate)
+
+        for miner_id in range(self.num_miners):
+            miner_returns = np.array(returns[miner_id])
+            if len(miner_returns) > 0:
+                # Remove outliers (returns more than 3 standard deviations from the mean)
+                mean_return = np.mean(miner_returns)
+                std_return = np.std(miner_returns)
+                miner_returns = miner_returns[abs(miner_returns - mean_return) <= 3 * std_return]
+
+                if len(miner_returns) > 0:
+                    average_return = np.mean(miner_returns)
+                    downside_returns = miner_returns[miner_returns < 0]
+                    if len(downside_returns) > 0:
+                        downside_deviation = np.sqrt(np.mean(np.square(downside_returns)))
+                        sortino_ratio = average_return / (downside_deviation + epsilon)
+                    else:
+                        # Use Sharpe ratio instead when all returns are positive
+                        sortino_ratio = average_return / (np.std(miner_returns) + epsilon)
+                    
+                    # Cap the Sortino ratio
+                    sortino_ratio = min(sortino_ratio, max_sortino_ratio)
+                    sortino_ratios[miner_id] = sortino_ratio
 
         return np.nan_to_num(sortino_ratios, nan=0.0)
 
@@ -427,38 +479,26 @@ class ScoringSystem:
         clv = self.clv_scores[:, self.current_day]
         roi = self.roi_scores[:, self.current_day]
         entropy = self.entropy_scores[:, self.current_day]
+        sortino = self.sortino_scores[:, self.current_day]
 
-        # Normalize scores
-        clv_normalized = self._normalize_scores(clv)
-        roi_normalized = self._normalize_scores(roi)
-        entropy_normalized = self._normalize_scores(entropy)
-
-        # Calculate Sortino scores
-        sortino_scores = self._calculate_sortino_scores(roi)
-        sortino_normalized = self._normalize_scores(sortino_scores)
-
-        # Calculate daily composite scores
+        # Calculate daily composite scores without normalizing any component scores
         daily_composite_scores = (
-            self.clv_weight * clv_normalized
-            + self.roi_weight * roi_normalized
-            + self.sortino_weight * sortino_normalized
-            + self.entropy_weight * entropy_normalized
+            self.clv_weight * clv
+            + self.roi_weight * roi
+            + self.sortino_weight * sortino
+            + self.entropy_weight * entropy
         )
 
         # Update the daily composite scores (index 0 of the 3rd dimension)
         self.composite_scores[:, self.current_day, 0] = daily_composite_scores
 
-        # Calculate rolling averages for each tier
+        # Calculate rolling averages for each tier based on raw composite scores
         for tier in range(1, 6):  # Tiers 1 to 5
-            window = self.tier_configs[tier + 1][
-                "window"
-            ]  # +1 because tier configs are 0-indexed
+            window = self.tier_configs[tier + 1]["window"]  # +1 because tier configs are 0-indexed
             start_day = (self.current_day - window + 1) % self.max_days
 
             if start_day <= self.current_day:
-                window_scores = self.composite_scores[
-                    :, start_day : self.current_day + 1, 0
-                ]
+                window_scores = self.composite_scores[:, start_day : self.current_day + 1, 0]
             else:
                 window_scores = np.concatenate(
                     [
@@ -473,16 +513,16 @@ class ScoringSystem:
 
         bt.logging.debug(f"Composite scores for day {self.current_day}:")
         bt.logging.debug(
-            f"CLV: min={clv_normalized.min():.4f}, max={clv_normalized.max():.4f}, mean={clv_normalized.mean():.4f}"
+            f"CLV: min={clv.min():.4f}, max={clv.max():.4f}, mean={clv.mean():.4f}"
         )
         bt.logging.debug(
-            f"ROI: min={roi_normalized.min():.4f}, max={roi_normalized.max():.4f}, mean={roi_normalized.mean():.4f}"
+            f"ROI: min={roi.min():.4f}, max={roi.max():.4f}, mean={roi.mean():.4f}"
         )
         bt.logging.debug(
-            f"Sortino: min={sortino_normalized.min():.4f}, max={sortino_normalized.max():.4f}, mean={sortino_normalized.mean():.4f}"
+            f"Sortino: min={sortino.min():.4f}, max={sortino.max():.4f}, mean={sortino.mean():.4f}"
         )
         bt.logging.debug(
-            f"Entropy: min={entropy_normalized.min():.4f}, max={entropy_normalized.max():.4f}, mean={entropy_normalized.mean():.4f}"
+            f"Entropy: min={entropy.min():.4f}, max={entropy.max():.4f}, mean={entropy.mean():.4f}"
         )
         bt.logging.debug(
             f"Daily Composite: min={daily_composite_scores.min():.4f}, max={daily_composite_scores.max():.4f}, mean={daily_composite_scores.mean():.4f}"
@@ -643,38 +683,12 @@ class ScoringSystem:
                 f"Current tiers after management: {np.bincount(current_tiers, minlength=self.num_tiers)}"
             )
             bt.logging.info("Tier management completed")
-            self.log_tier_summary("Tier distribution after management")
+
 
         except Exception as e:
             bt.logging.error(f"Error managing tiers: {str(e)}")
             raise
 
-    def log_tier_summary(self, message="Current tier distribution"):
-        current_tiers = self.tiers[:, self.current_day]
-        tier_counts = np.bincount(current_tiers, minlength=self.num_tiers)
-
-        bt.logging.info(f"{message}:")
-
-        # Log special tiers
-        bt.logging.info("Special tiers:")
-        bt.logging.info(f"  Tier -1 (Empty slots): {tier_counts[0]} miners")
-        bt.logging.info(f"  Tier 0 (Invalid UIDs): {tier_counts[1]} miners")
-
-        # Log active tiers
-        bt.logging.info("Active tiers:")
-        for tier in range(2, self.num_tiers):
-            bt.logging.info(f"  Tier {tier-1}: {tier_counts[tier]} miners")
-
-        # Log total active miners
-        total_active = sum(tier_counts[2:])
-        bt.logging.info(f"Total active miners: {total_active}")
-
-        # Log percentage of active miners in each tier
-        if total_active > 0:
-            bt.logging.info("Percentage of active miners in each tier:")
-            for tier in range(2, self.num_tiers):
-                percentage = (tier_counts[tier] / total_active) * 100
-                bt.logging.info(f"  Tier {tier-1}: {percentage:.2f}%")
 
     def _fill_empty_slots(
         self, tier, current_tiers, composite_scores_tier, tier_config
@@ -772,7 +786,7 @@ class ScoringSystem:
         self.amount_wagered[miner_uid] = 0
         self.composite_scores[miner_uid] = 0
         self.entropy_scores[miner_uid] = 0
-        self.tiers[miner_uid] = 0 if miner_uid in self.invalid_uids else 1
+        self.tiers[miner_uid] = 1 if miner_uid in self.invalid_uids else 2
 
     def get_miner_history(self, miner_uid: int, score_type: str, days: int = None):
         """
@@ -858,54 +872,44 @@ class ScoringSystem:
             non_empty_tiers = tier_counts > 0
             active_tiers = np.arange(2, self.num_tiers)[non_empty_tiers]
 
-            # Redistribute weights from empty tiers
-            total_active_incentive = normalized_incentives[non_empty_tiers].sum()
-            adjusted_incentives = (
-                normalized_incentives[non_empty_tiers] / total_active_incentive
-                if total_active_incentive > 0
-                else np.zeros_like(normalized_incentives[non_empty_tiers])
-            )
-
-            for i, tier in enumerate(active_tiers):
-                tier_mask = (current_tiers == tier) & np.isin(
-                    np.arange(self.num_miners), valid_miners
-                )
-                tier_scores = self.composite_scores[:, self.current_day, tier - 2][
-                    tier_mask
-                ]
-
-                if tier_scores.size == 0:
+            # Assign weights based on incentives and composite scores
+            for idx, tier in enumerate(active_tiers):
+                # Get miners in the current tier
+                tier_miners = np.where(current_tiers == tier)[0]
+                if len(tier_miners) == 0:
                     continue
 
-                # Normalize scores within the tier
-                tier_weights = (
-                    np.exp(tier_scores) / np.sum(np.exp(tier_scores))
-                    if np.sum(np.exp(tier_scores)) > 0
-                    else np.zeros_like(tier_scores)
-                )
+                # Normalize composite scores within the tier
+                composite_scores = self.composite_scores[tier_miners, self.current_day, 0]
+                max_score = composite_scores.max()
+                if max_score == 0:
+                    normalized_scores = np.ones_like(composite_scores)
+                else:
+                    normalized_scores = composite_scores / max_score
 
-                # Apply adjusted tier incentive
-                tier_weights *= adjusted_incentives[i]
+                # Apply tier incentive to the weights
+                incentive_factor = normalized_incentives[idx]
+                weights[tier_miners] = normalized_scores * incentive_factor
 
-                weights[tier_mask] = tier_weights
-
-            # Ensure weights sum to 1
+            # Normalize the weights to sum to 1
             total_weight = weights.sum()
             if total_weight > 0:
                 weights /= total_weight
             else:
-                weights[valid_miners] = (
-                    1.0 / len(valid_miners) if len(valid_miners) > 0 else 0.0
-                )
+                bt.logging.warning("Total weight is zero. Distributing weights equally among valid miners.")
+                weights[list(valid_miners)] = 1 / len(valid_miners)
 
+            bt.logging.info(f"Weight sum: {weights.sum():.6f}")
             bt.logging.info(
-                f"Weights calculated - min: {weights.min():.4f}, max: {weights.max():.4f}, mean: {weights.mean():.4f}"
+                f"Min weight: {weights.min():.6f}, Max weight: {weights.max():.6f}"
             )
+            # Optionally, log individual weights or statistics here
+
+            return weights
 
         except Exception as e:
             bt.logging.error(f"Error calculating weights: {str(e)}")
             raise
-        return weights
 
     def scoring_run(self, date, invalid_uids, valid_uids):
         bt.logging.info(f"=== Starting scoring run for date: {date} ===")
@@ -937,7 +941,6 @@ class ScoringSystem:
         bt.logging.info(f"Assigned {len(self.invalid_uids)} invalid UIDs to tier 1.")
         bt.logging.info(f"Assigned {len(self.valid_uids)} valid UIDs to tier 2.")
 
-
         current_date = self._ensure_datetime(date)
         self.advance_day(current_date)
 
@@ -947,10 +950,7 @@ class ScoringSystem:
             f"Current day: {self.current_day}, reference date: {self.reference_date}"
         )
 
-        # Log initial tier distribution
-        self.log_tier_summary("Initial tier distribution")
-
-        # Add this debugging code before calculating Sortino ratios
+        # Add this debugging code before calculating composite scores
         current_tiers = self.tiers[:, self.current_day]
         tier_distribution = [
             int(np.sum(current_tiers == tier))
@@ -982,9 +982,7 @@ class ScoringSystem:
                 f"No predictions for date {date_str}. Skipping score update."
             )
 
-        self.manage_tiers(self.invalid_uids,self.valid_uids)
-
-       
+        self.manage_tiers(self.invalid_uids, self.valid_uids)
 
         # Calculate weights using the existing method
         weights = self.calculate_weights()
@@ -1003,10 +1001,8 @@ class ScoringSystem:
         bt.logging.info(
             f"Min weight: {weights.min():.6f}, Max weight: {weights.max():.6f}"
         )
-
         bt.logging.info(f"Weights: {weights}")
         # Log final tier distribution
-        self.log_tier_summary("Final tier distribution")
         self.log_score_summary()
 
         bt.logging.info(f"=== Completed scoring run for date: {date_str} ===")
@@ -1229,14 +1225,6 @@ class ScoringSystem:
         except Exception as e:
             bt.logging.error(f"Error loading scores from database: {e}")
             raise
-
-    def _normalize_scores(self, scores):
-        min_score = np.nanmin(scores)
-        max_score = np.nanmax(scores)
-        if min_score == max_score:
-            return np.zeros_like(scores)
-        normalized = (scores - min_score) / (max_score - min_score)
-        return np.nan_to_num(normalized, nan=0.0)
 
     def _ensure_datetime(self, date):
         if isinstance(date, str):
