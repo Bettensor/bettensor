@@ -254,6 +254,8 @@ class BettensorMiner(BaseNeuron):
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")
             return self._clean_synapse(synapse, f"Error in forward method: {e}")
+        
+        bt.logging.info(f"Synapse after processing: {synapse}")
 
         return synapse
 
@@ -280,7 +282,6 @@ class BettensorMiner(BaseNeuron):
 
     def _create_metadata(self, synapse_type):
         return Metadata.create(
-            wallet=self.wallet,
             subnet_version=self.subnet_version,
             neuron_uid=self.miner_uid,
             synapse_type=synapse_type,
@@ -298,7 +299,6 @@ class BettensorMiner(BaseNeuron):
         synapse.gamedata_dict = None
         synapse.prediction_dict = None
         synapse.metadata = Metadata.create(
-            wallet=self.wallet,
             subnet_version=self.subnet_version,
             neuron_uid=self.miner_uid,
             synapse_type="error",

@@ -83,7 +83,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         args = parser.parse_args()
 
-        self.timeout = 25
+        self.timeout = 12 
         self.neuron_config = None
         self.wallet = None
         self.dendrite = None
@@ -511,7 +511,13 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             ],
             dtype=torch.bool,
         )
-        bt.logging.trace(f"uids with 0.0.0.0 as an ip address: {invalid_uids}")
+
+        # Append the validator's axon to invalid_uids
+        invalid_uids[self.uid] = True
+
+        bt.logging.trace(f"uids with 0.0.0.0 as an ip address or validator's axon: {invalid_uids}")
+
+       
 
         # get uids that have their hotkey blacklisted
         blacklisted_uids = []

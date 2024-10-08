@@ -166,7 +166,7 @@ class Metadata(BaseModel):
         synapse_id = str(uuid.uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
         bt.logging.debug(
-            f"Creating Metadata with synapse_id: {synapse_id}, neuron_uid: {neuron_uid}, timestamp: {timestamp}, subnet_version: {subnet_version}"
+            f"Creating Metadata with synapse_id: {synapse_id}, neuron_uid: {neuron_uid}, timestamp: {timestamp}, subnet_version: {subnet_version}, synapse_type: {synapse_type}"
         )
         return Metadata(
             synapse_id=synapse_id,
@@ -242,7 +242,7 @@ class GameData(bt.Synapse):
     """
     This class defines the synapse object for game data, consisting of a dictionary of TeamGame objects with a UUID as key.
     """
-    
+
     metadata: Optional[Metadata]
     gamedata_dict: Optional[Dict[str, TeamGame]]
     prediction_dict: Optional[Dict[str, TeamGamePrediction]]
@@ -287,6 +287,7 @@ class GameData(bt.Synapse):
             metadata=metadata,
             gamedata_dict=gamedata_dict,
             prediction_dict=prediction_dict,
+            confirmation_dict=confirmation_dict,
             synapse_type=synapse_type,
         )
 

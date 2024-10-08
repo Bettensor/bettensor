@@ -206,11 +206,12 @@ def query_and_process_axons_with_game_data(validator):
     uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query = result
 
     for i in range(0, len(uids_to_query), 20):
+
         responses += validator.dendrite.query(
             axons=uids_to_query[i : i + 20],
             synapse=synapse,
             timeout=validator.timeout,
-            deserialize=True,
+            deserialize=False,
         )
 
         for uid in blacklisted_uids:
@@ -255,27 +256,28 @@ def query_and_process_axons_with_game_data(validator):
     invalid_responses = []
 
     #print one whole response for debugging
-    bt.logging.info(f"Received response: {responses[0][0]}")
+    #bt.logging.info(f"Received response: {responses[0][0]}")
 
     bt.logging.info("Starting response processing...")
     
     for idx, response in enumerate(responses):
         try:
             bt.logging.info(f"Processing response: {idx}")
-            if response[2].synapse_type == "prediction":
+            if response.metadata.synapse_type == "prediction":
                 valid_responses.append(response)
-                bt.logging.info(f"Received valid response: {response[0].synapse_type}")
+                bt.logging.info(f"Received valid response: {response.metadata.synapse_type}")
             else:
                 invalid_responses.append(response)
-                bt.logging.warning(f"Received invalid response: {response[0].synapse_type}")
+                bt.logging.warning(f"Received invalid response: {response.metadata.synapse_type}")
         except Exception as e:
             bt.logging.error(f"Error processing response: {e}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            bt.logging.warning(f"Response: {response}")
             continue
     
 
-    bt.logging.warning(f"Received {len(invalid_responses)} invalid responses: {[response[0].synapse_type for response in invalid_responses]}")
-    bt.logging.warning(f"Affected Miners: {[response[2].metadata.neuron_uid for response in invalid_responses]}")
+    bt.logging.warning(f"Received {len(invalid_responses)} invalid responses: {[response.metadata.synapse_type for response in invalid_responses]}")
+    bt.logging.warning(f"Affected Miners: {[response.metadata.neuron_uid for response in invalid_responses]}")
 
     bt.logging.info(f"Received {len(valid_responses)} valid responses - processing...")
     if valid_responses and any(valid_responses):
