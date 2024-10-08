@@ -13,8 +13,10 @@ from rich import box
 from rich.panel import Panel
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.application.current import get_app
+from prompt_toolkit.keys import Keys
+import bittensor as bt
+import psycopg2.extras
 
-# Define custom colors
 DARK_GREEN = "dark_green"
 LIGHT_GREEN = "green"
 GOLD = "gold1"
@@ -28,7 +30,17 @@ class ModelParamsTUI:
         self.ensure_model_params_table_exists()
         self.miner_ids = self.get_all_miner_ids()
         self.current_miner_index = 0
-        self.load_params()
+        saved_miner_id = self.load_saved_miner_id()
+        if self.miner_ids:
+            if saved_miner_id and saved_miner_id in self.miner_ids:
+                self.miner_id = saved_miner_id
+            else:
+                self.miner_id = self.miner_ids[0]
+            self.load_params(self.miner_id)
+        else:
+            bt.logging.warning("No miner IDs found in the database.")
+            self.miner_id = None
+            self.params = {}
         self.kb = KeyBindings()
         self.edit_mode = False
         self.edit_value = ""
@@ -49,12 +61,21 @@ class ModelParamsTUI:
             "nfl_max_bet_percentage": "Sets the maximum bet percentage of total bankroll for NFL.",
         }
 
+        self.mode = "normal"
         self.setup_keybindings()
         self.cursor_position = 0
         self.update_view()
 
     def db_connect(self):
         return psycopg2.connect(**self.db_params)
+
+    def execute_query(self, query, params=None, fetch_one=False):
+        with self.db_connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(query, params)
+                if fetch_one:
+                    return cur.fetchone()
+                return cur.fetchall()
 
     def ensure_model_params_table_exists(self):
         with self.db_connect() as conn:
@@ -63,12 +84,20 @@ class ModelParamsTUI:
                     """
                 CREATE TABLE IF NOT EXISTS model_params (
                     id SERIAL PRIMARY KEY,
+                    miner_uid TEXT UNIQUE NOT NULL,
                     model_on BOOLEAN,
                     wager_distribution_steepness INTEGER,
                     fuzzy_match_percentage INTEGER,
                     minimum_wager_amount FLOAT,
                     max_wager_amount FLOAT,
-                    top_n_games INTEGER
+                    top_n_games INTEGER,
+                    nfl_model_on BOOLEAN,
+                    nfl_minimum_wager_amount FLOAT,
+                    nfl_max_wager_amount FLOAT,
+                    nfl_top_n_games INTEGER,
+                    nfl_kelly_fraction_multiplier FLOAT,
+                    nfl_edge_threshold FLOAT,
+                    nfl_max_bet_percentage FLOAT
                 )
                 """
                 )
@@ -80,18 +109,14 @@ class ModelParamsTUI:
                 cur.execute("SELECT miner_uid FROM model_params ORDER BY miner_uid")
                 return [row[0] for row in cur.fetchall()]
 
-    def load_params(self):
-        if not self.miner_ids:
-            self.params = None
-            return
-
-        self.miner_id = self.miner_ids[self.current_miner_index]
-        with self.db_connect() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT * FROM model_params WHERE miner_uid = %s", (self.miner_id,)
-                )
-                self.params = cur.fetchone()
+    def load_params(self, miner_id):
+        query = "SELECT * FROM model_params WHERE miner_uid = %s"
+        params = self.execute_query(query, (miner_id,), fetch_one=True)
+        if params:
+            self.params = dict(params)
+            self.miner_id = miner_id
+        else:
+            self.create_default_params()
 
     def save_params(self):
         with self.db_connect() as conn:
@@ -138,11 +163,13 @@ class ModelParamsTUI:
         @self.kb.add("c-x")
         @self.kb.add("c-z")
         def _(event):
+            self.save_current_miner_id()
             event.app.exit()
 
         @self.kb.add("n", filter=Condition(lambda: not self.edit_mode))
         def _(event):
             self.select_next_miner()
+            event.app.invalidate()
 
         @self.kb.add("up", filter=Condition(lambda: not self.edit_mode))
         def _(event):
@@ -166,7 +193,6 @@ class ModelParamsTUI:
                 self.error_message = ""
                 self.update_view()
 
-        # Add key bindings for editing
         @self.kb.add("backspace")
         def _(event):
             if self.edit_mode:
@@ -179,54 +205,59 @@ class ModelParamsTUI:
                 self.edit_value += " "
                 self.update_view()
 
-        # Add key bindings for all other characters
         for key in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-":
-
             @self.kb.add(key)
             def _(event, key=key):
                 if self.edit_mode:
                     self.edit_value += key
                     self.update_view()
 
+        @self.kb.add("n")
+        def _(event):
+            self.select_next_miner()
+            event.app.invalidate()
+
     def toggle_edit_mode(self):
-        key = list(self.params.keys())[self.cursor_position + 1]
-        if key in ["model_on", "nfl_model_on"]:
-            self.params[key] = not self.params[key]
-            self.save_params()
-            self.update_view()
-        elif not self.edit_mode:
-            self.edit_mode = True
-            self.edit_value = str(self.params[key])
+        if self.mode == "normal":
+            self.mode = "edit"
+            key = list(self.params.keys())[self.cursor_position + 1]
+            if key in ["model_on", "nfl_model_on"]:
+                self.params[key] = not self.params[key]
+                self.save_params()
+                self.update_view()
+            else:
+                self.edit_mode = True
+                self.edit_value = str(self.params[key])
         else:
+            self.mode = "normal"
             self.edit_mode = False
-            try:
-                new_value = self.validate_input(key, self.edit_value)
-                if new_value is not None:
-                    self.params[key] = new_value
-                    self.save_params()
-                    self.error_message = ""
-                else:
-                    self.error_message = f"Invalid input for {key}. Please try again."
-            except ValueError:
-                self.error_message = f"Invalid input for {key}. Please enter a number."
+            key = list(self.params.keys())[self.cursor_position + 1]
+            new_value = self.validate_input(key, self.edit_value)
+            if new_value is not None:
+                self.params[key] = new_value
+                self.save_params()
+                self.error_message = ""
+            else:
+                self.error_message = f"Invalid input for {key}. Please try again."
             self.edit_value = ""
         self.update_view()
 
     def validate_input(self, key, value):
+        if key in ["model_on", "nfl_model_on"]:
+            return value.lower() in ['true', '1', 'yes', 'on']
         try:
-            if key in [
-                "wager_distribution_steepness",
+            if key == "wager_distribution_steepness":
+                int_value = int(value)
+                if int_value > 0:
+                    return int_value
+                else:
+                    return None
+            elif key in [
                 "fuzzy_match_percentage",
                 "top_n_games",
+                "nfl_top_n_games",
             ]:
                 return int(value)
-            elif key in ["minimum_wager_amount", "max_wager_amount"]:
-                float_value = float(value)
-                if 0 <= float_value <= 1000:
-                    return float_value
-                else:
-                    self.error_message = f"{key} must be between 0 and 1000."
-                    return None
             else:
                 return float(value)
         except ValueError:
@@ -243,12 +274,8 @@ class ModelParamsTUI:
         table.add_column("Value", style=LIGHT_GREEN, width=int(width * 0.6))
 
         for i, (key, value) in enumerate(self.params.items()):
-            if key != "id":
-                style = (
-                    f"reverse {LIGHT_GREEN}"
-                    if i - 1 == self.cursor_position
-                    else LIGHT_GREEN
-                )
+            if key not in ["id", "miner_uid"]:
+                style = f"reverse {LIGHT_GREEN}" if i - 1 == self.cursor_position else LIGHT_GREEN
                 if self.edit_mode and i - 1 == self.cursor_position:
                     value = f"{self.edit_value}▋"
                 elif key in ["model_on", "nfl_model_on"]:
@@ -291,12 +318,9 @@ class ModelParamsTUI:
         explanation = self.create_explanation(width)
         legend = self.create_legend(width)
 
-        # Calculate available heights
-        legend_height = 8  # Approximate height of the legend table
-        explanation_height = 3  # Height of the explanation panel
-        available_table_height = (
-            height - legend_height - explanation_height - 6
-        )  # Subtract some padding
+        legend_height = 8
+        explanation_height = 3
+        available_table_height = height - legend_height - explanation_height - 6
 
         with self.console.capture() as capture:
             self.console.print(table, height=available_table_height)
@@ -308,43 +332,89 @@ class ModelParamsTUI:
         return ANSI(capture.get())
 
     def run(self):
-        if not self.params:
+        if not self.miner_ids:
             print("No miner parameters found in the database.")
             return
 
-        layout = Layout(Window(content=FormattedTextControl(self.get_formatted_text())))
-
+        layout = Layout(Window(content=FormattedTextControl(self.get_formatted_text)))
         self.application = Application(
             layout=layout,
             key_bindings=self.kb,
             full_screen=True,
         )
-        self.application.run()
+        bt.logging.info("Starting application")
+        try:
+            self.application.run()
+        except Exception as e:
+            bt.logging.error(f"Error running application: {str(e)}")
 
     def update_view(self):
         if hasattr(self, "application"):
             new_content = self.get_formatted_text()
-            self.application.layout.container.content = FormattedTextControl(
-                new_content
-            )
+            self.application.layout.container.content = FormattedTextControl(new_content)
             self.application.invalidate()
 
     def select_next_miner(self):
-        self.current_miner_index = (self.current_miner_index + 1) % len(self.miner_ids)
-        self.load_params()
+        if not self.miner_ids:
+            return
+
+        current_index = self.miner_ids.index(self.miner_id)
+        next_index = (current_index + 1) % len(self.miner_ids)
+        self.miner_id = self.miner_ids[next_index]
+        self.load_params(self.miner_id)
         self.cursor_position = 0
         self.update_view()
+        if hasattr(self, 'application'):
+            self.application.invalidate()
+        self.save_current_miner_id()
+
+    def create_default_params(self):
+        default_params = {
+            "miner_uid": self.miner_id,
+            "model_on": False,
+            "wager_distribution_steepness": 1,
+            "fuzzy_match_percentage": 80,
+            "minimum_wager_amount": 1.0,
+            "max_wager_amount": 100.0,
+            "top_n_games": 10,
+            "nfl_model_on": False,
+            "nfl_minimum_wager_amount": 1.0,
+            "nfl_max_wager_amount": 100.0,
+            "nfl_top_n_games": 5,
+            "nfl_kelly_fraction_multiplier": 1.0,
+            "nfl_edge_threshold": 0.02,
+            "nfl_max_bet_percentage": 0.7,
+        }
+        with self.db_connect() as conn:
+            with conn.cursor() as cur:
+                columns = ', '.join(default_params.keys())
+                values = ', '.join(['%s'] * len(default_params))
+                query = f"INSERT INTO model_params ({columns}) VALUES ({values})"
+                cur.execute(query, list(default_params.values()))
+            conn.commit()
+        self.params = default_params
+
+    def save_current_miner_id(self):
+        file_path = "current_miner_uid.txt"
+        with open(file_path, "w") as f:
+            f.write(str(self.miner_id))
+
+    def load_saved_miner_id(self):
+        file_path = "current_miner_uid.txt"
+        try:
+            with open(file_path, "r") as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            return None
 
 
 if __name__ == "__main__":
-    # Load environment variables
     DB_NAME = os.getenv("DB_NAME", "bettensor")
     DB_USER = os.getenv("DB_USER", "root")
     DB_PASSWORD = os.getenv("DB_PASSWORD", "bettensor_password")
     DB_HOST = os.getenv("DB_HOST", "localhost")
     DB_PORT = os.getenv("DB_PORT", "5432")
 
-    # Database connection parameters
     db_params = {
         "dbname": DB_NAME,
         "user": DB_USER,
@@ -353,6 +423,5 @@ if __name__ == "__main__":
         "port": DB_PORT,
     }
 
-    # Create and run ModelParamsTUI
     tui = ModelParamsTUI(db_params)
     tui.run()
