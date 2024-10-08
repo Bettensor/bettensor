@@ -683,20 +683,8 @@ class BettensorMiner(BaseNeuron):
             )
             bt.logging.info(f"Created response: {response}")
 
-            # Send the response back to Redis
-            message_id = data.get("message_id")
-            if message_id:
-                redis_key = f"response:{message_id}"
-                redis_value = json.dumps(response)
-                bt.logging.info(
-                    f"Attempting to set Redis key: {redis_key} with value: {redis_value}"
-                )
-                self.redis_interface.set(redis_key, redis_value, ex=60)
-                bt.logging.info(f"Response sent to Redis with key: {redis_key}")
-            else:
-                bt.logging.warning(
-                    "No message_id provided in the request, couldn't send response to Redis"
-                )
+            # Here, add a log to confirm predictions are being sent to the validator
+            bt.logging.info(f"Sending processed predictions to validator: {results}")
 
             return response
 

@@ -152,6 +152,13 @@ class Application:
         self.esc_pressed_once = False
         self.submission_message = None
         self.confirmation_mode = False
+        self.layout = None
+        self.application = None
+        self.log_messages = []
+
+        self.kb = KeyBindings()
+        self.setup_keybindings()
+        self.reset_layout()
 
         with progress:
             task = progress.add_task("Initializing application...", total=6)
@@ -189,9 +196,6 @@ class Application:
                 bt.logging.warning(
                     "No valid miner available. The application will run with limited functionality."
                 )
-
-        self.kb = KeyBindings()
-        self.setup_keybindings()
 
     def init_database(self):
         db_host = os.getenv("DB_HOST", "localhost")
@@ -380,41 +384,43 @@ class Application:
             return str(date_str)
 
     def generate_layout(self):
-        layout = Layout()
-        layout.split_column(
-            Layout(name="header", size=3),
-            Layout(name="body", ratio=1),
-            Layout(name="footer", size=3),
-        )
-
-        layout["header"].update(Panel("BetTensor Miner CLI", style=f"bold {GOLD}"))
-
-        if self.current_view == "main_menu":
-            layout["body"].update(self.generate_main_menu())
-            footer_text = (
-                "m: Main Menu | p: Predictions | g: Games | n: Next Miner | q: Quit"
+        try:
+            layout = Layout()
+            layout.split_column(
+                Layout(name="header", size=3),
+                Layout(name="body", ratio=1),
+                Layout(name="logs", size=5),
+                Layout(name="footer", size=3),
             )
-        elif self.current_view == "predictions":
-            layout["body"].update(self.generate_predictions_view())
-            if self.predictions_search_mode:
-                footer_text = "Enter: Finish Search | Esc: Cancel Search | Type to filter predictions"
-            else:
-                footer_text = "m: Main Menu | ↑/↓: Navigate | ←/→: Change Page | s: Search | q: Quit"
-        elif self.current_view == "games":
-            layout["body"].update(self.generate_games_view())
-            if self.search_mode:
-                footer_text = (
-                    "Enter: Finish Search | Esc: Cancel Search | Type to filter games"
-                )
-            else:
-                footer_text = "m: Main Menu | ↑/↓: Navigate | ←/→: Change Page | Enter: Select Game | s: Search | q: Quit"
-        elif self.current_view == "enter_prediction":
-            layout["body"].update(self.generate_enter_prediction_view())
-            footer_text = "a/b/t: Select Outcome | w: Enter/Exit Wager | c: Confirm | Esc: Cancel | q: Quit"
 
-        layout["footer"].update(Panel(footer_text, style=f"italic {LIGHT_GREEN}"))
+            layout["header"].update(Panel("BetTensor Miner CLI", style=f"bold {GOLD}"))
+            
+            # Main content based on current view
+            if self.current_view == "main_menu":
+                layout["body"].update(self.generate_main_menu())
+                footer_text = "m: Main Menu | p: Predictions | g: Games | n: Next Miner | q: Quit"
+            elif self.current_view == "predictions":
+                layout["body"].update(self.generate_predictions_view())
+                footer_text = "m: Main Menu | ↑/↓: Navigate | ←/→: Change Page | s: Search | q: Quit" if not self.predictions_search_mode else "Enter: Finish Search | Esc: Cancel Search | Type to filter predictions"
+            elif self.current_view == "games":
+                layout["body"].update(self.generate_games_view())
+                footer_text = "m: Main Menu | ↑/↓: Navigate | ←/→: Change Page | Enter: Select Game | s: Search | q: Quit" if not self.search_mode else "Enter: Finish Search | Esc: Cancel Search | Type to filter games"
+            elif self.current_view == "enter_prediction":
+                layout["body"].update(self.generate_enter_prediction_view())
+                footer_text = "a/b/t: Select Outcome | w: Enter/Exit Wager | c: Confirm | Esc: Cancel | q: Quit"
+            else:
+                layout["body"].update(Panel("Invalid view"))
+                footer_text = "q: Quit"
 
-        return layout
+            # Log area
+            log_content = "\n".join(self.log_messages[-5:])  # Show last 5 log messages
+            layout["logs"].update(Panel(log_content, title="Logs", border_style="blue"))
+
+            layout["footer"].update(Panel(footer_text, style=f"italic {LIGHT_GREEN}"))
+            return layout
+        except Exception as e:
+            logging.error(f"Error in generate_layout: {str(e)}")
+            return Layout(Panel(f"Error generating layout: {str(e)}"))
 
     def generate_main_menu(self):
         console_width = self.console.width
@@ -503,8 +509,8 @@ class Application:
             filtered_predictions = {
                 k: v
                 for k, v in predictions.items()
-                if self.predictions_search_query.lower() in v["home"].lower()
-                or self.predictions_search_query.lower() in v["away"].lower()
+                if self.predictions_search_query.lower() in v["team_a"].lower()
+                or self.predictions_search_query.lower() in v["team_b"].lower()
                 or self.predictions_search_query.lower()
                 in v["predicted_outcome"].lower()
                 or self.predictions_search_query.lower() in v["outcome"].lower()
@@ -530,19 +536,19 @@ class Application:
         # Calculate max widths for each column
         max_widths = {
             "Date": max(
-                len(self.format_date(pred["predictiondate"]))
+                len(self.format_date(pred["prediction_date"]))
                 for pred in predictions.values()
             ),
             "Game ID": max(len(pred["game_id"]) for pred in predictions.values()),
-            "Home": max(len(pred["home"]) for pred in predictions.values()),
-            "Away": max(len(pred["away"]) for pred in predictions.values()),
+            "Home": max(len(pred["team_a"]) for pred in predictions.values()),
+            "Away": max(len(pred["team_b"]) for pred in predictions.values()),
             "Predicted Outcome": max(
-                len(pred["predictedoutcome"]) for pred in predictions.values()
+                len(pred["predicted_outcome"]) for pred in predictions.values()
             ),
             "Wager": max(len(f"${pred['wager']:.2f}") for pred in predictions.values()),
             "Wager Odds": max(
                 len(f"{pred['team_a_odds']:.2f}") for pred in predictions.values()
-            ),  # Use teamaodds as a placeholder
+            ),  # Use team_a_odds as a placeholder
             "Result": max(len(pred["outcome"]) for pred in predictions.values()),
             "Payout": 10,  # Assuming a reasonable width for payout
             "Sent": max(
@@ -578,9 +584,9 @@ class Application:
         )
         for pred in predictions_to_display:
             # Calculate wager odds based on the predicted outcome
-            if pred["predicted_outcome"] == pred["home"]:
+            if pred["predicted_outcome"] == pred["team_a"]:
                 wager_odds = pred["team_a_odds"]
-            elif pred["predicted_outcome"] == pred["away"]:
+            elif pred["predicted_outcome"] == pred["team_b"]:
                 wager_odds = pred["team_b_odds"]
             else:
                 wager_odds = pred["tie_odds"] if "tie_odds" in pred else "N/A"
@@ -596,8 +602,8 @@ class Application:
             table.add_row(
                 self.format_date(pred["prediction_date"]),
                 pred["game_id"],
-                pred["home"],
-                pred["away"],
+                pred["team_a"],
+                pred["team_b"],
                 pred["predicted_outcome"],
                 f"${pred['wager']:.2f}",
                 f"{wager_odds:.2f}"
@@ -1262,26 +1268,22 @@ class Application:
             result = self.predictions_handler.add_prediction(prediction)
 
             if result["status"] == "success":
-                self.submission_message = f"Prediction submitted: {self.prediction_outcome} with wager ${self.prediction_wager:.2f}"
+                self.add_log_message(f"Prediction submitted: {self.prediction_outcome} with wager ${self.prediction_wager:.2f}")
                 self.last_prediction_time = current_time
-                self.last_prediction_id = prediction["predictionID"]
+                self.last_prediction_id = prediction["prediction_id"]
                 self.reload_miner_data()
-
-                # Set a flag to indicate we're in confirmation mode
                 self.confirmation_mode = True
-
-                # Schedule return to games view after 2 seconds
                 app = get_app()
-                app.invalidate()
                 app.create_background_task(self.delayed_return_to_games())
             else:
-                self.submission_message = (
-                    f"Failed to submit prediction: {result['message']}"
-                )
+                self.add_log_message(f"Failed to submit prediction: {result['message']}")
         else:
             self.submission_message = (
                 "Please select an outcome and enter a wager amount."
             )
+
+        # Reset the layout
+        self.reset_layout()
 
         # Force a redraw
         get_app().invalidate()
@@ -1291,7 +1293,12 @@ class Application:
         self.current_view = "games"
         self.submission_message = None
         self.confirmation_mode = False
-        get_app().invalidate
+        self.prediction_outcome = None
+        self.prediction_wager = None
+        self.wager_input = ""
+        self.wager_input_mode = False
+        self.reset_layout()
+        get_app().invalidate()
 
     def generate_miner_info(self):
         current_time_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -1327,6 +1334,37 @@ class Application:
         centered_panel = Align.center(panel)
 
         return Group(centered_panel)
+
+    def reset_layout(self):
+        try:
+            self.layout = self.generate_layout()
+            if self.application is None:
+                self.application = self
+            self.application.layout = self.layout
+            self.refresh_logs()
+            get_app().invalidate()
+        except Exception as e:
+            logging.error(f"Error in reset_layout: {str(e)}")
+            # Fallback to a simple layout if generation fails
+            self.layout = Layout(Panel("Error generating layout. Please check logs."))
+
+    def add_log_message(self, message):
+        self.log_messages.append(message)
+        if len(self.log_messages) > 20:  # Keep only the last 20 messages
+            self.log_messages.pop(0)
+        self.refresh_logs()
+        get_app().invalidate()  # Force a UI update
+
+    def refresh_logs(self):
+        if hasattr(self, 'layout') and isinstance(self.layout, Layout):
+            if 'logs' in self.layout:
+                log_content = "\n".join(self.log_messages[-5:])
+                self.layout['logs'].update(Panel(log_content, title="Logs", border_style="blue"))
+                get_app().invalidate()
+            else:
+                logging.warning("'logs' section not found in layout")
+        else:
+            logging.warning("Layout not properly initialized")
 
 
 if __name__ == "__main__":
