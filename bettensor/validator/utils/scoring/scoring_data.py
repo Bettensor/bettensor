@@ -29,8 +29,9 @@ class ScoringData:
         predictions = self._fetch_predictions(game_ids)
 
         # Step 3: Ensure predictions have their payout calculated and outcome updated
-        self._update_predictions_with_payout(predictions, closed_games)
+        predictions = self._update_predictions_with_payout(predictions, closed_games)
 
+       
         # Step 4: Structure prediction data into the format necessary for scoring
         structured_predictions = np.array(
             [
@@ -47,11 +48,22 @@ class ScoringData:
             ]
         )
 
-        results = np.array([game["outcome"] for game in closed_games])
+        bt.logging.debug(f"Structured predictions: {structured_predictions}")
+
+        results = np.array(
+            [
+                [
+                    int(game["external_id"]),
+                    int(game["outcome"]),   
+                ]
+                for game in closed_games
+            ]
+        )
 
         closing_line_odds = np.array(
             [
                 [
+                    int(game["external_id"]),
                     float(game["team_a_odds"]),
                     float(game["team_b_odds"]),
                     float(game["tie_odds"]) if game["tie_odds"] is not None else 0.0,
@@ -65,6 +77,10 @@ class ScoringData:
         )
         bt.logging.debug(f"Closing line odds shape: {closing_line_odds.shape}")
         bt.logging.debug(f"Results shape: {results.shape}")
+
+        bt.logging.debug(f"First 5 structured predictions: {structured_predictions[:5]}")
+        bt.logging.debug(f"First 5 closing line odds: {closing_line_odds[:5]}")
+        bt.logging.debug(f"First 5 results: {results[:5]}")
 
         return structured_predictions, closing_line_odds, results
 
@@ -104,20 +120,22 @@ class ScoringData:
         return self.db_manager.fetch_all(query, game_ids)
 
     def _update_predictions_with_payout(self, predictions, closed_games):
-        closed_game_ids = {game["external_id"] for game in closed_games}
+        
 
         game_outcomes = {game["external_id"]: game["outcome"] for game in closed_games}
         for pred in predictions:
             game_id = pred["game_id"]
+            miner_uid = pred["miner_uid"]
             outcome = game_outcomes.get(game_id)
             if outcome is not None and pred["payout"] is None:
                 wager = float(pred["wager"])
                 predicted_outcome = pred["predicted_outcome"]
                 if int(predicted_outcome) == int(outcome):
                     payout = wager * float(pred["predicted_odds"])
-                    # bt.logging.debug(f"Prediction {pred['prediction_id']} is correct, setting payout to {payout}")
+                    bt.logging.debug(f"Correct prediction for miner {miner_uid}: Payout set to {payout}")
                 else:
                     payout = 0.0
+                    bt.logging.debug(f"Incorrect prediction for miner {miner_uid}: Payout set to 0.0")
                 self.db_manager.execute_query(
                     """
                     UPDATE predictions
@@ -126,7 +144,9 @@ class ScoringData:
                     """,
                     (payout, outcome, pred["prediction_id"]),
                 )
-
+                pred["payout"] = payout
+                pred["outcome"] = outcome
+        return predictions
     def validate_data_integrity(self):
         """Validate that all predictions reference closed games with valid outcomes."""
         invalid_predictions = self.db_manager.fetch_all(

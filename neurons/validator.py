@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 from copy import deepcopy
 from argparse import ArgumentParser
 from datetime import datetime, timezone, timedelta
+import asyncio
+import threading
 
 import bettensor
 from bettensor import protocol
@@ -21,53 +23,59 @@ from bettensor.validator.utils.scoring.watchdog import Watchdog
 from bettensor.validator.utils.io.website_handler import fetch_and_send_predictions
 
 
+async def async_operations(validator):
+    while True:
+        current_time = datetime.now(timezone.utc)
+        current_block = validator.subtensor.block
+
+        # Update game data every 10 minutes
+        if current_time - validator.last_api_call >= timedelta(minutes=10):
+            await asyncio.to_thread(update_game_data, validator, current_time)
+
+        # Sync metagraph
+        await asyncio.to_thread(sync_metagraph, validator)
+
+        # Query and process axons with game data every 10 blocks
+        if (current_block - validator.last_updated_block) % 10 > 0:
+            await asyncio.to_thread(query_and_process_axons_with_game_data, validator)
+
+        # Send data to website server every 15 blocks
+        if (current_block - validator.last_updated_block) % 15 > 0:
+            await asyncio.to_thread(send_data_to_website_server, validator)
+
+        # Recalculate scores every 50 blocks
+        if current_block - validator.last_updated_block > 50:
+            await asyncio.to_thread(scoring_run, validator, current_time)
+
+        # Set weights every 300 blocks
+        if current_block - validator.last_updated_block > 300:
+            await asyncio.to_thread(set_weights, validator, validator.scores)
+
+        await asyncio.sleep(45)  # Sleep for 45 seconds
+
+
 def main(validator: BettensorValidator):
     initialize(validator)
     watchdog = Watchdog(timeout=900)  # 15 minutes timeout
 
+    # Create and run the async loop in a separate thread
+    async_loop = asyncio.new_event_loop()
+    async_thread = threading.Thread(target=async_loop.run_forever)
+    async_thread.start()
+
+    # Schedule the async operations
+    asyncio.run_coroutine_threadsafe(async_operations(validator), async_loop)
+
     while True:
         try:
-            # reset watchdog
             watchdog.reset()
-
-            # get current time and block
-            current_time = datetime.now(timezone.utc)
             current_block = validator.subtensor.block
-
-            # Convert last_api_call to datetime if it's a string
-            if isinstance(validator.last_api_call, str):
-                validator.last_api_call = datetime.fromisoformat(
-                    validator.last_api_call
-                )
-
-            bt.logging.info("Current time(main loop): ", current_time)
-            bt.logging.info("Last api call was at: ", validator.last_api_call)
-
-            # Update game data every 10 minutes with bettensor api
-            if current_time - validator.last_api_call >= timedelta(minutes=10):
-                bt.logging.info("Updating game data with bettensor api")
-                update_game_data(validator, current_time)
-            # Sync metagraph every step
-            sync_metagraph(validator)
-
-            # Query and process axons with game data every 10 blocks (~2 minutes)
-            if (current_block - validator.last_updated_block) % 10 > 0:
-                query_and_process_axons_with_game_data(validator)
-
-            # Send data to website server every 15 blocks (~ 3 minutes)
-            if (current_block - validator.last_updated_block) % 15 > 0:
-                send_data_to_website_server(validator)
-
-            # Recalculate scores every 50 blocks (~2 minutes)
-            if current_block - validator.last_updated_block > 50:
-                bt.logging.info("Recalculating scores")
-                scoring_run(validator, current_time)
-
-            # Set weights every 300 blocks (~ 1 hour)
-            if current_block - validator.last_updated_block > 300:
-                set_weights(validator, validator.scores)
-
-            end_of_loop_processes(validator, watchdog, current_block)
+            
+            # Main loop now only handles watchdog reset and logging
+            bt.logging.debug(f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}")
+            
+            validator.step += 1
+            time.sleep(45)
 
         except TimeoutError as e:
             bt.logging.error(f"Error in main loop: {str(e)}")
@@ -88,7 +96,8 @@ def initialize(validator):
 
 def update_game_data(validator, current_time):
     """
-    Calls SportsData to update game data in the database
+    Calls SportsData to update game data in the database - Async in separate thread
+    
     """
     try:
         if validator.last_api_call is None:
@@ -321,16 +330,6 @@ def set_weights(validator, scores):
         bt.logging.warning(
             "Failed to set weights or encountered an error, continuing with next iteration."
         )
-
-
-def end_of_loop_processes(validator, watchdog, current_block):
-    validator.step += 1
-    bt.logging.debug(
-        f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}"
-    )
-    watchdog.reset()
-    bt.logging.debug("Sleeping for: 45 seconds")
-    time.sleep(45)
 
 
 # The main function parses the configuration and runs the validator.
