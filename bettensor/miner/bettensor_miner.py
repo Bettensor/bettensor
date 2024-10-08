@@ -226,7 +226,7 @@ class BettensorMiner(BaseNeuron):
                 bt.logging.warning("No predictions available")
                 return self._clean_synapse(synapse, "No predictions available")
 
-            # Filter out predictions with finished outcomes
+            # Filter out predictions with unfinished outcomes
             unfinished_predictions = {
                 pred_id: pred
                 for pred_id, pred in all_predictions.items()

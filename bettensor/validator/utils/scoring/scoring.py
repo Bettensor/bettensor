@@ -864,6 +864,11 @@ class ScoringSystem:
                 & (current_tiers[valid_miners] < self.num_tiers)
             ]
 
+            # Check if valid_miners is empty
+            if not valid_miners.any():
+                bt.logging.warning("Scoring.py | calculate_weights | No valid miners found. Returning zero weights.")
+                return np.zeros(self.num_miners)
+
             tier_counts = np.bincount(
                 current_tiers[valid_miners], minlength=self.num_tiers
             )[2:]

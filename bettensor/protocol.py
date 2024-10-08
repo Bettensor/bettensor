@@ -154,7 +154,7 @@ class Metadata(BaseModel):
     )
 
     @classmethod
-    def create(cls, wallet: bt.wallet, subnet_version, neuron_uid, synapse_type):
+    def create(cls,subnet_version, neuron_uid, synapse_type):
         """
         Creates a new metadata object
         Args:
@@ -164,7 +164,7 @@ class Metadata(BaseModel):
             Metadata: A new metadata object to attach to a synapse
         """
         synapse_id = str(uuid.uuid4())
-        timestamp = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         bt.logging.debug(
             f"Creating Metadata with synapse_id: {synapse_id}, neuron_uid: {neuron_uid}, timestamp: {timestamp}, subnet_version: {subnet_version}"
         )
@@ -242,7 +242,7 @@ class GameData(bt.Synapse):
     """
     This class defines the synapse object for game data, consisting of a dictionary of TeamGame objects with a UUID as key.
     """
-
+    
     metadata: Optional[Metadata]
     gamedata_dict: Optional[Dict[str, TeamGame]]
     prediction_dict: Optional[Dict[str, TeamGamePrediction]]
@@ -262,22 +262,33 @@ class GameData(bt.Synapse):
         confirmation_dict: Dict[str, TeamGamePrediction] = None,
     ):
         metadata = Metadata.create(
-            wallet=wallet,
             subnet_version=subnet_version,
             neuron_uid=str(neuron_uid),  # Convert to string here
             synapse_type=synapse_type,
         )
         if synapse_type == "prediction":
             gamedata_dict = None
+            confirmation_dict = None
         elif synapse_type == "game_data":
             prediction_dict = None
+            confirmation_dict = None
+        elif synapse_type == "confirmation":
+            gamedata_dict = None
+            prediction_dict = None
+            
+        else: # error type
+            gamedata_dict = None
+            prediction_dict = None
+            confirmation_dict = None
 
-            return cls(
-                metadata=metadata,
-                gamedata_dict=gamedata_dict,
-                prediction_dict=prediction_dict,
-                synapse_type=synapse_type,
-            )
+
+
+        return cls(
+            metadata=metadata,
+            gamedata_dict=gamedata_dict,
+            prediction_dict=prediction_dict,
+            synapse_type=synapse_type,
+        )
 
     def deserialize(self):
         return self.gamedata_dict, self.prediction_dict, self.metadata

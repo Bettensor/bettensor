@@ -208,6 +208,7 @@ class MinerDataMixin:
         predictions_dict = {}
 
         for synapse in predictions:
+            bt.logging.trace(f"synapse: {synapse}")
             if len(synapse) >= 3:
                 game_data_dict = synapse[0]
                 prediction_dict: Dict[str, TeamGamePrediction] = synapse[1]

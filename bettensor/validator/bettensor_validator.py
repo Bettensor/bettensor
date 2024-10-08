@@ -83,7 +83,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         args = parser.parse_args()
 
-        self.timeout = 12
+        self.timeout = 25
         self.neuron_config = None
         self.wallet = None
         self.dendrite = None
@@ -596,9 +596,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
-    def set_weights(self, scores):
+    async def set_weights(self, scores):
         try:
-            return self.weight_setter.set_weights(scores)
+            return await self.weight_setter.set_weights(scores)
         except StopIteration:
             bt.logging.warning(
                 "StopIteration encountered in set_weights. Handling gracefully."

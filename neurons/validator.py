@@ -49,7 +49,7 @@ async def async_operations(validator):
 
         # Set weights every 300 blocks
         if current_block - validator.last_updated_block > 300:
-            await asyncio.to_thread(set_weights, validator, validator.scores)
+            await set_weights(validator, validator.scores)
 
         await asyncio.sleep(45)  # Sleep for 45 seconds
 
@@ -243,17 +243,45 @@ def query_and_process_axons_with_game_data(validator):
                 bt.logging.trace(
                     f"Set score for not queried UID: {uid}. New score: {validator.scores[uid]}"
                 )
+    bt.logging.info("Finished querying axons..")
 
-        if not responses:
-            print("No responses received. Sleeping for 18 seconds.")
-            time.sleep(18)
+    if not responses:
+        print("No responses received. Sleeping for 18 seconds.")
+        time.sleep(18)
 
-        if responses and any(responses):
-            validator.process_prediction(
-                processed_uids=list_of_uids, predictions=responses
-            )
+    bt.logging.info(f"Received {len(responses)} responses")
 
-    return synapse
+    valid_responses = []
+    invalid_responses = []
+
+    #print one whole response for debugging
+    bt.logging.info(f"Received response: {responses[0][0]}")
+
+    bt.logging.info("Starting response processing...")
+    
+    for idx, response in enumerate(responses):
+        try:
+            bt.logging.info(f"Processing response: {idx}")
+            if response[2].synapse_type == "prediction":
+                valid_responses.append(response)
+                bt.logging.info(f"Received valid response: {response[0].synapse_type}")
+            else:
+                invalid_responses.append(response)
+                bt.logging.warning(f"Received invalid response: {response[0].synapse_type}")
+        except Exception as e:
+            bt.logging.error(f"Error processing response: {e}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            continue
+    
+
+    bt.logging.warning(f"Received {len(invalid_responses)} invalid responses: {[response[0].synapse_type for response in invalid_responses]}")
+    bt.logging.warning(f"Affected Miners: {[response[2].metadata.neuron_uid for response in invalid_responses]}")
+
+    bt.logging.info(f"Received {len(valid_responses)} valid responses - processing...")
+    if valid_responses and any(valid_responses):
+        validator.process_prediction(
+            processed_uids=list_of_uids, predictions=responses
+        )
 
 
 def send_data_to_website_server(validator):
@@ -299,7 +327,7 @@ def scoring_run(validator, current_time):
         bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
 
-def set_weights(validator, scores):
+async def set_weights(validator, scores):
     try:
         bt.logging.info("Attempting to update weights")
         if validator.subtensor is None:
@@ -307,7 +335,7 @@ def set_weights(validator, scores):
             validator.subtensor = validator.initialize_connection()
 
         if validator.subtensor is not None:
-            success = validator.set_weights(scores)
+            success = await validator.set_weights(scores)
             bt.logging.info("Weight update attempt completed")
         else:
             bt.logging.error(
