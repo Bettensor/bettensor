@@ -35,25 +35,55 @@ WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
 
+SAVE_CURSOR = "\033[s"
+RESTORE_CURSOR = "\033[u"
+MOVE_CURSOR_TOP = "\033[H"
+CLEAR_LINE = "\033[K"
+
 class StatusSink:
-    def __init__(self):
+    def __init__(self, status_lines=8):
         self.status_message = ""
+        self.status_lines = status_lines
 
     def write(self, message):
-        if message.startswith("\033[2J\033[H"):  # Check for our status message
-            self.status_message = message[7:]  # Remove the clear screen and cursor move codes
+        if message.startswith(SAVE_CURSOR):  # Check for our status message
+            self.status_message = message
+            print(message, end='', flush=True)
         else:
-            # For non-status messages, print them and then reprint the status
-            print(message, end='')
-            if self.status_message:
-                print(self.status_message, end='')
-            sys.stdout.flush()
+            # For non-status messages, move cursor below status area, print message, then restore cursor
+            print(f"{RESTORE_CURSOR}\033[{self.status_lines}B{message}{RESTORE_CURSOR}", end='', flush=True)
 
 # Create a custom sink for status messages
 status_sink = StatusSink()
 
 # Add the custom sink to bt.logging
 bt_logger.add(status_sink.write, level="INFO")
+
+async def continuous_status_display(validator):
+    while True:
+        current_time = datetime.now(timezone.utc)
+        current_block = validator.subtensor.block
+        blocks_until_query_axons = max(0, validator.query_axons_interval - (current_block - validator.last_queried_block))
+        blocks_until_send_data = max(0, validator.send_data_to_website_interval - (current_block - validator.last_sent_data_to_website))
+        blocks_until_scoring = max(0, validator.scoring_interval - (current_block - validator.last_scoring_block))
+        blocks_until_set_weights = max(0, validator.set_weights_interval - (current_block - validator.last_set_weights_block))
+
+        status_message = (
+            f"{SAVE_CURSOR}{MOVE_CURSOR_TOP}"
+            "--------------------------------Status--------------------------------\n"
+            f"{CLEAR_LINE}Current Step: {validator.step}\n"
+            f"{CLEAR_LINE}Current block: {current_block}\n"
+            f"{CLEAR_LINE}Last updated block: {validator.last_updated_block}\n"
+            f"{CLEAR_LINE}Blocks until next query_and_process_axons: {blocks_until_query_axons}\n"
+            f"{CLEAR_LINE}Blocks until send_data_to_website: {blocks_until_send_data}\n"
+            f"{CLEAR_LINE}Blocks until scoring_run: {blocks_until_scoring}\n"
+            f"{CLEAR_LINE}Blocks until set_weights: {blocks_until_set_weights}\n"
+            f"{CLEAR_LINE}----------------------------------------------------------------------{RESTORE_CURSOR}"
+        )
+
+        # Use bt.logging to log the status message
+        bt_logger.info(status_message)
+        await asyncio.sleep(5)  # Update every 5 seconds
 
 async def async_operations(validator):
     # Create semaphores for each operation
@@ -170,32 +200,6 @@ async def set_weights_task_with_timeout(validator, semaphore):
             bt.logging.error("Set weights task timed out")
         except Exception as e:
             bt.logging.error(f"Error in set weights task: {str(e)}")
-
-async def continuous_status_display(validator):
-    while True:
-        current_time = datetime.now(timezone.utc)
-        current_block = validator.subtensor.block
-        blocks_until_query_axons = max(0, validator.query_axons_interval - (current_block - validator.last_queried_block))
-        blocks_until_send_data = max(0, validator.send_data_to_website_interval - (current_block - validator.last_sent_data_to_website))
-        blocks_until_scoring = max(0, validator.scoring_interval - (current_block - validator.last_scoring_block))
-        blocks_until_set_weights = max(0, validator.set_weights_interval - (current_block - validator.last_set_weights_block))
-
-        status_message = (
-            "\033[2J\033[H"  # Clear screen and move cursor to top-left
-            "--------------------------------Status--------------------------------\n"
-            f"Current Step: {validator.step}\n"
-            f"Current block: {current_block}\n"
-            f"Last updated block: {validator.last_updated_block}\n"
-            f"Blocks until next query_and_process_axons: {blocks_until_query_axons}\n"
-            f"Blocks until send_data_to_website: {blocks_until_send_data}\n"
-            f"Blocks until scoring_run: {blocks_until_scoring}\n"
-            f"Blocks until set_weights: {blocks_until_set_weights}\n"
-            "----------------------------------------------------------------------\n"
-        )
-
-        # Use bt.logging to log the status message
-        bt_logger.info(status_message)
-        await asyncio.sleep(5)  # Update every 5 seconds
 
 def main(validator: BettensorValidator):
     initialize(validator)
