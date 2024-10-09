@@ -127,14 +127,21 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         return True
 
     def initialize_connection(self):
-        try:
-            self.subtensor = bt.subtensor(config=self.neuron_config)
-            bt.logging.info(
-                f"Connected to {self.neuron_config.subtensor.network} network"
-            )
-        except Exception as e:
-            bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
-            self.subtensor = None
+        max_retries = 5
+        retry_delay = 10
+        for attempt in range(max_retries):
+            try:
+                self.subtensor = bt.subtensor(config=self.neuron_config)
+                bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+                return self.subtensor
+            except Exception as e:
+                bt.logging.error(f"Failed to initialize subtensor (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    bt.logging.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    bt.logging.error("Max retries reached. Unable to initialize subtensor.")
+                    self.subtensor = None
         return self.subtensor
 
     def print_chain_endpoint(self):

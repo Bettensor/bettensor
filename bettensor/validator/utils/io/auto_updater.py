@@ -4,6 +4,7 @@ import bittensor as bt
 import os
 import json
 import configparser
+import time
 
 def get_current_branch():
     try:
@@ -102,7 +103,7 @@ async def perform_update(validator):
             process_name = get_pm2_process_name()
             if process_name:
                 bt.logging.info(f"Attempting to restart PM2 process: {process_name}")
-                result = subprocess.run(["pm2", "restart", process_name, "--update-env"], capture_output=True, text=True)
+                result = subprocess.run(["pm2", "restart", process_name, "--update-env"], capture_output=True, text=True, timeout=30)
                 if result.returncode != 0:
                     bt.logging.error(f"PM2 restart failed. Return code: {result.returncode}")
                     bt.logging.error(f"stdout: {result.stdout}")
@@ -111,10 +112,14 @@ async def perform_update(validator):
                     bt.logging.info(f"Validator process '{process_name}' restarted successfully.")
             else:
                 bt.logging.warning("Not running as a PM2 process. Manual restart may be required.")
-        except subprocess.CalledProcessError as e:
-            bt.logging.error(f"Failed to restart validator process: {e}")
-            bt.logging.error(f"Command output: {e.output}")
+        except subprocess.TimeoutExpired:
+            bt.logging.error("PM2 restart timed out after 30 seconds.")
+        except Exception as e:
+            bt.logging.error(f"Error during PM2 restart: {str(e)}")
             bt.logging.error(traceback.format_exc())
+
+        # Add a delay after the restart attempt
+        time.sleep(10)
     else:
         bt.logging.error("Update procedure aborted due to pull failure.")
 

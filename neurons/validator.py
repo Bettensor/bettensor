@@ -133,9 +133,21 @@ def main(validator: BettensorValidator):
             validator.step += 1
             time.sleep(60)
 
+        except KeyboardInterrupt:
+            bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
+            break
         except TimeoutError as e:
             bt.logging.error(f"Error in main loop: {str(e)}")
             validator.initialize_connection()
+        except Exception as e:
+            bt.logging.error(f"Unexpected error in main loop: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+            time.sleep(10)  # Wait before retrying
+
+    # Cleanup
+    async_loop.call_soon_threadsafe(async_loop.stop)
+    async_thread.join()
+    bt.logging.info("Validator shutdown complete.")
 
 
 def initialize(validator):
