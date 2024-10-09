@@ -13,6 +13,8 @@ from argparse import ArgumentParser
 from datetime import datetime, timezone, timedelta
 import asyncio
 import threading
+import websocket
+from websocket._exceptions import WebSocketConnectionClosedException
 
 import bettensor
 from bettensor import protocol
@@ -22,7 +24,14 @@ from bettensor.validator.utils.io.sports_data import SportsData
 from bettensor.validator.utils.scoring.watchdog import Watchdog
 from bettensor.validator.utils.io.auto_updater import *
 
-
+# Constants for timeouts (in seconds)
+UPDATE_TIMEOUT = 300  # 5 minutes
+GAME_DATA_TIMEOUT = 180  # 3 minutes
+METAGRAPH_TIMEOUT = 120  # 2 minutes
+QUERY_TIMEOUT = 180  # 3 minutes
+WEBSITE_TIMEOUT = 60  # 1 minute
+SCORING_TIMEOUT = 300  # 5 minutes
+WEIGHTS_TIMEOUT = 180  # 3 minutes
 
 async def async_operations(validator):
     # Create semaphores for each operation
@@ -40,63 +49,98 @@ async def async_operations(validator):
 
         # Perform update (if needed)
         if not update_semaphore.locked():
-            asyncio.create_task(perform_update_task(validator, update_semaphore))
+            asyncio.create_task(perform_update_task_with_timeout(validator, update_semaphore))
 
         # Update game data
         if (current_block - validator.last_updated_block) > validator.update_game_data_interval and not game_data_semaphore.locked():
-            asyncio.create_task(update_game_data_task(validator, current_time, game_data_semaphore))
+            asyncio.create_task(update_game_data_task_with_timeout(validator, current_time, game_data_semaphore))
 
         # Sync metagraph
-        if not metagraph_semaphore.locked():
-            asyncio.create_task(sync_metagraph_task(validator, metagraph_semaphore))
+        if (current_block - validator.last_queried_block) > (validator.query_axons_interval - 5) and not metagraph_semaphore.locked():
+            asyncio.create_task(sync_metagraph_task_with_timeout(validator, metagraph_semaphore))
 
         # Query and process axons
         if (current_block - validator.last_queried_block) > validator.query_axons_interval and not query_semaphore.locked():
-            asyncio.create_task(query_and_process_axons_task(validator, query_semaphore))
+            asyncio.create_task(query_and_process_axons_task_with_timeout(validator, query_semaphore))
 
         # Send data to website
         if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval and not website_semaphore.locked():
-            asyncio.create_task(send_data_to_website_task(validator, website_semaphore))
+            asyncio.create_task(send_data_to_website_task_with_timeout(validator, website_semaphore))
 
         # Recalculate scores
         if (current_block - validator.last_scoring_block) > validator.scoring_interval and not scoring_semaphore.locked():
-            asyncio.create_task(scoring_run_task(validator, current_time, scoring_semaphore))
+            asyncio.create_task(scoring_run_task_with_timeout(validator, current_time, scoring_semaphore))
 
         # Set weights
         if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
-            asyncio.create_task(set_weights_task(validator, weights_semaphore))
+            asyncio.create_task(set_weights_task_with_timeout(validator, weights_semaphore))
 
         await asyncio.sleep(12)  # Wait before next iteration
 
-async def perform_update_task(validator, semaphore):
+async def perform_update_task_with_timeout(validator, semaphore):
     async with semaphore:
-        await perform_update(validator)
+        try:
+            await asyncio.wait_for(perform_update(validator), timeout=UPDATE_TIMEOUT)
+        except asyncio.TimeoutError:
+            bt.logging.error("Update task timed out")
+        except Exception as e:
+            bt.logging.error(f"Error in update task: {str(e)}")
 
-async def update_game_data_task(validator, current_time, semaphore):
+async def update_game_data_task_with_timeout(validator, current_time, semaphore):
     async with semaphore:
-        await asyncio.to_thread(update_game_data, validator, current_time)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(update_game_data, validator, current_time), timeout=GAME_DATA_TIMEOUT)
+        except asyncio.TimeoutError:
+            bt.logging.error("Game data update task timed out")
+        except Exception as e:
+            bt.logging.error(f"Error in game data update task: {str(e)}")
 
-async def sync_metagraph_task(validator, semaphore):
+async def sync_metagraph_task_with_timeout(validator, semaphore):
     async with semaphore:
-        await asyncio.to_thread(sync_metagraph, validator)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(sync_metagraph_with_retry, validator), timeout=METAGRAPH_TIMEOUT)
+        except asyncio.TimeoutError:
+            bt.logging.error("Metagraph sync task timed out")
+        except WebSocketConnectionClosedException:
+            bt.logging.error("WebSocket connection closed during metagraph sync")
+        except Exception as e:
+            bt.logging.error(f"Error in metagraph sync task: {str(e)}")
 
-async def query_and_process_axons_task(validator, semaphore):
+async def query_and_process_axons_task_with_timeout(validator, semaphore):
     async with semaphore:
-        await asyncio.to_thread(query_and_process_axons_with_game_data, validator)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(query_and_process_axons_with_game_data, validator), timeout=QUERY_TIMEOUT)
+        except asyncio.TimeoutError:
+            bt.logging.error("Query and process axons task timed out")
+        except Exception as e:
+            bt.logging.error(f"Error in query and process axons task: {str(e)}")
 
-async def send_data_to_website_task(validator, semaphore):
+async def send_data_to_website_task_with_timeout(validator, semaphore):
     async with semaphore:
-        await asyncio.to_thread(send_data_to_website_server, validator)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(send_data_to_website_server, validator), timeout=WEBSITE_TIMEOUT)
+        except asyncio.TimeoutError:
+            bt.logging.error("Send data to website task timed out")
+        except Exception as e:
+            bt.logging.error(f"Error in send data to website task: {str(e)}")
 
-async def scoring_run_task(validator, current_time, semaphore):
+async def scoring_run_task_with_timeout(validator, current_time, semaphore):
     async with semaphore:
-        await asyncio.to_thread(scoring_run, validator, current_time)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(scoring_run, validator, current_time), timeout=SCORING_TIMEOUT)
+        except asyncio.TimeoutError:
+            bt.logging.error("Scoring run task timed out")
+        except Exception as e:
+            bt.logging.error(f"Error in scoring run task: {str(e)}")
 
-async def set_weights_task(validator, semaphore):
+async def set_weights_task_with_timeout(validator, semaphore):
     async with semaphore:
-        await set_weights(validator, validator.scores)
-
-
+        try:
+            await asyncio.wait_for(set_weights(validator, validator.scores), timeout=WEIGHTS_TIMEOUT)
+        except asyncio.TimeoutError:
+            bt.logging.error("Set weights task timed out")
+        except Exception as e:
+            bt.logging.error(f"Error in set weights task: {str(e)}")
 
 
 def main(validator: BettensorValidator):
@@ -236,16 +280,25 @@ def update_game_data(validator, current_time):
         bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
 
     validator.last_updated_block = validator.subtensor.block
-def sync_metagraph(validator):
-    try:
-        validator.metagraph = validator.sync_metagraph()
-        bt.logging.debug(f"Metagraph synced: {validator.metagraph}")
-    except TimeoutError as e:
-        bt.logging.error(f"Metagraph sync timed out: {e}")
 
-    validator.check_hotkeys()
-    validator.save_state()
-
+def sync_metagraph_with_retry(validator):
+    max_retries = 3
+    retry_delay = 5
+    for attempt in range(max_retries):
+        try:
+            subtensor = validator.get_subtensor()
+            validator.metagraph = validator.metagraph.sync(subtensor=subtensor, lite=True)
+            bt.logging.info("Metagraph synced successfully.")
+            return
+        except websocket.WebSocketConnectionClosedException:
+            if attempt < max_retries - 1:
+                bt.logging.warning(f"WebSocket connection closed. Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                raise
+        except Exception as e:
+            bt.logging.error(f"Error syncing metagraph: {str(e)}")
+            raise
 
 def filter_and_update_axons(validator):
 
@@ -462,6 +515,7 @@ def scoring_run(validator, current_time):
     except Exception as e:
         bt.logging.error(f"Error in scoring_run: {str(e)}")
         bt.logging.error(f"Traceback: {traceback.format_exc()}")
+        raise
 
     validator.last_scoring_block = validator.subtensor.block
 
