@@ -72,6 +72,7 @@ async def async_operations(validator):
     weights_semaphore = asyncio.Semaphore(1)
 
     # Create a task for periodic status logging
+    status_log_task = asyncio.create_task(log_status(validator))
     
 
     try:
@@ -79,7 +80,7 @@ async def async_operations(validator):
             current_time = datetime.now(timezone.utc)
             current_block = validator.subtensor.block
 
-            status_log_task = asyncio.create_task(log_status(validator))
+            
 
             # Perform update (if needed)
             if not update_semaphore.locked():
