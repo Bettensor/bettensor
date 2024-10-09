@@ -29,6 +29,13 @@ WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
 
+
+
+
+
+
+
+
 async def log_status(validator):
     while True:
         current_time = datetime.now(timezone.utc)
@@ -176,6 +183,35 @@ async def main_async(validator: BettensorValidator):
     initialize(validator)
     watchdog = Watchdog(timeout=900)  # 15 minutes timeout
 
+    # Define default intervals if they don't exist
+    if not hasattr(validator, 'update_game_data_interval'):
+        validator.update_game_data_interval = 50  # Default value, adjust as needed
+
+    if not hasattr(validator, 'query_axons_interval'):
+        validator.query_axons_interval = 10  # Default value, adjust as needed
+
+    if not hasattr(validator, 'send_data_to_website_interval'):
+        validator.send_data_to_website_interval = 15  # Default value, adjust as needed
+
+    if not hasattr(validator, 'scoring_interval'):
+        validator.scoring_interval = 50  # Default value, adjust as needed
+
+    if not hasattr(validator, 'set_weights_interval'):
+        validator.set_weights_interval = 300  # Default value, adjust as needed
+
+    # Define last operation block numbers if they don't exist
+    if not hasattr(validator, 'last_queried_block'):
+        validator.last_queried_block = validator.subtensor.block - 10
+
+    if not hasattr(validator, 'last_sent_data_to_website'):
+        validator.last_sent_data_to_website = validator.subtensor.block - 15
+
+    if not hasattr(validator, 'last_scoring_block'):
+        validator.last_scoring_block = validator.subtensor.block - 50
+
+    if not hasattr(validator, 'last_set_weights_block'):
+        validator.last_set_weights_block = validator.subtensor.block - 300
+
     # Schedule the async operations
     async_task = asyncio.create_task(async_operations(validator))
 
@@ -186,34 +222,7 @@ async def main_async(validator: BettensorValidator):
 
                 watchdog.reset()
                 
-                # Define default intervals if they don't exist
-                if not hasattr(validator, 'update_game_data_interval'):
-                    validator.update_game_data_interval = 50  # Default value, adjust as needed
-
-                if not hasattr(validator, 'query_axons_interval'):
-                    validator.query_axons_interval = 10  # Default value, adjust as needed
-
-                if not hasattr(validator, 'send_data_to_website_interval'):
-                    validator.send_data_to_website_interval = 15  # Default value, adjust as needed
-
-                if not hasattr(validator, 'scoring_interval'):
-                    validator.scoring_interval = 50  # Default value, adjust as needed
-
-                if not hasattr(validator, 'set_weights_interval'):
-                    validator.set_weights_interval = 300  # Default value, adjust as needed
-
-                # Define last operation block numbers if they don't exist
-                if not hasattr(validator, 'last_queried_block'):
-                    validator.last_queried_block = validator.subtensor.block - 10
-
-                if not hasattr(validator, 'last_sent_data_to_website'):
-                    validator.last_sent_data_to_website = validator.subtensor.block - 15
-
-                if not hasattr(validator, 'last_scoring_block'):
-                    validator.last_scoring_block = validator.subtensor.block - 50
-
-                if not hasattr(validator, 'last_set_weights_block'):
-                    validator.last_set_weights_block = validator.subtensor.block - 300
+                
                 
                 validator.step += 1
                 await asyncio.sleep(60)
