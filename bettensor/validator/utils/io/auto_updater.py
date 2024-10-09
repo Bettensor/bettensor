@@ -127,9 +127,10 @@ async def perform_update(validator):
                 bt.logging.info(f"Attempting to restart PM2 process: {process_name}")
                 result = subprocess.run(["pm2", "restart", process_name, "--update-env"], capture_output=True, text=True, timeout=30)
                 if result.returncode != 0:
-                    bt.logging.error(f"PM2 restart failed. Return code: {result.returncode}")
-                    bt.logging.error(f"stdout: {result.stdout}")
-                    bt.logging.error(f"stderr: {result.stderr}")
+                   
+                    bt.logging.warning(f"PM2 call exited with code {result.returncode}")
+                    bt.logging.warning(f"stdout: {result.stdout}")
+                  
                 else:
                     bt.logging.info(f"Validator process '{process_name}' restarted successfully.")
             else:
