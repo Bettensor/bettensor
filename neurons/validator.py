@@ -59,6 +59,7 @@ async def log_status(validator):
         )
 
         bt.logging.info(status_message)
+        await asyncio.sleep(30)
 
 async def async_operations(validator):
     # Create semaphores for each operation
