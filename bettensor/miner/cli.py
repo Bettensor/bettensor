@@ -62,8 +62,6 @@ import asyncio
 from huggingface_hub import hf_hub_download
 import torch
 
-
-# Set up logging
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -78,12 +76,10 @@ logging.basicConfig(
 
 logging.info("Starting Bettensor CLI application")
 
-# Define custom colors
 DARK_GREEN = "dark_green"
 LIGHT_GREEN = "green"
 GOLD = "gold1"
 LIGHT_GOLD = "yellow"
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -155,6 +151,8 @@ class Application:
         self.layout = None
         self.application = None
         self.log_messages = []
+        self.log_message_times = []
+        self.log_display_time = 10  #change log display time here
 
         self.kb = KeyBindings()
         self.setup_keybindings()
@@ -197,6 +195,8 @@ class Application:
                     "No valid miner available. The application will run with limited functionality."
                 )
 
+        self.start_log_cleaner()
+
     def init_database(self):
         db_host = os.getenv("DB_HOST", "localhost")
         db_name = os.getenv("DB_NAME", "bettensor")
@@ -204,16 +204,14 @@ class Application:
         db_password = os.getenv("DB_PASSWORD", "bettensor_password")
 
         max_retries = 5
-        retry_delay = 5  # seconds
+        retry_delay = 5
 
         for attempt in range(max_retries):
             try:
                 self.db_manager = DatabaseManager(
                     db_name, db_user, db_password, db_host
                 )
-                # print("DatabaseManager instance created:", self.db_manager)  # Add this line
-                # print("DatabaseManager methods:", dir(self.db_manager))  # Add this line
-                # Test the connection
+
                 self.db_manager.execute_query("SELECT 1")
                 bt.logging.debug("Successfully connected to the database.")
                 break
@@ -264,7 +262,7 @@ class Application:
         self.save_miner_uid(self.miner_uid)
 
     def get_available_miners(self):
-        self.console_print("Retrieving miners from database...")
+        self.add_log_message("Retrieving miners from database...")
         query = """
         SELECT ms.miner_uid, ms.miner_hotkey, ms.miner_cash, ms.miner_rank,
                CASE WHEN ma.last_active_timestamp > NOW() - INTERVAL '5 minutes' THEN TRUE ELSE FALSE END as is_active
@@ -276,7 +274,7 @@ class Application:
             logging.debug(f"Retrieved miners: {result}")
             return result
         except Exception as e:
-            self.console_print(f"[bold red]Failed to retrieve miners: {e}[/bold red]")
+            self.add_log_message(f"Failed to retrieve miners: {e}", "ERROR")
             logging.error(f"Error retrieving miners: {e}")
             return []
 
@@ -326,7 +324,7 @@ class Application:
                 "SELECT * FROM miner_stats WHERE miner_uid = %s", (self.miner_uid,)
             )
             if miner_stats:
-                miner_stats = miner_stats[0]  # Assuming the query returns a single row
+                miner_stats = miner_stats[0]
                 self.miner_cash = float(miner_stats.get("miner_cash", 0))
                 self.miner_lifetime_earnings = float(
                     miner_stats.get("miner_lifetime_earnings", 0)
@@ -351,7 +349,7 @@ class Application:
                     f"No stats found for miner with UID: {self.miner_uid}"
                 )
         except Exception as e:
-            bt.logging.error(f"Error reloading miner data: {str(e)}")
+            self.add_log_message(f"Error reloading miner data: {str(e)}", "ERROR")
 
     @staticmethod
     def format_date(date_str):
@@ -395,25 +393,29 @@ class Application:
 
             layout["header"].update(Panel("BetTensor Miner CLI", style=f"bold {GOLD}"))
             
-            # Main content based on current view
+            body_content = None
             if self.current_view == "main_menu":
-                layout["body"].update(self.generate_main_menu())
+                body_content = self.generate_main_menu()
                 footer_text = "m: Main Menu | p: Predictions | g: Games | n: Next Miner | q: Quit"
             elif self.current_view == "predictions":
-                layout["body"].update(self.generate_predictions_view())
+                body_content = self.generate_predictions_view()
                 footer_text = "m: Main Menu | ↑/↓: Navigate | ←/→: Change Page | s: Search | q: Quit" if not self.predictions_search_mode else "Enter: Finish Search | Esc: Cancel Search | Type to filter predictions"
             elif self.current_view == "games":
-                layout["body"].update(self.generate_games_view())
+                body_content = self.generate_games_view()
                 footer_text = "m: Main Menu | ↑/↓: Navigate | ←/→: Change Page | Enter: Select Game | s: Search | q: Quit" if not self.search_mode else "Enter: Finish Search | Esc: Cancel Search | Type to filter games"
             elif self.current_view == "enter_prediction":
-                layout["body"].update(self.generate_enter_prediction_view())
+                body_content = self.generate_enter_prediction_view()
                 footer_text = "a/b/t: Select Outcome | w: Enter/Exit Wager | c: Confirm | Esc: Cancel | q: Quit"
             else:
-                layout["body"].update(Panel("Invalid view"))
+                body_content = Panel("Invalid view")
                 footer_text = "q: Quit"
 
-            # Log area
-            log_content = "\n".join(self.log_messages[-5:])  # Show last 5 log messages
+            if body_content is not None:
+                layout["body"].update(body_content)
+            else:
+                layout["body"].update(Panel("Error: Unable to generate content"))
+
+            log_content = "\n".join(self.log_messages[-3:])
             layout["logs"].update(Panel(log_content, title="Logs", border_style="blue"))
 
             layout["footer"].update(Panel(footer_text, style=f"italic {LIGHT_GREEN}"))
@@ -480,7 +482,7 @@ class Application:
         ]
 
         for i, row in enumerate(rows[:num_rows]):
-            if i == 2:  # This is the "Miner Status" row
+            if i == 2:
                 table.add_row(row[0], Text(row[1], style=active_style))
             else:
                 table.add_row(row[0], row[1])
@@ -533,7 +535,6 @@ class Application:
                 border_style=DARK_GREEN,
             )
 
-        # Calculate max widths for each column
         max_widths = {
             "Date": max(
                 len(self.format_date(pred["prediction_date"]))
@@ -548,9 +549,9 @@ class Application:
             "Wager": max(len(f"${pred['wager']:.2f}") for pred in predictions.values()),
             "Wager Odds": max(
                 len(f"{pred['team_a_odds']:.2f}") for pred in predictions.values()
-            ),  # Use team_a_odds as a placeholder
+            ),
             "Result": max(len(pred["outcome"]) for pred in predictions.values()),
-            "Payout": 10,  # Assuming a reasonable width for payout
+            "Payout": 10,
             "Sent": max(
                 len(str(pred["validators_sent_to"])) for pred in predictions.values()
             ),
@@ -583,7 +584,6 @@ class Application:
             f"Displaying predictions {start} to {end} (total: {len(predictions_to_display)})"
         )
         for pred in predictions_to_display:
-            # Calculate wager odds based on the predicted outcome
             if pred["predicted_outcome"] == pred["team_a"]:
                 wager_odds = pred["team_a_odds"]
             elif pred["predicted_outcome"] == pred["team_b"]:
@@ -591,7 +591,6 @@ class Application:
             else:
                 wager_odds = pred["tie_odds"] if "tie_odds" in pred else "N/A"
 
-            # Calculate payout
             if pred["outcome"] == "Wager Won":
                 payout = pred["wager"] * wager_odds
             elif pred["outcome"] == "Wager Lost":
@@ -738,11 +737,16 @@ class Application:
         self.selected_game = selected_game
         self.prediction_outcome = None
         self.prediction_wager = None
-        self.last_prediction_time = (
-            0  # Reset the last prediction time when entering a new prediction
-        )
-        self.last_prediction_id = None  # Reset the last prediction ID
-        self.can_tie = selected_game.can_tie  # Store the canTie value
+        self.wager_input = ""
+        self.wager_input_mode = False
+        self.last_prediction_time = 0
+        self.last_prediction_id = None
+        self.can_tie = selected_game.can_tie
+        self.submission_message = None
+        self.confirmation_mode = False
+
+        self.reset_layout()
+        get_app().invalidate()
 
     def generate_enter_prediction_view(self):
         if not self.games_handler or not self.miner_uid:
@@ -756,7 +760,6 @@ class Application:
             )
 
         if hasattr(self, "confirmation_mode") and self.confirmation_mode:
-            # Only display the confirmation message
             content = [
                 Text(self.submission_message, style="bold green", justify="center")
             ]
@@ -838,7 +841,7 @@ class Application:
         rows = [get_money_row() for _ in range(self.console.height)]
 
         with Live(refresh_per_second=20, screen=True) as live:
-            for _ in range(30):  # 30 frames at 20 FPS is 1.5 seconds
+            for _ in range(30):
                 live.update(Text("\n".join(rows), style=GOLD))
                 rows = rows[1:] + [get_money_row()]
                 time.sleep(0.05)
@@ -923,7 +926,7 @@ class Application:
         def _(event):
             logging.debug(f"Key pressed in search mode: {repr(event.data)}")
 
-            if event.data == Keys.ControlJ:  # Enter key
+            if event.data == Keys.ControlJ:
                 logging.debug("Enter key pressed, exiting search mode")
                 self.search_mode = False
                 self.predictions_search_mode = False
@@ -931,7 +934,7 @@ class Application:
                 Keys.Backspace,
                 Keys.Delete,
                 "\x7f",
-            ):  # Include '\x7f' for backspace
+            ):
                 logging.debug(f"Backspace or Delete key pressed: {repr(event.data)}")
                 if self.search_mode and self.search_query:
                     self.search_query = self.search_query[:-1]
@@ -1039,18 +1042,14 @@ class Application:
         )
         def _(event):
             if self.wager_input_mode:
-                # Exit wager input mode
                 self.wager_input_mode = False
                 try:
                     self.prediction_wager = float(self.wager_input)
-                    # self.console_print(f"[bold green]Wager of ${self.prediction_wager:.2f} entered successfully[/bold green]")
                 except ValueError:
-                    # self.console_print("[bold red]Invalid wager amount. Please enter a number.[/bold red]")
                     self.prediction_wager = None
                 finally:
                     self.wager_input = ""
             else:
-                # Enter wager input mode
                 self.wager_input_mode = True
                 self.wager_input = ""
             event.app.invalidate()
@@ -1104,8 +1103,7 @@ class Application:
                 logging.warning(
                     "Attempted to submit prediction without outcome or wager"
                 )
-                # self.console_print("[bold red]Please select an outcome and enter a wager amount[/bold red]")
-            event.app.invalidate()  # Force redraw
+            event.app.invalidate()
 
         @self.kb.add(
             Keys.Enter,
@@ -1129,7 +1127,6 @@ class Application:
             ),
         )
         def _(event):
-            # Ignore all key presses during confirmation mode
             pass
 
     def select_next_miner(self):
@@ -1152,9 +1149,6 @@ class Application:
         self.miner_is_active = next_miner["is_active"]
         self.save_miner_uid(self.miner_uid)
         self.reload_miner_data()
-        self.console_print(
-            f"[bold green]Switched to miner: {self.miner_uid}[/bold green]"
-        )
 
     def quit(self):
         if self.state_manager:
@@ -1184,7 +1178,6 @@ class Application:
         file_path = "current_miner_uid.txt"
         with open(file_path, "w") as f:
             f.write(str(uid))
-        # bt.logging.info(f"Saved miner UID {uid} to {file_path}")
 
     def run(self):
         try:
@@ -1240,53 +1233,57 @@ class Application:
             _ = os.system("clear")
 
     def submit_prediction(self):
-        if self.prediction_outcome and self.prediction_wager is not None:
-            current_time = time.time()
-            if current_time - self.last_prediction_time < 1:  # 1 second cooldown
-                self.submission_message = (
-                    "Please wait before submitting another prediction."
-                )
-                return
+        try:
+            if self.prediction_outcome and self.prediction_wager is not None:
+                current_time = time.time()
+                if current_time - self.last_prediction_time < 1:  # 1 second cooldown
+                    self.submission_message = "Please wait before submitting another prediction."
+                    return
 
-            prediction = {
-                "prediction_id": str(uuid.uuid4()),
-                "miner_uid": self.miner_uid,
-                "game_id": self.selected_game.game_id,
-                "prediction_date": datetime.now(timezone.utc).isoformat(),
-                "predicted_outcome": self.prediction_outcome,
-                "team_a": self.selected_game.team_a,
-                "team_b": self.selected_game.team_b,
-                "wager": self.prediction_wager,
-                "team_a_odds": self.selected_game.team_a_odds,
-                "team_b_odds": self.selected_game.team_b_odds,
-                "tie_odds": self.selected_game.tie_odds,
-                "outcome": "Unfinished",
-                "model_name": None,
-                "confidence_score": None,
-            }
+                prediction = {
+                    "prediction_id": str(uuid.uuid4()),
+                    "miner_uid": self.miner_uid,
+                    "game_id": self.selected_game.game_id,
+                    "prediction_date": datetime.now(timezone.utc).isoformat(),
+                    "predicted_outcome": self.prediction_outcome,
+                    "team_a": self.selected_game.team_a,
+                    "team_b": self.selected_game.team_b,
+                    "wager": self.prediction_wager,
+                    "team_a_odds": self.selected_game.team_a_odds,
+                    "team_b_odds": self.selected_game.team_b_odds,
+                    "tie_odds": self.selected_game.tie_odds,
+                    "outcome": "Unfinished",
+                    "model_name": None,
+                    "confidence_score": None,
+                }
 
-            result = self.predictions_handler.add_prediction(prediction)
+                result = self.predictions_handler.add_prediction(prediction)
 
-            if result["status"] == "success":
-                self.add_log_message(f"Prediction submitted: {self.prediction_outcome} with wager ${self.prediction_wager:.2f}")
-                self.last_prediction_time = current_time
-                self.last_prediction_id = prediction["prediction_id"]
-                self.reload_miner_data()
-                self.confirmation_mode = True
-                app = get_app()
-                app.create_background_task(self.delayed_return_to_games())
+                if result["status"] == "success":
+                    self.submission_message = f"Prediction submitted: {self.prediction_outcome} with wager ${self.prediction_wager:.2f}"
+                    self.add_log_message(f"Prediction added: {self.prediction_outcome} with wager ${self.prediction_wager:.2f}")
+                    self.last_prediction_time = current_time
+                    self.last_prediction_id = prediction["prediction_id"]
+                    self.reload_miner_data()
+                    self.confirmation_mode = True
+                    app = get_app()
+                    app.create_background_task(self.delayed_return_to_games())
+                else:
+                    self.submission_message = f"Failed to submit prediction: {result['message']}"
+                    self.add_log_message(f"Failed to submit prediction: {result['message']}", "ERROR")
             else:
-                self.add_log_message(f"Failed to submit prediction: {result['message']}")
-        else:
-            self.submission_message = (
-                "Please select an outcome and enter a wager amount."
-            )
+                self.submission_message = "Please select an outcome and enter a wager amount."
+                self.add_log_message("Incomplete prediction. Please select an outcome and enter a wager amount.", "WARNING")
 
-        # Reset the layout
-        self.reset_layout()
-
-        # Force a redraw
-        get_app().invalidate()
+            self.reset_layout()
+            get_app().invalidate()
+        except Exception as e:
+            error_message = f"Error in submit_prediction: {str(e)}"
+            self.submission_message = error_message
+            self.add_log_message(error_message, "ERROR")
+            logging.error(error_message)
+            self.reset_layout()
+            get_app().invalidate()
 
     async def delayed_return_to_games(self):
         await asyncio.sleep(2)
@@ -1313,7 +1310,6 @@ class Application:
             self.format_last_prediction_date(self.miner_last_prediction_date),
         )
 
-        # Add miner activity status
         is_active = self.db_manager.is_miner_active(self.miner_uid)
         active_status = "Active" if is_active else "Inactive"
         active_style = GOLD if is_active else "bold red"
@@ -1321,50 +1317,74 @@ class Application:
 
         miner_info.add_row("Current Time:", current_time_utc)
 
-        # Wrap the table in a panel with a fixed width
         panel = Panel(
             miner_info,
             title="Miner Info",
             border_style=DARK_GREEN,
-            width=60,  # Increased width to accommodate the time
+            width=60,
             expand=False,
         )
 
-        # Center the panel
         centered_panel = Align.center(panel)
 
         return Group(centered_panel)
 
     def reset_layout(self):
         try:
-            self.layout = self.generate_layout()
-            if self.application is None:
-                self.application = self
-            self.application.layout = self.layout
-            self.refresh_logs()
-            get_app().invalidate()
+            new_layout = self.generate_layout()
+            if new_layout is not None:
+                self.layout = new_layout
+                if self.application:
+                    self.application.layout = new_layout
+            else:
+                self.add_log_message("Error: Unable to generate layout")
+                self.layout = Layout(Panel("Error generating layout. Please check logs."))
         except Exception as e:
-            logging.error(f"Error in reset_layout: {str(e)}")
-            # Fallback to a simple layout if generation fails
-            self.layout = Layout(Panel("Error generating layout. Please check logs."))
-
-    def add_log_message(self, message):
-        self.log_messages.append(message)
-        if len(self.log_messages) > 20:  # Keep only the last 20 messages
-            self.log_messages.pop(0)
-        self.refresh_logs()
-        get_app().invalidate()  # Force a UI update
+            self.add_log_message(f"Error in reset_layout: {str(e)}")
+            self.layout = Layout(Panel(f"Error generating layout: {str(e)}"))
+        
+        get_app().invalidate()
 
     def refresh_logs(self):
-        if hasattr(self, 'layout') and isinstance(self.layout, Layout):
-            if 'logs' in self.layout:
-                log_content = "\n".join(self.log_messages[-5:])
-                self.layout['logs'].update(Panel(log_content, title="Logs", border_style="blue"))
-                get_app().invalidate()
-            else:
-                logging.warning("'logs' section not found in layout")
-        else:
-            logging.warning("Layout not properly initialized")
+        if not hasattr(self, 'layout') or self.layout is None:
+            return
+
+        log_content = "\n".join(self.log_messages[-5:]) if self.log_messages else "No logs yet."
+        log_panel = Panel(log_content, title="Logs", border_style="blue")
+
+        if hasattr(self.layout, 'children'):
+            logs_exists = any(child.name == 'logs' for child in self.layout.children if hasattr(child, 'name'))
+            if logs_exists:
+                for child in self.layout.children:
+                    if hasattr(child, 'name') and child.name == 'logs':
+                        child.update(log_panel)
+                        break
+        
+        get_app().invalidate()
+
+    def add_log_message(self, message, level="INFO"):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {level}: {message}"
+        self.log_messages.append(formatted_message)
+        self.log_message_times.append(time.time())
+        self.clean_old_messages()
+        self.refresh_logs()
+
+    def clean_old_messages(self):
+        current_time = time.time()
+        while self.log_message_times and current_time - self.log_message_times[0] > self.log_display_time:
+            self.log_messages.pop(0)
+            self.log_message_times.pop(0)
+
+    def start_log_cleaner(self):
+        def clean_logs_periodically():
+            while True:
+                time.sleep(1)
+                self.clean_old_messages()
+                self.refresh_logs()
+
+        import threading
+        threading.Thread(target=clean_logs_periodically, daemon=True).start()
 
 
 if __name__ == "__main__":

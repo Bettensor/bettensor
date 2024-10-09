@@ -60,7 +60,7 @@ class PredictionsHandler:
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
     def add_prediction(self, prediction: Dict[str, Any]) -> Dict[str, Any]:
-        bt.logging.info(f"Adding prediction: {prediction}")
+        #bt.logging.debug(f"Adding prediction: {prediction}")
         prediction_id = str(uuid.uuid4())
         prediction["prediction_id"] = prediction_id
 
@@ -98,7 +98,7 @@ class PredictionsHandler:
         )
 
         self.db_manager.execute_query(query, params)
-        bt.logging.info(f"Prediction added with ID: {prediction_id}")
+        #bt.logging.info(f"Prediction added with ID: {prediction_id}")
         return {"status": "success", "prediction_id": prediction_id}
 
     def update_prediction_sent(self, prediction_id: str):
