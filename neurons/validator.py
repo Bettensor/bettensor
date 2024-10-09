@@ -245,7 +245,6 @@ def main(validator: BettensorValidator):
     async_thread.join()
     bt.logging.info("Validator shutdown complete.")
 
-
 def initialize(validator):
     validator.serve_axon()
     validator.initialize_connection()
@@ -261,8 +260,6 @@ def initialize(validator):
         validator.last_scoring_block = validator.subtensor.block - 51
         validator.last_set_weights_block = validator.subtensor.block - 301
         
-
-
 def update_game_data(validator, current_time):
     """
     Calls SportsData to update game data in the database - Async in separate thread
@@ -300,7 +297,7 @@ def sync_metagraph_with_retry(validator):
     for attempt in range(max_retries):
         try:
             subtensor = validator.get_subtensor()
-            validator.metagraph = validator.subtensor.metagraph(subtensor=subtensor, lite=True)
+            validator.metagraph = validator.subtensor.metagraph()
             bt.logging.info("Metagraph synced successfully.")
             return
         except websocket.WebSocketConnectionClosedException:
@@ -354,7 +351,6 @@ def filter_and_update_axons(validator):
         bt.logging.warning(f"UIDs to query is empty: {uids_to_query}")
 
     return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
-
 
 def query_and_process_axons_with_game_data(validator):
     """
@@ -476,7 +472,6 @@ def query_and_process_axons_with_game_data(validator):
         except Exception as e:
             bt.logging.error(f"Error processing predictions: {e}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
-
     
 def send_data_to_website_server(validator):
     """
@@ -494,7 +489,6 @@ def send_data_to_website_server(validator):
             bt.logging.warning("No new predictions were sent this round")
     except Exception as e:
         bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
-
     
 def scoring_run(validator, current_time):
     """
@@ -527,7 +521,6 @@ def scoring_run(validator, current_time):
         bt.logging.error(f"Error in scoring_run: {str(e)}")
         bt.logging.error(f"Traceback: {traceback.format_exc()}")
         raise
-
     
 async def set_weights(validator, scores):
     """
