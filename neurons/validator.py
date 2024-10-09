@@ -59,7 +59,6 @@ async def log_status(validator):
         )
 
         bt.logging.info(status_message)
-        await asyncio.sleep(60)  # Log status every 60 seconds
 
 async def async_operations(validator):
     # Create semaphores for each operation
@@ -72,42 +71,56 @@ async def async_operations(validator):
     weights_semaphore = asyncio.Semaphore(1)
 
     # Create a task for periodic status logging
-    status_log_task = asyncio.create_task(log_status(validator))
+    
 
     try:
         while True:
             current_time = datetime.now(timezone.utc)
             current_block = validator.subtensor.block
 
+            status_log_task = asyncio.create_task(log_status(validator))
+
             # Perform update (if needed)
             if not update_semaphore.locked():
                 asyncio.create_task(perform_update_task_with_timeout(validator, update_semaphore))
+
+            await asyncio.sleep(1)
 
             # Update game data
             if (current_block - validator.last_updated_block) > validator.update_game_data_interval and not game_data_semaphore.locked():
                 asyncio.create_task(update_game_data_task_with_timeout(validator, current_time, game_data_semaphore))
 
+            await asyncio.sleep(1)
+
             # Sync metagraph
             if (current_block - validator.last_queried_block) > (validator.query_axons_interval - 5) and not metagraph_semaphore.locked():
                 asyncio.create_task(sync_metagraph_task_with_timeout(validator, metagraph_semaphore))
+
+            await asyncio.sleep(1)
 
             # Query and process axons
             if (current_block - validator.last_queried_block) > validator.query_axons_interval and not query_semaphore.locked():
                 asyncio.create_task(query_and_process_axons_task_with_timeout(validator, query_semaphore))
 
+            await asyncio.sleep(1)
+
             # Send data to website
             if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval and not website_semaphore.locked():
                 asyncio.create_task(send_data_to_website_task_with_timeout(validator, website_semaphore))
+
+            await asyncio.sleep(1)
 
             # Recalculate scores
             if (current_block - validator.last_scoring_block) > validator.scoring_interval and not scoring_semaphore.locked():
                 asyncio.create_task(scoring_run_task_with_timeout(validator, current_time, scoring_semaphore))
 
+            await asyncio.sleep(1)
+
             # Set weights
             if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
                 asyncio.create_task(set_weights_task_with_timeout(validator, weights_semaphore))
 
-            await asyncio.sleep(12)  # Wait before next iteration
+            await asyncio.sleep(6)  # Wait before next iteration
     finally:
         # Ensure the status log task is cancelled when the main loop exits
         status_log_task.cancel()
@@ -192,7 +205,6 @@ def main(validator: BettensorValidator):
     while True:
         try:
             watchdog.reset()
-            current_block = validator.subtensor.block
             
             # Define default intervals if they don't exist
             if not hasattr(validator, 'update_game_data_interval'):
