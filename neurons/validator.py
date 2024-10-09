@@ -119,6 +119,7 @@ def main(validator: BettensorValidator):
             # Main loop now only handles watchdog reset and logging
             bt.logging.info("--------------------------------Status--------------------------------")
             bt.logging.info(
+                "\n"
                 f"Current Step: {validator.step},\n" 
                 f"Current block: {current_block},\n" 
                 f"Last updated block: {validator.last_updated_block},\n" 
