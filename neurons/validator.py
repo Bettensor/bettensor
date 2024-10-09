@@ -32,7 +32,7 @@ async def async_operations(validator):
 
         # Update game data every 10 minutes and perform auto-update if update detected
         
-        if (current_block - validator.last_updated_block) % validator.update_game_data_interval > 0:
+        if (current_block - validator.last_updated_block) > validator.update_game_data_interval:
             await asyncio.to_thread(update_game_data, validator, current_time)
             
         # Sync metagraph
@@ -40,22 +40,22 @@ async def async_operations(validator):
 
         # Query and process axons with game data every 10 blocks
         
-        if (current_block - validator.last_queried_block) % validator.query_axons_interval > 0:
+        if (current_block - validator.last_queried_block) > validator.query_axons_interval:
             await asyncio.to_thread(query_and_process_axons_with_game_data, validator)
 
         # Send data to website server every 15 blocks
 
-        if (current_block - validator.last_sent_data_to_website) % validator.send_data_to_website_interval > 0:
+        if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval:
             await asyncio.to_thread(send_data_to_website_server, validator)
 
         # Recalculate scores every 50 blocks
 
-        if (current_block - validator.last_scoring_block) % validator.scoring_interval > 0:
+        if (current_block - validator.last_scoring_block) > validator.scoring_interval:
             await asyncio.to_thread(scoring_run, validator, current_time)
 
         # Set weights every 300 blocks
 
-        if (current_block - validator.last_set_weights_block) % validator.set_weights_interval > 0:
+        if (current_block - validator.last_set_weights_block) > validator.set_weights_interval:
             await set_weights(validator, validator.scores)
 
         
@@ -131,7 +131,7 @@ def main(validator: BettensorValidator):
             bt.logging.info("--------------------------------End Status--------------------------------")
             
             validator.step += 1
-            time.sleep(60)
+            time.sleep(30)
 
         except KeyboardInterrupt:
             bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
