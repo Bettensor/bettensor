@@ -153,7 +153,8 @@ def main(validator: BettensorValidator):
             blocks_until_set_weights = max(0, validator.set_weights_interval - ((current_block - validator.last_set_weights_block) % validator.set_weights_interval))
 
             # Main loop now only handles watchdog reset and logging
-            bt.logging.info("\n"
+            
+            bt.logging.info("\n\n\n"
                 "--------------------------------Status--------------------------------"
                 "\n"
                 f"Current Step: {validator.step},\n" 
@@ -165,6 +166,7 @@ def main(validator: BettensorValidator):
                 f"Blocks until set_weights: {blocks_until_set_weights}"
                 "\n"
                 "----------------------------------------------------------------------"
+                "\n\n\n"
             )
             
             validator.step += 1

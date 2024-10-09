@@ -98,7 +98,7 @@ def get_pm2_process_name():
         return None
 
 async def perform_update(validator):
-    bt.logging.info("Update detected. Starting update procedure...")
+    bt.logging.info("Checking for updates...")
     
     if pull_latest_changes():
         # Check if we need to reset scoring
