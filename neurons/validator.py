@@ -16,6 +16,7 @@ import threading
 import websocket
 from websocket._exceptions import WebSocketConnectionClosedException
 import logging
+from loguru import logger as bt_logger
 
 import bettensor
 from bettensor import protocol
@@ -34,25 +35,25 @@ WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
 
-class StatusHandler(logging.Handler):
+class StatusSink:
     def __init__(self):
-        super().__init__()
         self.status_message = ""
 
-    def emit(self, record):
-        if record.msg.startswith("\033[2J\033[H"):  # Check for our status message
-            self.status_message = record.msg[7:]  # Remove the clear screen and cursor move codes
+    def write(self, message):
+        if message.startswith("\033[2J\033[H"):  # Check for our status message
+            self.status_message = message[7:]  # Remove the clear screen and cursor move codes
         else:
             # For non-status messages, print them and then reprint the status
-            print(self.format(record))
+            print(message, end='')
             if self.status_message:
                 print(self.status_message, end='')
             sys.stdout.flush()
 
-# Set up the custom handler
-status_handler = StatusHandler()
-status_handler.setLevel(logging.INFO)
-bt.logging.addHandler(status_handler)
+# Create a custom sink for status messages
+status_sink = StatusSink()
+
+# Add the custom sink to bt.logging
+bt_logger.add(status_sink.write, level="INFO")
 
 async def async_operations(validator):
     # Create semaphores for each operation
@@ -180,7 +181,7 @@ async def continuous_status_display(validator):
         blocks_until_set_weights = max(0, validator.set_weights_interval - (current_block - validator.last_set_weights_block))
 
         status_message = (
-            "\n"
+            "\033[2J\033[H"  # Clear screen and move cursor to top-left
             "--------------------------------Status--------------------------------\n"
             f"Current Step: {validator.step}\n"
             f"Current block: {current_block}\n"
@@ -192,8 +193,8 @@ async def continuous_status_display(validator):
             "----------------------------------------------------------------------\n"
         )
 
-        # Use a special logger or print function for the status
-        bt.logging.info(f"\033[2J\033[H{status_message}")  # Clear screen and move cursor to top-left
+        # Use bt.logging to log the status message
+        bt_logger.info(status_message)
         await asyncio.sleep(5)  # Update every 5 seconds
 
 def main(validator: BettensorValidator):
@@ -299,10 +300,10 @@ def initialize(validator):
     if not validator.last_updated_block:
         bt.logging.info("Updating last updated block; will set weights this iteration")
         validator.last_updated_block = validator.subtensor.block - 301
-        validator.last_queried_block = validator.subtensor.block - 10
-        validator.last_sent_data_to_website = validator.subtensor.block - 15
-        validator.last_scoring_block = validator.subtensor.block - 50
-        validator.last_set_weights_block = validator.subtensor.block - 300
+        validator.last_queried_block = validator.subtensor.block - 11
+        validator.last_sent_data_to_website = validator.subtensor.block - 16
+        validator.last_scoring_block = validator.subtensor.block - 51
+        validator.last_set_weights_block = validator.subtensor.block - 301
         
 
 
