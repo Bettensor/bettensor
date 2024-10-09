@@ -12,14 +12,8 @@ from copy import deepcopy
 from argparse import ArgumentParser
 from datetime import datetime, timezone, timedelta
 import asyncio
-import threading
 import websocket
 from websocket._exceptions import WebSocketConnectionClosedException
-import logging
-from loguru import logger as bt_logger
-
-import bettensor
-from bettensor import protocol
 from bettensor.protocol import GameData, Metadata
 from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor.validator.utils.io.sports_data import SportsData
@@ -34,7 +28,6 @@ QUERY_TIMEOUT = 180  # 3 minutes
 WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
-
 
 async def log_status(validator):
     while True:
@@ -60,60 +53,6 @@ async def log_status(validator):
 
         bt.logging.info(status_message)
         await asyncio.sleep(30)
-
-async def async_operations(validator):
-    # Create semaphores for each operation
-    update_semaphore = asyncio.Semaphore(1)
-    game_data_semaphore = asyncio.Semaphore(1)
-    query_semaphore = asyncio.Semaphore(1)
-    website_semaphore = asyncio.Semaphore(1)
-    scoring_semaphore = asyncio.Semaphore(1)
-    weights_semaphore = asyncio.Semaphore(1)
-
-    # Create a task for periodic status logging
-    status_log_task = asyncio.create_task(log_status(validator))
-    
-
-    try:
-        while True:
-            current_time = datetime.now(timezone.utc)
-            current_block = validator.subtensor.block
-            bt.logging.info(f"Current block: {current_block}")
-
-
-            # Perform update (if needed)
-            if not update_semaphore.locked():
-                asyncio.create_task(perform_update_task_with_timeout(validator, update_semaphore))
-
-
-            # Update game data
-            if (current_block - validator.last_updated_block) > validator.update_game_data_interval and not game_data_semaphore.locked():
-                asyncio.create_task(update_game_data_task_with_timeout(validator, current_time, game_data_semaphore))
-
-
-            # Query and process axons
-            if (current_block - validator.last_queried_block) > validator.query_axons_interval and not query_semaphore.locked():
-                asyncio.create_task(query_and_process_axons_task_with_timeout(validator, query_semaphore))
-
-
-            # Send data to website
-            if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval and not website_semaphore.locked():
-                asyncio.create_task(send_data_to_website_task_with_timeout(validator, website_semaphore))
-
-
-
-            # Recalculate scores
-            if (current_block - validator.last_scoring_block) > validator.scoring_interval and not scoring_semaphore.locked():
-                asyncio.create_task(scoring_run_task_with_timeout(validator, current_time, scoring_semaphore))
-
-
-            # Set weights
-            if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
-                asyncio.create_task(set_weights_task_with_timeout(validator, weights_semaphore))
-
-    finally:
-        # Ensure the status log task is cancelled when the main loop exits
-        status_log_task.cancel()
 
 async def perform_update_task_with_timeout(validator, semaphore):
     async with semaphore:
@@ -169,82 +108,134 @@ async def scoring_run_task_with_timeout(validator, current_time, semaphore):
         except asyncio.TimeoutError:
             bt.logging.error("Scoring run task timed out")
         except Exception as e:
-            bt.logging.error(f"Error in scoring run task: {str(e)}")
+            bt.logging.error(f"Error in scoring_run task: {str(e)}")
+            raise
 
 async def set_weights_task_with_timeout(validator, semaphore):
     async with semaphore:
         try:
-            await asyncio.wait_for(set_weights(validator, validator.scores), timeout=WEIGHTS_TIMEOUT)
+            await asyncio.wait_for(asyncio.to_thread(set_weights, validator, validator.scores), timeout=WEIGHTS_TIMEOUT)
         except asyncio.TimeoutError:
             bt.logging.error("Set weights task timed out")
         except Exception as e:
             bt.logging.error(f"Error in set weights task: {str(e)}")
 
-def main(validator: BettensorValidator):
+async def async_operations(validator):
+    # Create semaphores for each operation
+    update_semaphore = asyncio.Semaphore(1)
+    game_data_semaphore = asyncio.Semaphore(1)
+    query_semaphore = asyncio.Semaphore(1)
+    website_semaphore = asyncio.Semaphore(1)
+    scoring_semaphore = asyncio.Semaphore(1)
+    weights_semaphore = asyncio.Semaphore(1)
+
+    # Create a task for periodic status logging
+    status_log_task = asyncio.create_task(log_status(validator))
+
+    try:
+        while True:
+            current_time = datetime.now(timezone.utc)
+            current_block = validator.subtensor.block
+            bt.logging.info(f"Current block: {current_block}")
+
+            # Perform update (if needed)
+            if not update_semaphore.locked():
+                asyncio.create_task(perform_update_task_with_timeout(validator, update_semaphore))
+
+            # Update game data
+            if (current_block - validator.last_updated_block) > validator.update_game_data_interval and not game_data_semaphore.locked():
+                asyncio.create_task(update_game_data_task_with_timeout(validator, current_time, game_data_semaphore))
+
+            # Query and process axons
+            if (current_block - validator.last_queried_block) > validator.query_axons_interval and not query_semaphore.locked():
+                asyncio.create_task(query_and_process_axons_task_with_timeout(validator, query_semaphore))
+
+            # Send data to website
+            if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval and not website_semaphore.locked():
+                asyncio.create_task(send_data_to_website_task_with_timeout(validator, website_semaphore))
+
+            # Recalculate scores
+            if (current_block - validator.last_scoring_block) > validator.scoring_interval and not scoring_semaphore.locked():
+                asyncio.create_task(scoring_run_task_with_timeout(validator, current_time, scoring_semaphore))
+
+            # Set weights
+            if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
+                asyncio.create_task(set_weights_task_with_timeout(validator, weights_semaphore))
+
+            await asyncio.sleep(1)  # Control the loop iteration rate
+
+    except Exception as e:
+        bt.logging.error(f"Error in async_operations: {str(e)}")
+        bt.logging.error(traceback.format_exc())
+    finally:
+        # Ensure the status log task is cancelled when the main loop exits
+        status_log_task.cancel()
+        await status_log_task
+
+async def main_async(validator: BettensorValidator):
     initialize(validator)
     watchdog = Watchdog(timeout=900)  # 15 minutes timeout
 
-    # Create and run the async loop in a separate thread
-    async_loop = asyncio.new_event_loop()
-    async_thread = threading.Thread(target=async_loop.run_forever)
-    async_thread.start()
-
     # Schedule the async operations
-    asyncio.run_coroutine_threadsafe(async_operations(validator), async_loop)
+    async_task = asyncio.create_task(async_operations(validator))
 
-    while True:
+    try:
+        while True:
+            try:
+                await asyncio.to_thread(sync_metagraph_with_retry, validator)
+
+                watchdog.reset()
+                
+                # Define default intervals if they don't exist
+                if not hasattr(validator, 'update_game_data_interval'):
+                    validator.update_game_data_interval = 50  # Default value, adjust as needed
+
+                if not hasattr(validator, 'query_axons_interval'):
+                    validator.query_axons_interval = 10  # Default value, adjust as needed
+
+                if not hasattr(validator, 'send_data_to_website_interval'):
+                    validator.send_data_to_website_interval = 15  # Default value, adjust as needed
+
+                if not hasattr(validator, 'scoring_interval'):
+                    validator.scoring_interval = 50  # Default value, adjust as needed
+
+                if not hasattr(validator, 'set_weights_interval'):
+                    validator.set_weights_interval = 300  # Default value, adjust as needed
+
+                # Define last operation block numbers if they don't exist
+                if not hasattr(validator, 'last_queried_block'):
+                    validator.last_queried_block = validator.subtensor.block - 10
+
+                if not hasattr(validator, 'last_sent_data_to_website'):
+                    validator.last_sent_data_to_website = validator.subtensor.block - 15
+
+                if not hasattr(validator, 'last_scoring_block'):
+                    validator.last_scoring_block = validator.subtensor.block - 50
+
+                if not hasattr(validator, 'last_set_weights_block'):
+                    validator.last_set_weights_block = validator.subtensor.block - 300
+                
+                validator.step += 1
+                await asyncio.sleep(60)
+
+            except asyncio.CancelledError:
+                bt.logging.info("Async main loop cancelled.")
+                break
+            except KeyboardInterrupt:
+                bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
+                break
+            except Exception as e:
+                bt.logging.error(f"Unexpected error in main loop: {str(e)}")
+                bt.logging.error(traceback.format_exc())
+                await asyncio.sleep(10)  # Wait before retrying
+
+    finally:
+        async_task.cancel()
         try:
-            sync_metagraph_with_retry(validator)
-
-            watchdog.reset()
-            
-            # Define default intervals if they don't exist
-            if not hasattr(validator, 'update_game_data_interval'):
-                validator.update_game_data_interval = 50  # Default value, adjust as needed
-
-            if not hasattr(validator, 'query_axons_interval'):
-                validator.query_axons_interval = 10  # Default value, adjust as needed
-
-            if not hasattr(validator, 'send_data_to_website_interval'):
-                validator.send_data_to_website_interval = 15  # Default value, adjust as needed
-
-            if not hasattr(validator, 'scoring_interval'):
-                validator.scoring_interval = 50  # Default value, adjust as needed
-
-            if not hasattr(validator, 'set_weights_interval'):
-                validator.set_weights_interval = 300  # Default value, adjust as needed
-
-            # Define last operation block numbers if they don't exist
-            if not hasattr(validator, 'last_queried_block'):
-                validator.last_queried_block = validator.subtensor.block - 10
-
-            if not hasattr(validator, 'last_sent_data_to_website'):
-                validator.last_sent_data_to_website = validator.subtensor.block - 15
-
-            if not hasattr(validator, 'last_scoring_block'):
-                validator.last_scoring_block = validator.subtensor.block - 50
-
-            if not hasattr(validator, 'last_set_weights_block'):
-                validator.last_set_weights_block = validator.subtensor.block - 300
-            
-            validator.step += 1
-            time.sleep(60)
-
-        except KeyboardInterrupt:
-            bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
-            break
-        except TimeoutError as e:
-            bt.logging.error(f"Error in main loop: {str(e)}")
-            validator.initialize_connection()
-        except Exception as e:
-            bt.logging.error(f"Unexpected error in main loop: {str(e)}")
-            bt.logging.error(traceback.format_exc())
-            time.sleep(10)  # Wait before retrying
-
-    # Cleanup
-    async_loop.call_soon_threadsafe(async_loop.stop)
-    async_thread.join()
-    bt.logging.info("Validator shutdown complete.")
+            await async_task
+        except asyncio.CancelledError:
+            bt.logging.info("Async operations task cancelled.")
+        bt.logging.info("Validator shutdown complete.")
 
 def initialize(validator):
     validator.serve_axon()
@@ -257,11 +248,10 @@ def initialize(validator):
         validator.last_sent_data_to_website = validator.subtensor.block - 16
         validator.last_scoring_block = validator.subtensor.block - 51
         validator.last_set_weights_block = validator.subtensor.block - 301
-        
+
 def update_game_data(validator, current_time):
     """
     Calls SportsData to update game data in the database - Async in separate thread
-    
     """
     bt.logging.info("--------------------------------Updating game data--------------------------------")
     
@@ -309,7 +299,6 @@ def sync_metagraph_with_retry(validator):
             raise
 
 def filter_and_update_axons(validator):
-
     all_axons = validator.metagraph.axons
     bt.logging.trace(f"All axons: {all_axons}")
 
@@ -386,7 +375,6 @@ def query_and_process_axons_with_game_data(validator):
     uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query = result
 
     for i in range(0, len(uids_to_query), 20):
-
         responses += validator.dendrite.query(
             axons=uids_to_query[i : i + 20],
             synapse=synapse,
@@ -427,16 +415,13 @@ def query_and_process_axons_with_game_data(validator):
     bt.logging.info("Finished querying axons..")
 
     if not responses:
-        print("No responses received. Sleeping for 18 seconds.")
-        time.sleep(18)
+        bt.logging.info("No responses received. Sleeping for 18 seconds.")
+        asyncio.run(asyncio.sleep(18))
 
     bt.logging.info(f"Received {len(responses)} responses")
 
     valid_responses = []
     invalid_responses = []
-
-    #print one whole response for debugging
-    #bt.logging.info(f"Received response: {responses[0][0]}")
 
     bt.logging.info("Starting response processing...")
     
@@ -452,11 +437,10 @@ def query_and_process_axons_with_game_data(validator):
                 bt.logging.warning(f"Received invalid response: {response.metadata.synapse_type}")
         except Exception as e:
             bt.logging.error(f"Error processing response: {e}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            bt.logging.error(traceback.format_exc())
             bt.logging.warning(f"Response: {response}")
             continue
     
-
     bt.logging.warning(f"Received {len(invalid_responses)} invalid responses: {[response.metadata.synapse_type for response in invalid_responses]}")
     bt.logging.warning(f"Affected Miners: {[response.metadata.neuron_uid for response in invalid_responses]}")
 
@@ -468,8 +452,8 @@ def query_and_process_axons_with_game_data(validator):
             )
         except Exception as e:
             bt.logging.error(f"Error processing predictions: {e}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
-    
+            bt.logging.error(traceback.format_exc())
+
 def send_data_to_website_server(validator):
     """
     Sends data to the website server
@@ -486,7 +470,7 @@ def send_data_to_website_server(validator):
             bt.logging.warning("No new predictions were sent this round")
     except Exception as e:
         bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
-    
+
 def scoring_run(validator, current_time):
     """
     calls the scoring system to update miner scores before setting weights
@@ -507,8 +491,6 @@ def scoring_run(validator, current_time):
         # Combine blacklisted_uids and uids_not_to_query
         invalid_uids = set(blacklisted_uids + uids_not_to_query)
 
-        
-
         validator.scores = validator.scoring_system.scoring_run(
             current_time, invalid_uids, valid_uids
         )
@@ -518,7 +500,7 @@ def scoring_run(validator, current_time):
         bt.logging.error(f"Error in scoring_run: {str(e)}")
         bt.logging.error(f"Traceback: {traceback.format_exc()}")
         raise
-    
+
 async def set_weights(validator, scores):
     """
     Sets the weights for the validator
@@ -530,7 +512,7 @@ async def set_weights(validator, scores):
         bt.logging.info("Attempting to update weights")
         if validator.subtensor is None:
             bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
-            validator.subtensor = validator.initialize_connection()
+            validator.subtensor = await asyncio.to_thread(validator.initialize_connection)
 
         if validator.subtensor is not None:
             success = await validator.set_weights(scores)
@@ -557,11 +539,8 @@ async def set_weights(validator, scores):
             "Failed to set weights or encountered an error, continuing with next iteration."
         )
 
-    
-
-
 # The main function parses the configuration and runs the validator.
-if __name__ == "__main__":
+def main():
     parser = ArgumentParser()
 
     parser.add_argument(
@@ -594,7 +573,7 @@ if __name__ == "__main__":
         "--max_targets",
         type=int,
         default=256,
-        help="Sets the value for the number of targets to query - set to 256 to ensure all miners are querie, it is now batched",
+        help="Sets the value for the number of targets to query - set to 256 to ensure all miners are queried, it is now batched",
     )
     parser.add_argument(
         "--load_state",
@@ -613,4 +592,7 @@ if __name__ == "__main__":
         bt.logging.error("Unable to initialize Validator. Exiting.")
         sys.exit()
 
-    main(validator)
+    asyncio.run(main_async(validator))
+
+if __name__ == "__main__":
+    main()
