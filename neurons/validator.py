@@ -121,7 +121,7 @@ async def scoring_run_task_with_timeout(validator, current_time, semaphore):
 async def set_weights_task_with_timeout(validator, semaphore):
     async with semaphore:
         try:
-            await asyncio.wait_for(asyncio.to_thread(set_weights, validator, validator.scores), timeout=WEIGHTS_TIMEOUT)
+            await asyncio.wait_for(set_weights(validator, validator.scores), timeout=WEIGHTS_TIMEOUT)
         except asyncio.TimeoutError:
             bt.logging.error("Set weights task timed out")
         except Exception as e:
