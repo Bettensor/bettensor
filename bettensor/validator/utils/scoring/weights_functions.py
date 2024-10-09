@@ -33,11 +33,8 @@ class WeightSetter:
     async def set_weights(self, weights: torch.Tensor):
         np.set_printoptions(precision=8, suppress=True)
 
-        weights_np = weights.numpy()
-
-        bt.logging.info(f"Normalized weights: {weights_np}")
-
         bt.logging.info(f"Normalized weights: {weights}")
+
         uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         stake = float(self.metagraph.S[uid])
         if stake < 1000.0:

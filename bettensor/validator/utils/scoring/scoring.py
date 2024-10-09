@@ -98,6 +98,15 @@ class ScoringSystem:
                 "incentive": 0.3,
             },  # Tier 5
         ]
+        
+        self.tier_mapping = {
+            0: "daily",  # Daily score
+            1: "tier_1",
+            2: "tier_2",
+            3: "tier_3",
+            4: "tier_4",
+            5: "tier_5"
+        }
 
         # Initialize score arrays
         self.clv_scores = np.zeros((num_miners, max_days))
@@ -119,6 +128,8 @@ class ScoringSystem:
         self.entropy_weight = 0.10
         self.entropy_window = self.max_days
 
+
+
         self.scoring_data = ScoringData(db_manager, num_miners)
         self.entropy_system = EntropySystem(num_miners, max_days)
         self.incentives = []
@@ -127,20 +138,15 @@ class ScoringSystem:
         self.current_date = datetime.now(timezone.utc)  # Initialize current_date
         self.last_update_date = None
 
-        # Try to load state from database
-        self.init = self.load_state()
+
 
         # Handle potential downtime
         self.advance_day(self.current_date)
 
-        self.tier_mapping = {
-            0: "daily",  # Daily score
-            1: "tier_1",
-            2: "tier_2",
-            3: "tier_3",
-            4: "tier_4",
-            5: "tier_5"
-        }
+
+        
+        # Try to load state from database
+        self.init = self.load_state()
 
     def advance_day(self, current_date):
         if self.last_update_date is None:
@@ -937,6 +943,7 @@ class ScoringSystem:
         # Set tiers using boolean masks
         if self.init:
             self.tiers[:, self.current_day] = 2  # Default to tier 2 for valid UIDs, only set if no previous state exists
+            bt.logging.info(f"Assigned {len(self.valid_uids)} valid UIDs to tier 2.")
             self.init = False
 
         self.tiers[empty_mask, self.current_day] = 0
@@ -944,7 +951,7 @@ class ScoringSystem:
 
         bt.logging.info(f"Assigned {len(self.empty_uids)} empty slots to tier 0.")
         bt.logging.info(f"Assigned {len(self.invalid_uids)} invalid UIDs to tier 1.")
-        bt.logging.info(f"Assigned {len(self.valid_uids)} valid UIDs to tier 2.")
+        
 
         current_date = self._ensure_datetime(date)
         self.advance_day(current_date)
@@ -959,7 +966,7 @@ class ScoringSystem:
         current_tiers = self.tiers[:, self.current_day]
         tier_distribution = [
             int(np.sum(current_tiers == tier))
-            for tier in range(1, len(self.tier_configs) + 1)
+            for tier in range(0, len(self.tier_configs) + 1)
         ]
         bt.logging.info(f"Current tier distribution: {tier_distribution}")
 
@@ -1138,29 +1145,50 @@ class ScoringSystem:
         score_records = []
         for miner in range(num_miners):
             for day in range(num_days):
+                # Daily scores
                 clv = self.clv_scores[miner, day]
                 roi = self.roi_scores[miner, day]
                 entropy = self.entropy_scores[miner, day]
                 sortino = self.sortino_scores[miner, day]
-                for score_index in range(num_scores):
-                    score_type = self.tier_mapping[score_index]
+                composite_daily = self.composite_scores[miner, day, 0]  # Index 0 for daily composite
+                
+                score_records.append((
+                    miner,
+                    day,
+                    'daily',
+                    clv,
+                    roi,
+                    entropy,
+                    composite_daily,
+                    sortino
+                ))
+                
+                # Tier-specific composite scores
+                for score_index in range(1, num_scores):
+                    tier = self.tier_mapping[score_index]
                     composite = self.composite_scores[miner, day, score_index]
                     score_records.append((
                         miner,
                         day,
-                        score_type,
-                        clv,
-                        roi,
-                        entropy,
+                        tier,
+                        None,   # clv_score not applicable
+                        None,   # roi_score not applicable
+                        None,   # entropy_score not applicable
                         composite,
-                        sortino
+                        None    # sortino_score not applicable
                     ))
         
-        # Batch insert using executemany
+        # Batch insert using executemany with conflict resolution based on miner_uid, day_id, and score_type
         insert_score_query = """
-           INSERT OR REPLACE INTO scores 
-           (miner_uid, day_id, score_type, clv_score, roi_score, entropy_score, composite_score, sortino_score)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO scores 
+            (miner_uid, day_id, score_type, clv_score, roi_score, entropy_score, composite_score, sortino_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(miner_uid, day_id, score_type) DO UPDATE SET
+                clv_score = excluded.clv_score,
+                roi_score = excluded.roi_score,
+                entropy_score = excluded.entropy_score,
+                composite_score = excluded.composite_score,
+                sortino_score = excluded.sortino_score
         """
         self.db_manager.executemany(insert_score_query, score_records)
         bt.logging.info(f"Saved {len(score_records)} score records")
@@ -1191,12 +1219,13 @@ class ScoringSystem:
                 self.last_update_date = datetime.fromisoformat(state["last_update_date"]) if state["last_update_date"] else None
                 if self.last_update_date and self.last_update_date.tzinfo is None:
                     self.last_update_date = self.last_update_date.replace(tzinfo=timezone.utc)
-                bt.logging.info("ScoringSystem state loaded from database.")
+                
             else:
                 bt.logging.warning("No state found in database. Starting with default state.")
                 return True #initial state
 
             # Load scores
+            bt.logging.info("Loading scores from database, this might take a while...")
             self.load_scores()
             return False
 
@@ -1211,20 +1240,32 @@ class ScoringSystem:
         """
         try:
             fetch_scores_query = """
-                SELECT miner_uid, day_id, tier_id, clv_score, roi_score, entropy_score, composite_score, sortino_score
+                SELECT miner_uid, day_id, score_type, clv_score, roi_score, entropy_score, composite_score, sortino_score 
                 FROM scores
             """
             scores = self.db_manager.fetch_all(fetch_scores_query, None)
             for score in scores:
                 miner_uid = score["miner_uid"]
                 day_id = score["day_id"]
-                tier_id = score["tier_id"]
-                self.clv_scores[miner_uid, day_id] = float(score["clv_score"]) if score["clv_score"] is not None else np.nan
-                self.roi_scores[miner_uid, day_id] = float(score["roi_score"]) if score["roi_score"] is not None else np.nan
-                self.entropy_scores[miner_uid, day_id] = float(score["entropy_score"]) if score["entropy_score"] is not None else np.nan
-                self.sortino_scores[miner_uid, day_id] = float(score["sortino_score"]) if score["sortino_score"] is not None else np.nan
-                self.composite_scores[miner_uid, day_id, tier_id] = float(score["composite_score"]) if score["composite_score"] is not None else np.nan
-
+                score_type = score["score_type"]
+                clv = score["clv_score"]
+                roi = score["roi_score"]
+                entropy = score["entropy_score"]
+                composite = score["composite_score"]
+                sortino = score["sortino_score"]
+                
+                if score_type == 'daily':
+                    self.clv_scores[miner_uid, day_id] = clv if clv is not None else 0.0
+                    self.roi_scores[miner_uid, day_id] = roi if roi is not None else 0.0
+                    self.entropy_scores[miner_uid, day_id] = entropy if entropy is not None else 0.0
+                    self.sortino_scores[miner_uid, day_id] = sortino if sortino is not None else 0.0
+                    self.composite_scores[miner_uid, day_id, 0] = composite if composite is not None else 0.0
+                else:
+                    # Assume tier_mapping is such that score_type corresponds to score_index
+                    tier_index = list(self.tier_mapping.values()).index(score_type)
+                    if 1 <= tier_index < self.composite_scores.shape[2]:
+                        self.composite_scores[miner_uid, day_id, tier_index] = composite if composite is not None else 0.0
+    
             bt.logging.info("Scores loaded from database.")
 
         except Exception as e:
@@ -1251,3 +1292,55 @@ class ScoringSystem:
         self.composite_scores[miner_uid] = 0
         self.entropy_scores[miner_uid] = 0
         self.tiers[miner_uid] = 1 if miner_uid in self.invalid_uids else 2
+
+    def full_reset(self):
+        """
+        Perform a full reset of the scoring system, clearing all state and history.
+        """
+        bt.logging.info("Performing full reset of scoring system...")
+
+        # Reset all score arrays
+        self.clv_scores.fill(0)
+        self.roi_scores.fill(0)
+        self.sortino_scores.fill(0)
+        self.amount_wagered.fill(0)
+        self.entropy_scores.fill(0)
+        self.tiers.fill(1)  # Reset all miners to tier 1
+        self.composite_scores.fill(0)
+
+        # Reset current day and date
+        self.current_day = 0
+        self.current_date = datetime.now(timezone.utc)
+        self.last_update_date = None
+
+        # Reset UID sets
+        self.invalid_uids = set()
+        self.valid_uids = set()
+        self.empty_uids = set(range(self.num_miners))
+
+        # Reset entropy system
+        self.entropy_system = EntropySystem(self.num_miners, self.max_days)
+
+        # Clear database state
+        self._clear_database_state()
+
+        bt.logging.info("Scoring system full reset completed.")
+
+    def _clear_database_state(self):
+        """
+        Clear all scoring-related state from the database. 
+        """
+        try:
+            # Clear score_state table
+            self.db_manager.execute("DELETE FROM score_state", None)
+
+            # Clear scores table
+            self.db_manager.execute("DELETE FROM scores", None)
+
+            # Clear miner_stats table
+            self.db_manager.execute("DELETE FROM miner_stats", None)
+
+            bt.logging.info("Database state cleared successfully.")
+        except Exception as e:
+            bt.logging.error(f"Error clearing database state: {e}")
+            raise

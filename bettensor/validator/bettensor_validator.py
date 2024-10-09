@@ -19,6 +19,7 @@ from typing import Dict, Tuple
 from datetime import datetime, timedelta, timezone
 from bettensor.base.neuron import BaseNeuron
 from bettensor.protocol import TeamGamePrediction
+from bettensor.validator.utils.io.website_handler import WebsiteHandler
 from bettensor.validator.utils.scoring.scoring import ScoringSystem
 from .utils.scoring.entropy_system import EntropySystem
 from bettensor.validator.utils.io.sports_data import SportsData
@@ -280,6 +281,8 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             neuron_config=self.neuron_config,
             db_path=self.db_path,
         )
+
+        self.website_handler = WebsiteHandler(self)
 
         return True
 
@@ -610,3 +613,30 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 "StopIteration encountered in set_weights. Handling gracefully."
             )
             return None
+
+    def reset_scoring_system(self):
+        """
+        Resets the scoring system across all validators.
+        """
+        try:
+            bt.logging.info("Resetting scoring system...")
+            
+            # Reset the scoring system
+            self.scoring_system.full_reset()
+            
+            # Reinitialize the scoring system
+            self.scoring_system = ScoringSystem(
+                self.db_manager,
+                num_miners=256,
+                max_days=45,
+                reference_date=datetime.now(timezone.utc).date()
+            )
+            
+            # Reset scores to zero
+            self.scores = torch.zeros_like(self.scores)
+            
+            self.save_state()
+            bt.logging.info("Scoring system has been reset and reinitialized.")
+        except Exception as e:
+            bt.logging.error(f"Error resetting scoring system: {e}")
+            raise

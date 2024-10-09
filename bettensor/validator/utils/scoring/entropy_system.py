@@ -52,6 +52,8 @@ class EntropySystem:
             return
 
         self.game_pools[game_id] = {}
+        if odds[2] == 0.0:
+            num_outcomes = 2
         for i in range(num_outcomes):
             if i < len(odds):
                 self.game_pools[game_id][i] = {
@@ -88,14 +90,14 @@ class EntropySystem:
         self.game_close_times[game_id] = datetime.now(timezone.utc)
         bt.logging.info(f"Game {game_id} has been marked as closed.")
 
-    def add_prediction(self, miner_id, game_id, outcome, odds, wager, prediction_time):
+    def add_prediction(self,prediction_id, miner_uid, game_id, predicted_outcome, wager, predicted_odds, prediction_date):
         if game_id not in self.game_pools:
             bt.logging.error(f"Game {game_id} does not exist. Cannot add prediction.")
             return
 
-        if outcome not in self.game_pools[game_id]:
+        if predicted_outcome not in self.game_pools[game_id]:
             bt.logging.error(
-                f"Invalid outcome {outcome} for game {game_id}. Available outcomes: {list(self.game_pools[game_id].keys())}. Cannot add prediction."
+                f"Invalid outcome {predicted_outcome} for game {game_id}. Available outcomes: {list(self.game_pools[game_id].keys())}. Cannot add prediction."
             )
             return
 
@@ -103,46 +105,47 @@ class EntropySystem:
             bt.logging.warning(f"Game {game_id} is closed. Cannot add prediction.")
             return
 
-        # Convert prediction_time to datetime object if it's a string
-        if isinstance(prediction_time, str):
-            prediction_time = datetime.fromisoformat(prediction_time).replace(
+        # Convert prediction_date to datetime object if it's a string
+        if isinstance(prediction_date, str):
+            prediction_time = datetime.fromisoformat(prediction_date).replace(
                 tzinfo=timezone.utc
             )
 
         entropy_contribution = self.calculate_entropy_contribution(
-            game_id, outcome, miner_id, odds, wager, prediction_time
+            game_id, predicted_outcome, miner_uid, predicted_odds, wager, prediction_date
         )
 
-        self.game_pools[game_id][outcome]["predictions"].append(
+        self.game_pools[game_id][predicted_outcome]["predictions"].append(
             {
-                "miner_id": miner_id,
-                "odds": odds,
+                "prediction_id": prediction_id,
+                "miner_uid": miner_uid,
+                "odds": predicted_odds,
                 "wager": wager,
-                "prediction_time": prediction_time,
+                "prediction_date": prediction_date,
                 "entropy_contribution": entropy_contribution,
             }
         )
 
         bt.logging.debug(
-            f"Added prediction for game {game_id}, outcome {outcome} by miner {miner_id}"
+            f"Added prediction for game {game_id}, outcome {predicted_outcome} by miner {miner_uid}"
         )
 
     def calculate_prediction_similarity(
-        self, game_id, outcome, miner_id, wager, prediction_time
+        self, game_id, predicted_outcome, miner_uid, predicted_odds, wager, prediction_date
     ):
-        predictions = self.game_pools[game_id][outcome]["predictions"]
+        predictions = self.game_pools[game_id][predicted_outcome]["predictions"]
         if not predictions:
             return 0.0
 
         # Ensure prediction_time is a datetime object
-        if isinstance(prediction_time, str):
-            prediction_time = datetime.fromisoformat(prediction_time).replace(
+        if isinstance(prediction_date, str):
+            prediction_time = datetime.fromisoformat(prediction_date).replace(
                 tzinfo=timezone.utc
             )
 
         # Calculate time-based similarity
         prediction_times = [
-            p["prediction_time"] for p in predictions if p["miner_id"] != miner_id
+            p["prediction_date"] for p in predictions if p["miner_uid"] != miner_uid
         ]
         if prediction_times:
             earliest_time = min(prediction_times)
@@ -155,7 +158,7 @@ class EntropySystem:
             time_similarity = 1.0
 
         # Calculate wager-based similarity
-        wagers = [p["wager"] for p in predictions if p["miner_id"] != miner_id]
+        wagers = [p["wager"] for p in predictions if p["miner_uid"] != miner_uid]
         if wagers:
             min_wager = min(wagers)
             max_wager = max(wagers)
@@ -168,13 +171,13 @@ class EntropySystem:
         return (time_similarity + wager_similarity) / 2
 
     def calculate_entropy_contribution(
-        self, game_id, outcome, miner_id, odds, wager, prediction_time
+        self, game_id, predicted_outcome, miner_uid, predicted_odds, wager, prediction_date
     ):
         prediction_similarity = self.calculate_prediction_similarity(
-            game_id, outcome, miner_id, wager, prediction_time
+            game_id, predicted_outcome, miner_uid, predicted_odds, wager, prediction_date
         )
         contrarian_component = self.calculate_contrarian_component(
-            game_id, outcome, miner_id
+            game_id, predicted_outcome, miner_uid
         )
 
         # Combine components with weights
@@ -183,21 +186,21 @@ class EntropySystem:
         # Normalize to a reasonable range, e.g., [-1, 1]
         normalized_contribution = max(min(entropy_contribution, 1), -1)
 
-        # bt.logging.trace(f"Entropy components for game {game_id}, outcome {outcome}, miner {miner_id}:")
+        # bt.logging.trace(f"Entropy components for game {game_id}, outcome {predicted_outcome}, miner {miner_id}:")
         # bt.logging.trace(f"  Prediction Similarity: {prediction_similarity:.4f}")
         # bt.logging.trace(f"  Contrarian: {contrarian_component:.4f}")
         # bt.logging.trace(f"  Final Contribution: {normalized_contribution:.4f}")
 
         return normalized_contribution
 
-    def calculate_contrarian_component(self, game_id, outcome, miner_id):
+    def calculate_contrarian_component(self, game_id, predicted_outcome, miner_uid):
         total_predictions = sum(
             len(pool["predictions"]) for pool in self.game_pools[game_id].values()
         )
         if total_predictions == 0:
             return 0.5  # Neutral score for the first prediction
 
-        outcome_predictions = len(self.game_pools[game_id][outcome]["predictions"])
+        outcome_predictions = len(self.game_pools[game_id][predicted_outcome]["predictions"])
         outcome_ratio = outcome_predictions / total_predictions
 
         # Direct inverse relationship
@@ -211,7 +214,7 @@ class EntropySystem:
         adjusted_score = contrarian_score**0.5  # This makes the scale more granular
 
         bt.logging.debug(
-            f"Contrarian calculation for game {game_id}, outcome {outcome}:"
+            f"Contrarian calculation for game {game_id}, outcome {predicted_outcome}:"
         )
         bt.logging.debug(f"  Total predictions: {total_predictions}")
         bt.logging.debug(f"  Outcome predictions: {outcome_predictions}")
@@ -222,7 +225,7 @@ class EntropySystem:
             adjusted_score - 0.5
         )  # Center around 0 for consistency with other components
 
-    def calculate_final_entropy_score(self, miner_id: int) -> float:
+    def calculate_final_entropy_score(self, miner_uid: int) -> float:
         """
         Calculate the final entropy score for a miner for the current day.
 
@@ -232,10 +235,10 @@ class EntropySystem:
         Returns:
             float: Final entropy score.
         """
-        contributions = self.miner_predictions[self.current_day].get(miner_id, [])
+        contributions = self.miner_predictions[self.current_day].get(miner_uid, [])
         final_score = sum(contributions)
         bt.logging.info(
-            f"Final entropy score for miner {miner_id} on day {self.current_day}: {final_score:.4f}"
+            f"Final entropy score for miner {miner_uid} on day {self.current_day}: {final_score:.4f}"
         )
         return final_score
 
@@ -247,9 +250,9 @@ class EntropySystem:
             Dict[int, float]: Mapping from miner ID to their final entropy score.
         """
         final_scores = {}
-        for miner_id in range(self.num_miners):
-            score = self.calculate_final_entropy_score(miner_id)
-            final_scores[miner_id] = score
+        for miner_uid in range(self.num_miners):
+            score = self.calculate_final_entropy_score(miner_uid)
+            final_scores[miner_uid] = score
         return final_scores
 
     def reset_predictions_for_closed_games(self):

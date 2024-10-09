@@ -50,7 +50,8 @@ def initialize_database():
             team_a_odds REAL,
             team_b_odds REAL,
             tie_odds REAL,
-            is_model_prediction BOOLEAN,
+            model_name TEXT,
+            confidence_score REAL,
             outcome INTEGER,
             payout REAL,
             sent_to_site INTEGER DEFAULT 0
@@ -96,13 +97,12 @@ def initialize_database():
             miner_uid INTEGER,
             day_id INTEGER,
             score_type TEXT,
-            tier_id INTEGER,
             clv_score REAL,
             roi_score REAL,
             sortino_score REAL,
             entropy_score REAL,
             composite_score REAL,
-            PRIMARY KEY (miner_uid, day_id, tier_id),
+            PRIMARY KEY (miner_uid, day_id, score_type),
             FOREIGN KEY (miner_uid) REFERENCES miner_stats(miner_uid)
         )
         """,

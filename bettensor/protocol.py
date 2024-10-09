@@ -18,7 +18,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 import uuid
 import bittensor as bt
 from pydantic import BaseModel, Field
@@ -246,7 +246,7 @@ class GameData(bt.Synapse):
     metadata: Optional[Metadata]
     gamedata_dict: Optional[Dict[str, TeamGame]]
     prediction_dict: Optional[Dict[str, TeamGamePrediction]]
-    confirmation_dict: Optional[Dict[str, TeamGamePrediction]]
+    confirmation_dict: Optional[Dict[str, Dict[str, str]]]
     error: Optional[str]
 
     @classmethod
@@ -259,7 +259,7 @@ class GameData(bt.Synapse):
         synapse_type: str,
         gamedata_dict: Dict[str, TeamGame] = None,
         prediction_dict: Dict[str, TeamGamePrediction] = None,
-        confirmation_dict: Dict[str, TeamGamePrediction] = None,
+        confirmation_dict: Dict[str, Dict[str, str]] = None,
     ):
         metadata = Metadata.create(
             subnet_version=subnet_version,

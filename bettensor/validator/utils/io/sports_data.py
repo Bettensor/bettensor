@@ -62,9 +62,6 @@ class SportsData:
                 active = 1
                 outcome = game["outcome"]
 
-                if outcome is None:
-                    outcome = "Unfinished"
-
                 team_a_odds = game["teamAOdds"]
                 team_b_odds = game["teamBOdds"]
                 tie_odds = game.get("tieOdds", 0.0)
@@ -119,6 +116,8 @@ class SportsData:
                 )
                 bt.logging.debug(f"Upserted game {external_id} in database")
                 external_ids.append(external_id)
+                outcomes = 3 if can_tie else 2
+                self.entropy_system.add_new_game(external_id, outcomes, [team_a_odds, team_b_odds, tie_odds])
 
             self.db_manager.commit_transaction()
             bt.logging.info(f"Inserted or updated {len(games)} games in the database")

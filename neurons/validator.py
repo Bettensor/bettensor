@@ -20,7 +20,8 @@ from bettensor.protocol import GameData, Metadata
 from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor.validator.utils.io.sports_data import SportsData
 from bettensor.validator.utils.scoring.watchdog import Watchdog
-from bettensor.validator.utils.io.website_handler import fetch_and_send_predictions
+from bettensor.validator.utils.io.auto_updater import *
+
 
 
 async def async_operations(validator):
@@ -28,10 +29,10 @@ async def async_operations(validator):
         current_time = datetime.now(timezone.utc)
         current_block = validator.subtensor.block
 
-        # Update game data every 10 minutes
+        # Update game data every 10 minutes and perform auto-update if update detected
         if current_time - validator.last_api_call >= timedelta(minutes=10):
             await asyncio.to_thread(update_game_data, validator, current_time)
-
+            await perform_update(validator)
         # Sync metagraph
         await asyncio.to_thread(sync_metagraph, validator)
 
@@ -50,6 +51,8 @@ async def async_operations(validator):
         # Set weights every 300 blocks
         if current_block - validator.last_updated_block > 300:
             await set_weights(validator, validator.scores)
+
+        
 
         await asyncio.sleep(45)  # Sleep for 45 seconds
 
@@ -266,6 +269,7 @@ def query_and_process_axons_with_game_data(validator):
             if response.metadata.synapse_type == "prediction":
                 valid_responses.append(response)
                 bt.logging.info(f"Received valid response: {response.metadata.synapse_type}")
+                bt.logging.trace(f"Response: {response}")
             else:
                 invalid_responses.append(response)
                 bt.logging.warning(f"Received invalid response: {response.metadata.synapse_type}")
@@ -281,16 +285,20 @@ def query_and_process_axons_with_game_data(validator):
 
     bt.logging.info(f"Received {len(valid_responses)} valid responses - processing...")
     if valid_responses and any(valid_responses):
-        validator.process_prediction(
-            processed_uids=list_of_uids, predictions=responses
-        )
+        try:
+            validator.process_prediction(
+                processed_uids=list_of_uids, synapses=valid_responses
+            )
+        except Exception as e:
+            bt.logging.error(f"Error processing predictions: {e}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
 
 def send_data_to_website_server(validator):
     current_block = validator.subtensor.block
 
     try:
-        result = fetch_and_send_predictions()
+        result = validator.website_handler.fetch_and_send_predictions()
         bt.logging.info(f"Result status: {result}")
         if result:
             bt.logging.info("Predictions fetched and sent successfully")
