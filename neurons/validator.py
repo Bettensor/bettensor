@@ -176,7 +176,7 @@ async def async_operations(validator):
             if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
                 asyncio.create_task(set_weights_task_with_timeout(validator, weights_semaphore))
 
-            await asyncio.sleep(1)  # Control the loop iteration rate
+            await asyncio.sleep(10)  # Control the loop iteration rate
 
     except Exception as e:
         bt.logging.error(f"Error in async_operations: {str(e)}")
