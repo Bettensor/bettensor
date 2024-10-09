@@ -198,7 +198,8 @@ def main(validator: BettensorValidator):
 
             # Main loop now only handles watchdog reset and logging
             
-            bt.logging.info("\n\n\n"
+            bt.logging.info(
+                "\n"
                 "--------------------------------Status--------------------------------"
                 "\n"
                 f"Current Step: {validator.step},\n" 
@@ -210,7 +211,7 @@ def main(validator: BettensorValidator):
                 f"Blocks until set_weights: {blocks_until_set_weights}"
                 "\n"
                 "----------------------------------------------------------------------"
-                "\n\n\n"
+                "\n"
             )
             
             validator.step += 1
