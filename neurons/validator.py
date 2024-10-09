@@ -78,6 +78,7 @@ async def async_operations(validator):
         while True:
             current_time = datetime.now(timezone.utc)
             current_block = validator.subtensor.block
+            bt.logging.info(f"Current block: {current_block}")
 
 
             # Perform update (if needed)
@@ -248,9 +249,6 @@ def main(validator: BettensorValidator):
 def initialize(validator):
     validator.serve_axon()
     validator.initialize_connection()
-
-    if args.load_state.lower() == "true":
-        validator.load_state()
 
     if not validator.last_updated_block:
         bt.logging.info("Updating last updated block; will set weights this iteration")
