@@ -58,7 +58,7 @@ async def async_operations(validator):
         if (current_block - validator.last_set_weights_block) > validator.set_weights_interval:
             await set_weights(validator, validator.scores)
 
-        
+        await asyncio.sleep(12)
 
 
 
