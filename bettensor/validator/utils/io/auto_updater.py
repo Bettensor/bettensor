@@ -43,11 +43,34 @@ def pull_latest_changes():
             bt.logging.error("Failed to get current branch.")
             return False
         
+        # Fetch the latest changes
         subprocess.check_call(["git", "fetch", "origin"])
+        
+        # Get the hash of the current HEAD
+        local_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+        
+        # Get the hash of the remote branch
+        remote_hash = subprocess.check_output(["git", "rev-parse", f"origin/{current_branch}"]).decode().strip()
+        
+        # Compare the hashes
+        if local_hash == remote_hash:
+            bt.logging.info("No new changes to pull.")
+            return False
+        
+        # If hashes are different, pull the changes
         subprocess.check_call(["git", "pull", "origin", current_branch])
         
-        bt.logging.info(f"Successfully pulled latest changes from {current_branch} branch.")
-        return True
+        # Get the new local hash after pulling
+        new_local_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+        
+        # Verify that changes were actually pulled
+        if new_local_hash != local_hash:
+            bt.logging.info(f"Successfully pulled latest changes from {current_branch} branch.")
+            return True
+        else:
+            bt.logging.warning("Git pull was executed, but no changes were applied.")
+            return False
+        
     except subprocess.CalledProcessError as e: 
         bt.logging.error(f"Failed to pull latest changes: {e}")
         return False
