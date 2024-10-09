@@ -101,12 +101,19 @@ async def perform_update(validator):
         try:
             process_name = get_pm2_process_name()
             if process_name:
-                subprocess.check_call(["pm2", "restart", process_name,"--update-env"])
-                bt.logging.info(f"Validator process '{process_name}' restarted successfully.")
+                bt.logging.info(f"Attempting to restart PM2 process: {process_name}")
+                result = subprocess.run(["pm2", "restart", process_name, "--update-env"], capture_output=True, text=True)
+                if result.returncode != 0:
+                    bt.logging.error(f"PM2 restart failed. Return code: {result.returncode}")
+                    bt.logging.error(f"stdout: {result.stdout}")
+                    bt.logging.error(f"stderr: {result.stderr}")
+                else:
+                    bt.logging.info(f"Validator process '{process_name}' restarted successfully.")
             else:
                 bt.logging.warning("Not running as a PM2 process. Manual restart may be required.")
         except subprocess.CalledProcessError as e:
             bt.logging.error(f"Failed to restart validator process: {e}")
+            bt.logging.error(f"Command output: {e.output}")
             bt.logging.error(traceback.format_exc())
     else:
         bt.logging.error("Update procedure aborted due to pull failure.")

@@ -638,7 +638,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 reference_date=datetime.now(timezone.utc).date()
             )
             
-            # Reset scores to zero
+            # Reset scores to zero, ensuring it's a PyTorch tensor
+            if isinstance(self.scores, np.ndarray):
+                self.scores = torch.from_numpy(self.scores).float()
             self.scores = torch.zeros_like(self.scores)
             
             self.save_state()
