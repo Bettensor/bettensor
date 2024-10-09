@@ -80,10 +80,6 @@ async def async_operations(validator):
             current_time = datetime.now(timezone.utc)
             current_block = validator.subtensor.block
 
-            # Sync metagraph
-            if (current_block - validator.last_queried_block - 5) > (validator.query_axons_interval - 5) and not metagraph_semaphore.locked():
-                asyncio.create_task(sync_metagraph_task_with_timeout(validator, metagraph_semaphore))
-
 
             # Perform update (if needed)
             if not update_semaphore.locked():
@@ -207,6 +203,8 @@ def main(validator: BettensorValidator):
 
     while True:
         try:
+            sync_metagraph_with_retry(validator)
+            
             watchdog.reset()
             
             # Define default intervals if they don't exist
@@ -239,7 +237,7 @@ def main(validator: BettensorValidator):
                 validator.last_set_weights_block = validator.subtensor.block - 300
             
             validator.step += 1
-            time.sleep(1)
+            time.sleep(60)
 
         except KeyboardInterrupt:
             bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
