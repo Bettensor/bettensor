@@ -80,7 +80,10 @@ async def async_operations(validator):
             current_time = datetime.now(timezone.utc)
             current_block = validator.subtensor.block
 
-            
+            # Sync metagraph
+            if (current_block - validator.last_queried_block - 5) > (validator.query_axons_interval - 5) and not metagraph_semaphore.locked():
+                asyncio.create_task(sync_metagraph_task_with_timeout(validator, metagraph_semaphore))
+
 
             # Perform update (if needed)
             if not update_semaphore.locked():
@@ -94,9 +97,7 @@ async def async_operations(validator):
 
             await asyncio.sleep(1)
 
-            # Sync metagraph
-            if (current_block - validator.last_queried_block) > (validator.query_axons_interval - 5) and not metagraph_semaphore.locked():
-                asyncio.create_task(sync_metagraph_task_with_timeout(validator, metagraph_semaphore))
+            
 
             await asyncio.sleep(1)
 
