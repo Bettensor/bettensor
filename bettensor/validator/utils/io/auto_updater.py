@@ -1,4 +1,5 @@
 import subprocess
+import traceback
 import bittensor as bt
 import os
 import json
@@ -91,28 +92,22 @@ async def perform_update(validator):
                 
             except Exception as e:
                 bt.logging.error(f"Failed to reset scoring system: {e}")
+                bt.logging.error(traceback.format_exc())
         else:
             bt.logging.info("No scoring reset required for this update.")
-        
-        # Run migration script
-        migrate_script = os.path.join(os.getcwd(), "scripts", "migrate.sh")
-        if os.path.isfile(migrate_script):
-            try:
-                subprocess.check_call(["bash", migrate_script])
-                bt.logging.info("Migration script executed successfully.")
-            except subprocess.CalledProcessError as e:
-                bt.logging.error(f"Migration script failed: {e}")
+            return
         
         # Restart the validator process managed by PM2
         try:
             process_name = get_pm2_process_name()
             if process_name:
-                subprocess.check_call(["pm2", "restart", process_name])
+                subprocess.check_call(["pm2", "restart", process_name,"--update-env"])
                 bt.logging.info(f"Validator process '{process_name}' restarted successfully.")
             else:
                 bt.logging.warning("Not running as a PM2 process. Manual restart may be required.")
         except subprocess.CalledProcessError as e:
             bt.logging.error(f"Failed to restart validator process: {e}")
+            bt.logging.error(traceback.format_exc())
     else:
         bt.logging.error("Update procedure aborted due to pull failure.")
 

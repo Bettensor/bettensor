@@ -28,11 +28,12 @@ async def async_operations(validator):
     while True:
         current_time = datetime.now(timezone.utc)
         current_block = validator.subtensor.block
+        await perform_update(validator)
 
         # Update game data every 10 minutes and perform auto-update if update detected
         if current_time - validator.last_api_call >= timedelta(minutes=10):
             await asyncio.to_thread(update_game_data, validator, current_time)
-            await perform_update(validator)
+            
         # Sync metagraph
         await asyncio.to_thread(sync_metagraph, validator)
 

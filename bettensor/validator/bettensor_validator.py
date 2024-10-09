@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import time
+import traceback
 import uuid
 import torch
 import numpy as np
@@ -639,4 +640,5 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             bt.logging.info("Scoring system has been reset and reinitialized.")
         except Exception as e:
             bt.logging.error(f"Error resetting scoring system: {e}")
+            bt.logging.error(traceback.format_exc())
             raise
