@@ -119,7 +119,6 @@ async def perform_update(validator):
                 bt.logging.error(traceback.format_exc())
         else:
             bt.logging.info("No scoring reset required for this update.")
-            return
         
         # Restart the validator process managed by PM2
         try:
