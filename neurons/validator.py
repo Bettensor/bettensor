@@ -65,7 +65,6 @@ async def async_operations(validator):
     # Create semaphores for each operation
     update_semaphore = asyncio.Semaphore(1)
     game_data_semaphore = asyncio.Semaphore(1)
-    metagraph_semaphore = asyncio.Semaphore(1)
     query_semaphore = asyncio.Semaphore(1)
     website_semaphore = asyncio.Semaphore(1)
     scoring_semaphore = asyncio.Semaphore(1)
@@ -85,41 +84,32 @@ async def async_operations(validator):
             if not update_semaphore.locked():
                 asyncio.create_task(perform_update_task_with_timeout(validator, update_semaphore))
 
-            await asyncio.sleep(1)
 
             # Update game data
             if (current_block - validator.last_updated_block) > validator.update_game_data_interval and not game_data_semaphore.locked():
                 asyncio.create_task(update_game_data_task_with_timeout(validator, current_time, game_data_semaphore))
 
-            await asyncio.sleep(1)
-
-            
-
-            await asyncio.sleep(1)
 
             # Query and process axons
             if (current_block - validator.last_queried_block) > validator.query_axons_interval and not query_semaphore.locked():
                 asyncio.create_task(query_and_process_axons_task_with_timeout(validator, query_semaphore))
 
-            await asyncio.sleep(1)
 
             # Send data to website
             if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval and not website_semaphore.locked():
                 asyncio.create_task(send_data_to_website_task_with_timeout(validator, website_semaphore))
 
-            await asyncio.sleep(1)
+
 
             # Recalculate scores
             if (current_block - validator.last_scoring_block) > validator.scoring_interval and not scoring_semaphore.locked():
                 asyncio.create_task(scoring_run_task_with_timeout(validator, current_time, scoring_semaphore))
 
-            await asyncio.sleep(1)
 
             # Set weights
             if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
                 asyncio.create_task(set_weights_task_with_timeout(validator, weights_semaphore))
 
-            await asyncio.sleep(6)  # Wait before next iteration
     finally:
         # Ensure the status log task is cancelled when the main loop exits
         status_log_task.cancel()
@@ -204,7 +194,7 @@ def main(validator: BettensorValidator):
     while True:
         try:
             sync_metagraph_with_retry(validator)
-            
+
             watchdog.reset()
             
             # Define default intervals if they don't exist
@@ -310,7 +300,7 @@ def sync_metagraph_with_retry(validator):
     for attempt in range(max_retries):
         try:
             subtensor = validator.get_subtensor()
-            validator.metagraph = validator.subtensor.metagraph
+            validator.metagraph = validator.subtensor.get_metagraph(subtensor=subtensor, lite=True)
             bt.logging.info("Metagraph synced successfully.")
             return
         except websocket.WebSocketConnectionClosedException:
