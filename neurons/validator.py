@@ -25,40 +25,76 @@ from bettensor.validator.utils.io.auto_updater import *
 
 
 async def async_operations(validator):
+    # Create semaphores for each operation
+    update_semaphore = asyncio.Semaphore(1)
+    game_data_semaphore = asyncio.Semaphore(1)
+    metagraph_semaphore = asyncio.Semaphore(1)
+    query_semaphore = asyncio.Semaphore(1)
+    website_semaphore = asyncio.Semaphore(1)
+    scoring_semaphore = asyncio.Semaphore(1)
+    weights_semaphore = asyncio.Semaphore(1)
+
     while True:
         current_time = datetime.now(timezone.utc)
         current_block = validator.subtensor.block
+
+        # Perform update (if needed)
+        if not update_semaphore.locked():
+            asyncio.create_task(perform_update_task(validator, update_semaphore))
+
+        # Update game data
+        if (current_block - validator.last_updated_block) > validator.update_game_data_interval and not game_data_semaphore.locked():
+            asyncio.create_task(update_game_data_task(validator, current_time, game_data_semaphore))
+
+        # Sync metagraph
+        if not metagraph_semaphore.locked():
+            asyncio.create_task(sync_metagraph_task(validator, metagraph_semaphore))
+
+        # Query and process axons
+        if (current_block - validator.last_queried_block) > validator.query_axons_interval and not query_semaphore.locked():
+            asyncio.create_task(query_and_process_axons_task(validator, query_semaphore))
+
+        # Send data to website
+        if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval and not website_semaphore.locked():
+            asyncio.create_task(send_data_to_website_task(validator, website_semaphore))
+
+        # Recalculate scores
+        if (current_block - validator.last_scoring_block) > validator.scoring_interval and not scoring_semaphore.locked():
+            asyncio.create_task(scoring_run_task(validator, current_time, scoring_semaphore))
+
+        # Set weights
+        if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
+            asyncio.create_task(set_weights_task(validator, weights_semaphore))
+
+        await asyncio.sleep(12)  # Wait before next iteration
+
+async def perform_update_task(validator, semaphore):
+    async with semaphore:
         await perform_update(validator)
 
-        # Update game data every 10 minutes and perform auto-update if update detected
-        
-        if (current_block - validator.last_updated_block) > validator.update_game_data_interval:
-            await asyncio.to_thread(update_game_data, validator, current_time)
-            
-        # Sync metagraph
+async def update_game_data_task(validator, current_time, semaphore):
+    async with semaphore:
+        await asyncio.to_thread(update_game_data, validator, current_time)
+
+async def sync_metagraph_task(validator, semaphore):
+    async with semaphore:
         await asyncio.to_thread(sync_metagraph, validator)
 
-        # Query and process axons with game data every 10 blocks
-        
-        if (current_block - validator.last_queried_block) > validator.query_axons_interval:
-            await asyncio.to_thread(query_and_process_axons_with_game_data, validator)
+async def query_and_process_axons_task(validator, semaphore):
+    async with semaphore:
+        await asyncio.to_thread(query_and_process_axons_with_game_data, validator)
 
-        # Send data to website server every 15 blocks
+async def send_data_to_website_task(validator, semaphore):
+    async with semaphore:
+        await asyncio.to_thread(send_data_to_website_server, validator)
 
-        if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval:
-            await asyncio.to_thread(send_data_to_website_server, validator)
+async def scoring_run_task(validator, current_time, semaphore):
+    async with semaphore:
+        await asyncio.to_thread(scoring_run, validator, current_time)
 
-        # Recalculate scores every 50 blocks
-
-        if (current_block - validator.last_scoring_block) > validator.scoring_interval:
-            await asyncio.to_thread(scoring_run, validator, current_time)
-
-        # Set weights every 300 blocks
-
-        if (current_block - validator.last_set_weights_block) > validator.set_weights_interval:
-            await set_weights(validator, validator.scores)
-
-        await asyncio.sleep(12)
+async def set_weights_task(validator, semaphore):
+    async with semaphore:
+        await set_weights(validator, validator.scores)
 
 
 
