@@ -310,7 +310,7 @@ def sync_metagraph_with_retry(validator):
     for attempt in range(max_retries):
         try:
             subtensor = validator.get_subtensor()
-            validator.metagraph = validator.metagraph.sync(subtensor=subtensor, lite=True)
+            validator.metagraph = validator.subtensor.metagraph
             bt.logging.info("Metagraph synced successfully.")
             return
         except websocket.WebSocketConnectionClosedException:
