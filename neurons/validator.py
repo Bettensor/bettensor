@@ -48,6 +48,7 @@ async def log_status(validator):
         status_message = (
             "\n"
             "================================ VALIDATOR STATUS ================================\n"
+            f"Current time: {current_time}\n"
             f"Current Step: {validator.step}\n"
             f"Current block: {current_block}\n"
             f"Last updated block: {validator.last_updated_block}\n"
@@ -59,7 +60,7 @@ async def log_status(validator):
         )
 
         bt.logging.info(status_message)
-        
+        await asyncio.sleep(30)
 
 async def perform_update_task_with_timeout(validator, semaphore):
     async with semaphore:
@@ -69,6 +70,7 @@ async def perform_update_task_with_timeout(validator, semaphore):
             bt.logging.error("Update task timed out")
         except Exception as e:
             bt.logging.error(f"Error in update task: {str(e)}")
+            raise
 
 async def update_game_data_task_with_timeout(validator, current_time, semaphore):
     async with semaphore:
@@ -78,6 +80,7 @@ async def update_game_data_task_with_timeout(validator, current_time, semaphore)
             bt.logging.error("Game data update task timed out")
         except Exception as e:
             bt.logging.error(f"Error in game data update task: {str(e)}")
+            raise
 
 async def sync_metagraph_task_with_timeout(validator, semaphore):
     async with semaphore:
@@ -89,6 +92,7 @@ async def sync_metagraph_task_with_timeout(validator, semaphore):
             bt.logging.error("WebSocket connection closed during metagraph sync")
         except Exception as e:
             bt.logging.error(f"Error in metagraph sync task: {str(e)}")
+            raise
 
 async def query_and_process_axons_task_with_timeout(validator, semaphore):
     async with semaphore:
@@ -98,6 +102,7 @@ async def query_and_process_axons_task_with_timeout(validator, semaphore):
             bt.logging.error("Query and process axons task timed out")
         except Exception as e:
             bt.logging.error(f"Error in query and process axons task: {str(e)}")
+            raise
 
 async def send_data_to_website_task_with_timeout(validator, semaphore):
     async with semaphore:
@@ -107,6 +112,7 @@ async def send_data_to_website_task_with_timeout(validator, semaphore):
             bt.logging.error("Send data to website task timed out")
         except Exception as e:
             bt.logging.error(f"Error in send data to website task: {str(e)}")
+            raise
 
 async def scoring_run_task_with_timeout(validator, current_time, semaphore):
     async with semaphore:
@@ -126,6 +132,7 @@ async def set_weights_task_with_timeout(validator, semaphore):
             bt.logging.error("Set weights task timed out")
         except Exception as e:
             bt.logging.error(f"Error in set weights task: {str(e)}")
+            raise
 
 async def async_operations(validator):
     # Create semaphores for each operation
@@ -228,7 +235,7 @@ async def main_async(validator: BettensorValidator):
 
                 watchdog.reset()
                 validator.step += 1
-                await asyncio.sleep(60)
+                await asyncio.sleep(1)
 
             except asyncio.CancelledError:
                 bt.logging.info("Async main loop cancelled.")
