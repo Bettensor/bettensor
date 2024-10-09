@@ -308,6 +308,7 @@ def sync_metagraph_with_retry(validator):
                 raise
         except Exception as e:
             bt.logging.error(f"Error syncing metagraph: {str(e)}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
             raise
 
 def filter_and_update_axons(validator):
