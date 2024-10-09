@@ -198,10 +198,12 @@ def main(validator: BettensorValidator):
 
             # Main loop now only handles watchdog reset and logging
             
+            current_time = datetime.now(timezone.utc).isoformat()
             bt.logging.info(
                 "\n"
                 "--------------------------------Status--------------------------------"
                 "\n"
+                f"Current time: {current_time},\n"
                 f"Current Step: {validator.step},\n" 
                 f"Current block: {current_block},\n" 
                 f"Last updated block: {validator.last_updated_block},\n" 
@@ -215,7 +217,7 @@ def main(validator: BettensorValidator):
             )
             
             validator.step += 1
-            time.sleep(30)
+            time.sleep(1)
 
         except KeyboardInterrupt:
             bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
