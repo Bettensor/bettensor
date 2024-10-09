@@ -235,7 +235,7 @@ async def main_async(validator: BettensorValidator):
 
                 watchdog.reset()
                 validator.step += 1
-                await asyncio.sleep(1)
+                await asyncio.sleep(60)
 
             except asyncio.CancelledError:
                 bt.logging.info("Async main loop cancelled.")
