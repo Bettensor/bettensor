@@ -108,6 +108,11 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             days=15
         )  # set to 15 days ago to ensure all games are fetched
 
+        self.last_queried_block = 0
+        self.last_sent_data_to_website = 0
+        self.last_scoring_block = 0
+        self.last_set_weights_block = 0
+
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
         try:

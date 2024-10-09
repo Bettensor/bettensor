@@ -31,31 +31,36 @@ async def async_operations(validator):
         await perform_update(validator)
 
         # Update game data every 10 minutes and perform auto-update if update detected
-        if current_time - validator.last_api_call >= timedelta(minutes=10):
+        
+        if (current_block - validator.last_updated_block) % validator.update_game_data_interval > 0:
             await asyncio.to_thread(update_game_data, validator, current_time)
             
         # Sync metagraph
         await asyncio.to_thread(sync_metagraph, validator)
 
         # Query and process axons with game data every 10 blocks
-        if (current_block - validator.last_updated_block) % 10 > 0:
+        
+        if (current_block - validator.last_queried_block) % validator.query_axons_interval > 0:
             await asyncio.to_thread(query_and_process_axons_with_game_data, validator)
 
         # Send data to website server every 15 blocks
-        if (current_block - validator.last_updated_block) % 15 > 0:
+
+        if (current_block - validator.last_sent_data_to_website) % validator.send_data_to_website_interval > 0:
             await asyncio.to_thread(send_data_to_website_server, validator)
 
         # Recalculate scores every 50 blocks
-        if current_block - validator.last_updated_block > 50:
+
+        if (current_block - validator.last_scoring_block) % validator.scoring_interval > 0:
             await asyncio.to_thread(scoring_run, validator, current_time)
 
         # Set weights every 300 blocks
-        if current_block - validator.last_updated_block > 300:
+
+        if (current_block - validator.last_set_weights_block) % validator.set_weights_interval > 0:
             await set_weights(validator, validator.scores)
 
         
 
-        await asyncio.sleep(45)  # Sleep for 45 seconds
+
 
 
 def main(validator: BettensorValidator):
@@ -75,11 +80,57 @@ def main(validator: BettensorValidator):
             watchdog.reset()
             current_block = validator.subtensor.block
             
+            # Define default intervals if they don't exist
+            if not hasattr(validator, 'update_game_data_interval'):
+                validator.update_game_data_interval = 50  # Default value, adjust as needed
+
+            if not hasattr(validator, 'query_axons_interval'):
+                validator.query_axons_interval = 10  # Default value, adjust as needed
+
+            if not hasattr(validator, 'send_data_to_website_interval'):
+                validator.send_data_to_website_interval = 15  # Default value, adjust as needed
+
+            if not hasattr(validator, 'scoring_interval'):
+                validator.scoring_interval = 50  # Default value, adjust as needed
+
+            if not hasattr(validator, 'set_weights_interval'):
+                validator.set_weights_interval = 300  # Default value, adjust as needed
+
+            # Define last operation block numbers if they don't exist
+            if not hasattr(validator, 'last_queried_block'):
+                validator.last_queried_block = validator.subtensor.block - 10
+
+            if not hasattr(validator, 'last_sent_data_to_website'):
+                validator.last_sent_data_to_website = validator.subtensor.block - 15
+
+            if not hasattr(validator, 'last_scoring_block'):
+                validator.last_scoring_block = validator.subtensor.block - 50
+
+            if not hasattr(validator, 'last_set_weights_block'):
+                validator.last_set_weights_block = validator.subtensor.block - 300
+
+            # Calculate interval values
+            current_block = validator.subtensor.get_current_block()
+            blocks_until_query_axons = max(0, validator.query_axons_interval - ((current_block - validator.last_queried_block) % validator.query_axons_interval))
+            blocks_until_send_data = max(0, validator.send_data_to_website_interval - ((current_block - validator.last_sent_data_to_website) % validator.send_data_to_website_interval))
+            blocks_until_scoring = max(0, validator.scoring_interval - ((current_block - validator.last_scoring_block) % validator.scoring_interval))
+            blocks_until_set_weights = max(0, validator.set_weights_interval - ((current_block - validator.last_set_weights_block) % validator.set_weights_interval))
+
             # Main loop now only handles watchdog reset and logging
-            bt.logging.debug(f"Current Step: {validator.step}, Current block: {current_block}, last_updated_block: {validator.last_updated_block}")
+            bt.logging.info("--------------------------------Status--------------------------------")
+            bt.logging.info(
+                f"Current Step: {validator.step},\n" 
+                f"Current block: {current_block},\n" 
+                f"Last updated block: {validator.last_updated_block},\n" 
+                f"Blocks until next query_and_process_axons: {blocks_until_query_axons},\n" 
+                f"Blocks until send_data_to_website: {blocks_until_send_data},\n" 
+                f"Blocks until scoring_run: {blocks_until_scoring},\n" 
+                f"Blocks until set_weights: {blocks_until_set_weights}"
+            )
+            bt.logging.info("--------------------------------End Status--------------------------------")
             
             validator.step += 1
-            time.sleep(45)
+            time.sleep(60)
 
         except TimeoutError as e:
             bt.logging.error(f"Error in main loop: {str(e)}")
@@ -96,6 +147,11 @@ def initialize(validator):
     if not validator.last_updated_block:
         bt.logging.info("Updating last updated block; will set weights this iteration")
         validator.last_updated_block = validator.subtensor.block - 301
+        validator.last_queried_block = validator.subtensor.block - 10
+        validator.last_sent_data_to_website = validator.subtensor.block - 15
+        validator.last_scoring_block = validator.subtensor.block - 50
+        validator.last_set_weights_block = validator.subtensor.block - 300
+        
 
 
 def update_game_data(validator, current_time):
@@ -103,6 +159,8 @@ def update_game_data(validator, current_time):
     Calls SportsData to update game data in the database - Async in separate thread
     
     """
+    bt.logging.info("--------------------------------Updating game data--------------------------------")
+    
     try:
         if validator.last_api_call is None:
             validator.last_api_call = current_time - timedelta(days=15)
@@ -125,7 +183,7 @@ def update_game_data(validator, current_time):
         bt.logging.error(f"Error fetching game data: {e}")
         bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
 
-
+    validator.last_updated_block = validator.subtensor.block
 def sync_metagraph(validator):
     try:
         validator.metagraph = validator.sync_metagraph()
@@ -138,6 +196,7 @@ def sync_metagraph(validator):
 
 
 def filter_and_update_axons(validator):
+
     all_axons = validator.metagraph.axons
     bt.logging.trace(f"All axons: {all_axons}")
 
@@ -179,6 +238,11 @@ def filter_and_update_axons(validator):
 
 
 def query_and_process_axons_with_game_data(validator):
+    """
+    Queries axons with game data and processes the responses
+    """
+    bt.logging.info("--------------------------------Querying and processing axons with game data--------------------------------")
+    
     current_time = datetime.now(timezone.utc).isoformat()
     gamedata_dict = validator.fetch_local_game_data(current_timestamp=current_time)
     if gamedata_dict is None:
@@ -294,9 +358,15 @@ def query_and_process_axons_with_game_data(validator):
             bt.logging.error(f"Error processing predictions: {e}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
+    validator.last_queried_block = validator.subtensor.block
+
 
 def send_data_to_website_server(validator):
-    current_block = validator.subtensor.block
+    """
+    Sends data to the website server
+    """
+    bt.logging.info("--------------------------------Sending data to website server--------------------------------")
+    validator.last_sent_data_to_website = validator.subtensor.block
 
     try:
         result = validator.website_handler.fetch_and_send_predictions()
@@ -308,11 +378,15 @@ def send_data_to_website_server(validator):
     except Exception as e:
         bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
+    validator.last_sent_data_to_website = validator.subtensor.block
+
 
 def scoring_run(validator, current_time):
     """
     calls the scoring system to update miner scores before setting weights
     """
+    bt.logging.info("--------------------------------Scoring run--------------------------------")
+    
     try:
         # Get UIDs to query and invalid UIDs
         (
@@ -337,8 +411,15 @@ def scoring_run(validator, current_time):
         bt.logging.error(f"Error in scoring_run: {str(e)}")
         bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
+    validator.last_scoring_block = validator.subtensor.block
+
 
 async def set_weights(validator, scores):
+    """
+    Sets the weights for the validator
+    """
+    bt.logging.info("--------------------------------Setting weights--------------------------------")
+
     try:
         bt.logging.info("Attempting to update weights")
         if validator.subtensor is None:
@@ -369,6 +450,8 @@ async def set_weights(validator, scores):
         bt.logging.warning(
             "Failed to set weights or encountered an error, continuing with next iteration."
         )
+
+    validator.last_set_weights_block = validator.subtensor.block
 
 
 # The main function parses the configuration and runs the validator.
