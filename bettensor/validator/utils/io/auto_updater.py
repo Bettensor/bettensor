@@ -143,7 +143,7 @@ async def perform_update(validator):
         # Add a delay after the restart attempt
         time.sleep(10)
     else:
-        bt.logging.error("Update procedure aborted due to pull failure.")
+        return 
 
 def check_version_and_reset():
     config = configparser.ConfigParser()
