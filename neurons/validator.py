@@ -300,7 +300,7 @@ def sync_metagraph_with_retry(validator):
     for attempt in range(max_retries):
         try:
             subtensor = validator.get_subtensor()
-            validator.metagraph = validator.subtensor.get_metagraph(subtensor=subtensor, lite=True)
+            validator.metagraph = validator.subtensor.metagraph(subtensor=subtensor, lite=True)
             bt.logging.info("Metagraph synced successfully.")
             return
         except websocket.WebSocketConnectionClosedException:
@@ -361,7 +361,7 @@ def query_and_process_axons_with_game_data(validator):
     Queries axons with game data and processes the responses
     """
     bt.logging.info("--------------------------------Querying and processing axons with game data--------------------------------")
-    
+    validator.last_queried_block = validator.subtensor.block
     current_time = datetime.now(timezone.utc).isoformat()
     gamedata_dict = validator.fetch_local_game_data(current_timestamp=current_time)
     if gamedata_dict is None:
@@ -477,9 +477,7 @@ def query_and_process_axons_with_game_data(validator):
             bt.logging.error(f"Error processing predictions: {e}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
-    validator.last_queried_block = validator.subtensor.block
-
-
+    
 def send_data_to_website_server(validator):
     """
     Sends data to the website server
@@ -497,14 +495,13 @@ def send_data_to_website_server(validator):
     except Exception as e:
         bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
-    validator.last_sent_data_to_website = validator.subtensor.block
-
-
+    
 def scoring_run(validator, current_time):
     """
     calls the scoring system to update miner scores before setting weights
     """
     bt.logging.info("--------------------------------Scoring run--------------------------------")
+    validator.last_scoring_block = validator.subtensor.block
     
     try:
         # Get UIDs to query and invalid UIDs
@@ -531,14 +528,13 @@ def scoring_run(validator, current_time):
         bt.logging.error(f"Traceback: {traceback.format_exc()}")
         raise
 
-    validator.last_scoring_block = validator.subtensor.block
-
-
+    
 async def set_weights(validator, scores):
     """
     Sets the weights for the validator
     """
     bt.logging.info("--------------------------------Setting weights--------------------------------")
+    validator.last_set_weights_block = validator.subtensor.block
 
     try:
         bt.logging.info("Attempting to update weights")
@@ -571,7 +567,7 @@ async def set_weights(validator, scores):
             "Failed to set weights or encountered an error, continuing with next iteration."
         )
 
-    validator.last_set_weights_block = validator.subtensor.block
+    
 
 
 # The main function parses the configuration and runs the validator.
