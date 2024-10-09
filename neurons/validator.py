@@ -174,6 +174,12 @@ async def async_operations(validator):
     except Exception as e:
         bt.logging.error(f"Error in async_operations: {str(e)}")
         bt.logging.error(traceback.format_exc())
+    except KeyboardInterrupt:
+        bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
+        #cancel all tasks
+        status_log_task.cancel()
+        await status_log_task   
+        
     finally:
         # Ensure the status log task is cancelled when the main loop exits
         status_log_task.cancel()
