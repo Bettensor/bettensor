@@ -59,7 +59,7 @@ async def log_status(validator):
         )
 
         bt.logging.info(status_message)
-        await asyncio.sleep(30)
+        
 
 async def perform_update_task_with_timeout(validator, semaphore):
     async with semaphore:
@@ -221,9 +221,6 @@ async def main_async(validator: BettensorValidator):
                 await asyncio.to_thread(sync_metagraph_with_retry, validator)
 
                 watchdog.reset()
-                
-                
-                
                 validator.step += 1
                 await asyncio.sleep(60)
 
@@ -439,8 +436,8 @@ def query_and_process_axons_with_game_data(validator):
             bt.logging.info(f"Processing response: {idx}")
             if response.metadata.synapse_type == "prediction":
                 valid_responses.append(response)
-                bt.logging.info(f"Received valid response: {response.metadata.synapse_type}")
-                bt.logging.trace(f"Response: {response}")
+                #bt.logging.info(f"Received valid response: {response.metadata.synapse_type}")
+                #bt.logging.trace(f"Response: {response}")
             else:
                 invalid_responses.append(response)
                 bt.logging.warning(f"Received invalid response: {response.metadata.synapse_type}")
