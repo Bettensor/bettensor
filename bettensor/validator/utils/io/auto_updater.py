@@ -36,8 +36,15 @@ def get_local_hash():
 
 def pull_latest_changes():
     try:
-        subprocess.check_call(["git", "pull", "origin", "main"])
-        bt.logging.info("Successfully pulled latest changes from main branch.")
+        current_branch = get_current_branch()
+        if not current_branch:
+            bt.logging.error("Failed to get current branch.")
+            return False
+        
+        subprocess.check_call(["git", "fetch", "origin"])
+        subprocess.check_call(["git", "pull", "origin", current_branch])
+        
+        bt.logging.info(f"Successfully pulled latest changes from {current_branch} branch.")
         return True
     except subprocess.CalledProcessError as e: 
         bt.logging.error(f"Failed to pull latest changes: {e}")
