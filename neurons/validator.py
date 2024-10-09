@@ -35,31 +35,8 @@ WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
 
-SAVE_CURSOR = "\033[s"
-RESTORE_CURSOR = "\033[u"
-MOVE_CURSOR_TOP = "\033[H"
-CLEAR_LINE = "\033[K"
 
-class StatusSink:
-    def __init__(self, status_lines=8):
-        self.status_message = ""
-        self.status_lines = status_lines
-
-    def write(self, message):
-        if message.startswith(SAVE_CURSOR):  # Check for our status message
-            self.status_message = message
-            print(message, end='', flush=True)
-        else:
-            # For non-status messages, move cursor below status area, print message, then restore cursor
-            print(f"{RESTORE_CURSOR}\033[{self.status_lines}B{message}{RESTORE_CURSOR}", end='', flush=True)
-
-# Create a custom sink for status messages
-status_sink = StatusSink()
-
-# Add the custom sink to bt.logging
-bt_logger.add(status_sink.write, level="INFO")
-
-async def continuous_status_display(validator):
+async def log_status(validator):
     while True:
         current_time = datetime.now(timezone.utc)
         current_block = validator.subtensor.block
@@ -69,21 +46,20 @@ async def continuous_status_display(validator):
         blocks_until_set_weights = max(0, validator.set_weights_interval - (current_block - validator.last_set_weights_block))
 
         status_message = (
-            f"{SAVE_CURSOR}{MOVE_CURSOR_TOP}"
-            "--------------------------------Status--------------------------------\n"
-            f"{CLEAR_LINE}Current Step: {validator.step}\n"
-            f"{CLEAR_LINE}Current block: {current_block}\n"
-            f"{CLEAR_LINE}Last updated block: {validator.last_updated_block}\n"
-            f"{CLEAR_LINE}Blocks until next query_and_process_axons: {blocks_until_query_axons}\n"
-            f"{CLEAR_LINE}Blocks until send_data_to_website: {blocks_until_send_data}\n"
-            f"{CLEAR_LINE}Blocks until scoring_run: {blocks_until_scoring}\n"
-            f"{CLEAR_LINE}Blocks until set_weights: {blocks_until_set_weights}\n"
-            f"{CLEAR_LINE}----------------------------------------------------------------------{RESTORE_CURSOR}"
+            "\n"
+            "================================ VALIDATOR STATUS ================================\n"
+            f"Current Step: {validator.step}\n"
+            f"Current block: {current_block}\n"
+            f"Last updated block: {validator.last_updated_block}\n"
+            f"Blocks until next query_and_process_axons: {blocks_until_query_axons}\n"
+            f"Blocks until send_data_to_website: {blocks_until_send_data}\n"
+            f"Blocks until scoring_run: {blocks_until_scoring}\n"
+            f"Blocks until set_weights: {blocks_until_set_weights}\n"
+            "================================================================================\n"
         )
 
-        # Use bt.logging to log the status message
-        bt_logger.info(status_message)
-        await asyncio.sleep(5)  # Update every 5 seconds
+        bt.logging.info(status_message)
+        await asyncio.sleep(60)  # Log status every 60 seconds
 
 async def async_operations(validator):
     # Create semaphores for each operation
@@ -95,8 +71,8 @@ async def async_operations(validator):
     scoring_semaphore = asyncio.Semaphore(1)
     weights_semaphore = asyncio.Semaphore(1)
 
-    # Create a task for continuous status display
-    status_display_task = asyncio.create_task(continuous_status_display(validator))
+    # Create a task for periodic status logging
+    status_log_task = asyncio.create_task(log_status(validator))
 
     try:
         while True:
@@ -133,8 +109,8 @@ async def async_operations(validator):
 
             await asyncio.sleep(12)  # Wait before next iteration
     finally:
-        # Ensure the status display task is cancelled when the main loop exits
-        status_display_task.cancel()
+        # Ensure the status log task is cancelled when the main loop exits
+        status_log_task.cancel()
 
 async def perform_update_task_with_timeout(validator, semaphore):
     async with semaphore:
@@ -246,33 +222,6 @@ def main(validator: BettensorValidator):
 
             if not hasattr(validator, 'last_set_weights_block'):
                 validator.last_set_weights_block = validator.subtensor.block - 300
-
-            # Calculate interval values
-            current_block = validator.subtensor.get_current_block()
-            blocks_until_query_axons = max(0, validator.query_axons_interval - ((current_block - validator.last_queried_block) % validator.query_axons_interval))
-            blocks_until_send_data = max(0, validator.send_data_to_website_interval - ((current_block - validator.last_sent_data_to_website) % validator.send_data_to_website_interval))
-            blocks_until_scoring = max(0, validator.scoring_interval - ((current_block - validator.last_scoring_block) % validator.scoring_interval))
-            blocks_until_set_weights = max(0, validator.set_weights_interval - ((current_block - validator.last_set_weights_block) % validator.set_weights_interval))
-
-            # Main loop now only handles watchdog reset and logging
-            
-            current_time = datetime.now(timezone.utc).isoformat()
-            bt.logging.info(
-                "\n"
-                "--------------------------------Status--------------------------------"
-                "\n"
-                f"Current time: {current_time},\n"
-                f"Current Step: {validator.step},\n" 
-                f"Current block: {current_block},\n" 
-                f"Last updated block: {validator.last_updated_block},\n" 
-                f"Blocks until next query_and_process_axons: {blocks_until_query_axons},\n" 
-                f"Blocks until send_data_to_website: {blocks_until_send_data},\n" 
-                f"Blocks until scoring_run: {blocks_until_scoring},\n" 
-                f"Blocks until set_weights: {blocks_until_set_weights}"
-                "\n"
-                "----------------------------------------------------------------------"
-                "\n"
-            )
             
             validator.step += 1
             time.sleep(1)
