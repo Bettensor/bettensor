@@ -15,6 +15,7 @@ import asyncio
 import threading
 import websocket
 from websocket._exceptions import WebSocketConnectionClosedException
+import logging
 
 import bettensor
 from bettensor import protocol
@@ -33,6 +34,26 @@ WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
 
+class StatusHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.status_message = ""
+
+    def emit(self, record):
+        if record.msg.startswith("\033[2J\033[H"):  # Check for our status message
+            self.status_message = record.msg[7:]  # Remove the clear screen and cursor move codes
+        else:
+            # For non-status messages, print them and then reprint the status
+            print(self.format(record))
+            if self.status_message:
+                print(self.status_message, end='')
+            sys.stdout.flush()
+
+# Set up the custom handler
+status_handler = StatusHandler()
+status_handler.setLevel(logging.INFO)
+bt.logging.addHandler(status_handler)
+
 async def async_operations(validator):
     # Create semaphores for each operation
     update_semaphore = asyncio.Semaphore(1)
@@ -43,39 +64,46 @@ async def async_operations(validator):
     scoring_semaphore = asyncio.Semaphore(1)
     weights_semaphore = asyncio.Semaphore(1)
 
-    while True:
-        current_time = datetime.now(timezone.utc)
-        current_block = validator.subtensor.block
+    # Create a task for continuous status display
+    status_display_task = asyncio.create_task(continuous_status_display(validator))
 
-        # Perform update (if needed)
-        if not update_semaphore.locked():
-            asyncio.create_task(perform_update_task_with_timeout(validator, update_semaphore))
+    try:
+        while True:
+            current_time = datetime.now(timezone.utc)
+            current_block = validator.subtensor.block
 
-        # Update game data
-        if (current_block - validator.last_updated_block) > validator.update_game_data_interval and not game_data_semaphore.locked():
-            asyncio.create_task(update_game_data_task_with_timeout(validator, current_time, game_data_semaphore))
+            # Perform update (if needed)
+            if not update_semaphore.locked():
+                asyncio.create_task(perform_update_task_with_timeout(validator, update_semaphore))
 
-        # Sync metagraph
-        if (current_block - validator.last_queried_block) > (validator.query_axons_interval - 5) and not metagraph_semaphore.locked():
-            asyncio.create_task(sync_metagraph_task_with_timeout(validator, metagraph_semaphore))
+            # Update game data
+            if (current_block - validator.last_updated_block) > validator.update_game_data_interval and not game_data_semaphore.locked():
+                asyncio.create_task(update_game_data_task_with_timeout(validator, current_time, game_data_semaphore))
 
-        # Query and process axons
-        if (current_block - validator.last_queried_block) > validator.query_axons_interval and not query_semaphore.locked():
-            asyncio.create_task(query_and_process_axons_task_with_timeout(validator, query_semaphore))
+            # Sync metagraph
+            if (current_block - validator.last_queried_block) > (validator.query_axons_interval - 5) and not metagraph_semaphore.locked():
+                asyncio.create_task(sync_metagraph_task_with_timeout(validator, metagraph_semaphore))
 
-        # Send data to website
-        if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval and not website_semaphore.locked():
-            asyncio.create_task(send_data_to_website_task_with_timeout(validator, website_semaphore))
+            # Query and process axons
+            if (current_block - validator.last_queried_block) > validator.query_axons_interval and not query_semaphore.locked():
+                asyncio.create_task(query_and_process_axons_task_with_timeout(validator, query_semaphore))
 
-        # Recalculate scores
-        if (current_block - validator.last_scoring_block) > validator.scoring_interval and not scoring_semaphore.locked():
-            asyncio.create_task(scoring_run_task_with_timeout(validator, current_time, scoring_semaphore))
+            # Send data to website
+            if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval and not website_semaphore.locked():
+                asyncio.create_task(send_data_to_website_task_with_timeout(validator, website_semaphore))
 
-        # Set weights
-        if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
-            asyncio.create_task(set_weights_task_with_timeout(validator, weights_semaphore))
+            # Recalculate scores
+            if (current_block - validator.last_scoring_block) > validator.scoring_interval and not scoring_semaphore.locked():
+                asyncio.create_task(scoring_run_task_with_timeout(validator, current_time, scoring_semaphore))
 
-        await asyncio.sleep(12)  # Wait before next iteration
+            # Set weights
+            if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
+                asyncio.create_task(set_weights_task_with_timeout(validator, weights_semaphore))
+
+            await asyncio.sleep(12)  # Wait before next iteration
+    finally:
+        # Ensure the status display task is cancelled when the main loop exits
+        status_display_task.cancel()
 
 async def perform_update_task_with_timeout(validator, semaphore):
     async with semaphore:
@@ -142,6 +170,31 @@ async def set_weights_task_with_timeout(validator, semaphore):
         except Exception as e:
             bt.logging.error(f"Error in set weights task: {str(e)}")
 
+async def continuous_status_display(validator):
+    while True:
+        current_time = datetime.now(timezone.utc)
+        current_block = validator.subtensor.block
+        blocks_until_query_axons = max(0, validator.query_axons_interval - (current_block - validator.last_queried_block))
+        blocks_until_send_data = max(0, validator.send_data_to_website_interval - (current_block - validator.last_sent_data_to_website))
+        blocks_until_scoring = max(0, validator.scoring_interval - (current_block - validator.last_scoring_block))
+        blocks_until_set_weights = max(0, validator.set_weights_interval - (current_block - validator.last_set_weights_block))
+
+        status_message = (
+            "\n"
+            "--------------------------------Status--------------------------------\n"
+            f"Current Step: {validator.step}\n"
+            f"Current block: {current_block}\n"
+            f"Last updated block: {validator.last_updated_block}\n"
+            f"Blocks until next query_and_process_axons: {blocks_until_query_axons}\n"
+            f"Blocks until send_data_to_website: {blocks_until_send_data}\n"
+            f"Blocks until scoring_run: {blocks_until_scoring}\n"
+            f"Blocks until set_weights: {blocks_until_set_weights}\n"
+            "----------------------------------------------------------------------\n"
+        )
+
+        # Use a special logger or print function for the status
+        bt.logging.info(f"\033[2J\033[H{status_message}")  # Clear screen and move cursor to top-left
+        await asyncio.sleep(5)  # Update every 5 seconds
 
 def main(validator: BettensorValidator):
     initialize(validator)
