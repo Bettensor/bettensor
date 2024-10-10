@@ -48,11 +48,10 @@ class SoccerPredictor:
         self.team_averages_path = team_averages_path
         self.db_manager = db_manager
         self.miner_stats_handler = miner_stats_handler
-        self.made_daily_predictions = False
 
         # params
         self.id: int = id
-        self.model_on: bool = False
+        self.soccer_model_on: bool = False
         self.wager_distribution_steepness: int = 10
         self.fuzzy_match_percentage: int = 80
         self.minimum_wager_amount: float = 20.0
@@ -77,7 +76,7 @@ class SoccerPredictor:
                     )
                     db_manager.initialize_default_model_params(self.id)
                 else:
-                    self.model_on = row.get("model_on", False)
+                    self.soccer_model_on = row.get("soccer_model_on", False)
                     self.wager_distribution_steepness = row.get(
                         "wager_distribution_steepness", 1
                     )
@@ -400,9 +399,6 @@ class NFLPredictor:
     def le_classes_(self):
         return self.bet365_teams
 
-    def get_best_match(self, team_name, encoded_teams):
-        return self.predictions_handler.get_best_match(team_name, encoded_teams, "nfl")
-
     def get_HFmodel(self, model_name):
         try:
             local_model_dir = os.path.join(os.path.dirname(__file__), "..", "models")
@@ -428,55 +424,52 @@ class NFLPredictor:
             bt.logging.error(f"Error loading model: {e}")
             return None
 
-    def get_model_params(self, db_manager):
+    def get_model_params(self, db_manager: DatabaseManager):
         current_time = time.time()
+        bt.logging.debug(f"NFLPredictor: Attempting to get model params. Miner ID: {self.id}")
         if current_time - self.last_param_update >= self.param_refresh_interval:
             if self.id is None:
-                bt.logging.warning(
-                    "Miner ID is not set. Using default NFL model parameters."
-                )
+                bt.logging.warning("NFLPredictor: Miner ID is not set. Using default NFL model parameters.")
             else:
+                bt.logging.debug(f"NFLPredictor: Fetching model params for miner ID: {self.id}")
                 row = db_manager.get_model_params(self.id)
+                bt.logging.debug(f"NFLPredictor: Retrieved row: {row}")
                 if row is None:
-                    bt.logging.info(
-                        f"No NFL model parameters found for miner ID: {self.id}. Using default values."
-                    )
+                    bt.logging.info(f"NFLPredictor: No NFL model parameters found for miner ID: {self.id}. Initializing default values.")
                     db_manager.initialize_default_model_params(self.id)
-                else:
+                    row = db_manager.get_model_params(self.id)
+                
+                if row:
                     self.nfl_model_on = row.get("nfl_model_on", False)
-                    self.nfl_minimum_wager_amount = row.get(
-                        "nfl_minimum_wager_amount", 20.0
-                    )
-                    self.nfl_maximum_wager_amount = row.get(
-                        "nfl_max_wager_amount", 1000.0
-                    )
-                    self.fuzzy_match_percentage = row.get("fuzzy_match_percentage", 80)
+                    self.nfl_minimum_wager_amount = row.get("nfl_minimum_wager_amount", 20.0)
+                    self.nfl_maximum_wager_amount = row.get("nfl_max_wager_amount", 1000)
                     self.nfl_top_n_games = row.get("nfl_top_n_games", 10)
-                    self.nfl_kelly_fraction_multiplier = row.get(
-                        "nfl_kelly_fraction_multiplier", 1.0
-                    )
+                    self.nfl_kelly_fraction_multiplier = row.get("nfl_kelly_fraction_multiplier", 1.0)
                     self.nfl_edge_threshold = row.get("nfl_edge_threshold", 0.02)
                     self.nfl_max_bet_percentage = row.get("nfl_max_bet_percentage", 0.7)
+                    
+                    bt.logging.info(f"NFLPredictor: Updated NFL model parameters:")
+                    bt.logging.info(f"  - NFL model on: {self.nfl_model_on}")
+                    bt.logging.info(f"  - Min wager: {self.nfl_minimum_wager_amount}")
+                    bt.logging.info(f"  - Max wager: {self.nfl_maximum_wager_amount}")
+                    bt.logging.info(f"  - Top N games: {self.nfl_top_n_games}")
+                    bt.logging.info(f"  - Kelly fraction multiplier: {self.nfl_kelly_fraction_multiplier}")
+                    bt.logging.info(f"  - Edge threshold: {self.nfl_edge_threshold}")
+                    bt.logging.info(f"  - Max bet percentage: {self.nfl_max_bet_percentage}")
+                else:
+                    bt.logging.error(f"NFLPredictor: Failed to retrieve or initialize model parameters for miner ID: {self.id}")
             self.last_param_update = current_time
+        else:
+            bt.logging.debug(f"NFLPredictor: Using cached model params. Current NFL model status: {self.nfl_model_on}")
+        
+        return self.nfl_model_on
 
     def preprocess_data(self, home_teams, away_teams):
-        matched_home_teams = [
-            self.predictions_handler.get_best_match(team, self.bet365_teams, "nfl")
-            for team in home_teams
-        ]
-        matched_away_teams = [
-            self.predictions_handler.get_best_match(team, self.bet365_teams, "nfl")
-            for team in away_teams
-        ]
-
-        df = pd.DataFrame(
-            {
-                "team_home": matched_home_teams,
-                "team_away": matched_away_teams,
-                "schedule_week": [1]
-                * len(matched_home_teams),  # Add schedule_week column may change
-            }
-        )
+        df = pd.DataFrame({
+            "team_home": home_teams,
+            "team_away": away_teams,
+            "schedule_week": [1] * len(home_teams),
+        })
 
         df = df.merge(
             self.team_averages, left_on="team_home", right_on="team_name", how="left"
@@ -554,23 +547,11 @@ class NFLPredictor:
         return processed_features
 
     def prepare_raw_data(self, home_teams, away_teams):
-        matched_home_teams = [
-            self.predictions_handler.get_best_match(team, self.bet365_teams, "nfl")
-            for team in home_teams
-        ]
-        matched_away_teams = [
-            self.predictions_handler.get_best_match(team, self.bet365_teams, "nfl")
-            for team in away_teams
-        ]
-
-        df = pd.DataFrame(
-            {
-                "team_home": matched_home_teams,
-                "team_away": matched_away_teams,
-                "schedule_week": [1]
-                * len(matched_home_teams),  # Add schedule_week column may change
-            }
-        )
+        df = pd.DataFrame({
+            "team_home": home_teams,
+            "team_away": away_teams,
+            "schedule_week": [1] * len(home_teams),  # Add schedule_week column may change
+        })
 
         df = df.merge(
             self.team_averages, left_on="team_home", right_on="team_name", how="left"
@@ -667,7 +648,7 @@ class NFLPredictor:
 
         kelly_fractions = predicted_kelly_fractions.cpu().numpy()
         wagers = self.recommend_wager_distribution(kelly_fractions, sklearn_probs, odds)
-
+        bt.logging.info(f"pytorch model output: {kelly_fractions}")
         results = []
         for i in range(len(home_teams)):
             result = {
@@ -687,18 +668,28 @@ class NFLPredictor:
         return results
 
     def recommend_wager_distribution(self, kelly_fractions, sklearn_probs, odds):
-        max_daily_wager = self.check_max_wager_vs_miner_cash(
-            self.nfl_maximum_wager_amount
-        )
+        current_miner_cash = self.miner_stats_handler.get_miner_cash()
+        max_daily_wager = min(self.nfl_maximum_wager_amount, current_miner_cash)
         min_wager = self.nfl_minimum_wager_amount
         top_n = self.nfl_top_n_games
 
+        bt.logging.info(f"Current miner cash: {current_miner_cash}")
+        bt.logging.info(f"Max daily wager: {max_daily_wager}")
+        bt.logging.info(f"Min wager: {min_wager}")
+        bt.logging.info(f"Top N: {top_n}")
+        bt.logging.info(f"Kelly fraction multiplier: {self.nfl_kelly_fraction_multiplier}")
+        
         kelly_fractions *= self.nfl_kelly_fraction_multiplier
         kelly_fractions = np.clip(kelly_fractions, 0.0, 0.5)
 
         implied_probs = 1 / np.array(odds)[:, 0]  # Using home odds
         edges = sklearn_probs - implied_probs
-        valid_bets = edges > self.nfl_edge_threshold
+        
+        # Dynamic edge threshold
+        median_edge = np.median(edges)
+        edge_threshold = max(self.nfl_edge_threshold, median_edge * 0.5)
+        
+        valid_bets = edges > edge_threshold
         top_indices = np.argsort(edges)[-top_n:]
         top_indices = top_indices[valid_bets[top_indices]]
 
@@ -712,25 +703,35 @@ class NFLPredictor:
         bet_fractions = calculate_kelly_fraction(
             top_sklearn_probs, top_odds, fraction=0.25
         )
-        wagers = (
-            bet_fractions * max_daily_wager * top_kelly_fractions
-        )  # Scale by predicted Kelly fraction
+        
+        # Use Kelly fractions more directly
+        wagers = bet_fractions * max_daily_wager * (1 + top_kelly_fractions)
 
-        wagers = np.maximum(wagers, min_wager)
+        # Apply maximum bet percentage constraint
         wagers = np.minimum(wagers, max_daily_wager * self.nfl_max_bet_percentage)
 
+        # Ensure total wagers don't exceed current miner cash
         total_wager = np.sum(wagers)
-        if total_wager > max_daily_wager:
-            scale_factor = max_daily_wager / total_wager
+        if total_wager > current_miner_cash:
+            scale_factor = current_miner_cash / total_wager
             wagers *= scale_factor
 
+        # Apply minimum wager constraint
         wagers = np.maximum(wagers, min_wager)
         wagers = np.round(wagers, 2)
+
+        # Final check to ensure we don't exceed current miner cash
+        while np.sum(wagers) > current_miner_cash:
+            excess = np.sum(wagers) - current_miner_cash
+            wagers[wagers > min_wager] -= min(excess, 0.01)
+            wagers = np.maximum(wagers, min_wager)
+            wagers = np.round(wagers, 2)
 
         final_wagers = [0.0] * len(kelly_fractions)
         for idx, wager in zip(top_indices, wagers):
             final_wagers[idx] = wager
 
+        bt.logging.info(f"Total wager: {np.sum(final_wagers)}")
         return final_wagers
 
     def check_max_wager_vs_miner_cash(self, max_wager):

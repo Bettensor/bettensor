@@ -159,29 +159,29 @@ def main(miner: BettensorMiner):
             if miner.step % 10800 == 0:
                 bt.logging.info("Checking and resetting daily cash if necessary")
                 miner.stats_handler.check_and_reset_daily_cash()
-                bt.logging.info(f"Miner UID: {miner.miner_uid}")
 
                 bt.logging.info(
-                    f"Soccer Model on: {miner.predictions_handler.models['soccer'].model_on}"
+                    f"Soccer Model on: {miner.predictions_handler.models['soccer'].soccer_model_on}"
                 )
-                if miner.predictions_handler.models["soccer"].model_on:
+                if miner.predictions_handler.models["soccer"].soccer_model_on:
                     soccer_games = miner.games_handler.get_games_by_sport("soccer")
                     bt.logging.info(
                         f"Retrieved {len(soccer_games)} active soccer games"
                     )
                     miner_cash = miner.stats_handler.get_miner_cash()
                     bt.logging.info(f"Miner cash: {miner_cash}")
-                    bt.logging.info(
-                        f"Made daily soccer predictions: {miner.predictions_handler.models['soccer'].made_daily_predictions}"
-                    )
+
                     if (
                         miner_cash
                         < miner.predictions_handler.models[
                             "soccer"
                         ].minimum_wager_amount
+<<<<<<< Updated upstream
                         and not miner.predictions_handler.models[
                             "soccer"
                         ].made_daily_predictions
+=======
+>>>>>>> Stashed changes
                     ):
                         bt.logging.warning(
                             f"Miner cash is insufficient for soccer model predictions. Skipping this step."
@@ -199,48 +199,33 @@ def main(miner: BettensorMiner):
                         else:
                             bt.logging.info("No soccer games to process")
 
-                bt.logging.info(
-                    f"NFL Model on: {miner.predictions_handler.models['nfl'].nfl_model_on}"
-                )
-                
+                nfl_predictor = miner.predictions_handler.models["football"]
+                nfl_predictor.last_param_update = 0  # Force a refresh
+                nfl_model_on = nfl_predictor.get_model_params(miner.db_manager)
+                bt.logging.info(f"NFL Model on: {nfl_model_on}")
 
-                if miner.predictions_handler.models["nfl"].nfl_model_on:
+                bt.logging.debug(f"NFL Model on in database: {miner.db_manager.get_nfl_model_status(miner.miner_uid)}")
+                bt.logging.debug(f"NFL Model on in memory: {nfl_predictor.nfl_model_on}")
+
+                if nfl_model_on:
                     bt.logging.info("NFL Model on, getting games")
-                    nfl_games = miner.games_handler.get_games_by_sport("nfl")
-                    bt.logging.info(f"Retrieved {len(nfl_games)} active NFL games")
+                    football_games = miner.games_handler.get_games_by_sport("football")
+                    bt.logging.info(f"Retrieved {len(football_games)} active football games")
                     miner_cash = miner.stats_handler.get_miner_cash()
                     bt.logging.info(f"Miner cash: {miner_cash}")
-                    bt.logging.info(
-                        f"Made daily NFL predictions: {miner.predictions_handler.models['nfl'].made_daily_predictions}"
-                    )
-                    if (
-                        miner_cash
-                        < miner.predictions_handler.models[
-                            "nfl"
-                        ].nfl_minimum_wager_amount
-                        or miner_cash / len(nfl_games)
-                        < miner.predictions_handler.models[
-                            "nfl"
-                        ].nfl_minimum_wager_amount
-                        and not miner.predictions_handler.models[
-                            "nfl"
-                        ].made_daily_predictions
+
+                    if len(football_games) == 0:
+                        bt.logging.info("No active football games available. Skipping NFL predictions.")
+                    elif (
+                        miner_cash < nfl_predictor.nfl_minimum_wager_amount
                     ):
-                        bt.logging.warn(
-                            f"Miner cash is insufficient for NFL model predictions. Skipping this step."
-                        )
+                        bt.logging.warning("Miner cash is insufficient for NFL model predictions. Skipping this step.")
                     else:
-                        if nfl_games:
-                            processed_games = (
-                                miner.predictions_handler.process_model_predictions(
-                                    nfl_games, "nfl"
-                                )
-                            )
-                            bt.logging.info(
-                                f"Processed {len(processed_games)} NFL games"
-                            )
-                        else:
-                            bt.logging.info("No NFL games to process")
+                        processed_games = miner.predictions_handler.process_model_predictions(football_games, "football")
+                        bt.logging.info(f"Processed {len(processed_games)} football games")
+                else:
+                    bt.logging.info("NFL Model is off. Skipping NFL predictions.")
+
                 bt.logging.info(f"Waiting for Synapses, please be patient...")
 
             miner.step += 1

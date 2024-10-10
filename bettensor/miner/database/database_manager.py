@@ -210,7 +210,7 @@ class DatabaseManager:
                 """
             CREATE TABLE IF NOT EXISTS model_params (
                 miner_uid TEXT PRIMARY KEY,
-                model_on BOOLEAN,
+                soccer_model_on BOOLEAN,
                 wager_distribution_steepness INTEGER,
                 fuzzy_match_percentage INTEGER,
                 minimum_wager_amount FLOAT,
@@ -232,6 +232,13 @@ class DatabaseManager:
                     WHERE table_name = 'model_params' AND column_name = 'id'
                 ) THEN
                     ALTER TABLE model_params RENAME COLUMN id TO miner_uid;
+                END IF;
+
+                IF EXISTS (
+                    SELECT FROM information_schema.columns 
+                    WHERE table_name = 'model_params' AND column_name = 'model_on'
+                ) THEN
+                    ALTER TABLE model_params RENAME COLUMN model_on TO soccer_model_on;
                 END IF;
             END $$;
             """
@@ -276,7 +283,7 @@ class DatabaseManager:
         query = """
         CREATE TABLE IF NOT EXISTS model_params (
             miner_uid TEXT PRIMARY KEY,
-            model_on BOOLEAN,
+            soccer_model_on BOOLEAN,
             wager_distribution_steepness INTEGER,
             fuzzy_match_percentage INTEGER,
             minimum_wager_amount FLOAT,
@@ -311,36 +318,40 @@ class DatabaseManager:
         self.execute_query(query)
 
     def ensure_miner_params_exist(self, miner_uid):
-        query = "SELECT * FROM model_params WHERE miner_uid = %s"
+        query = """
+        SELECT * FROM model_params WHERE miner_uid = %s
+        """
         result = self.execute_query(query, (miner_uid,))
 
         if not result:
-            default_params = {
-                "model_on": False,
-                "wager_distribution_steepness": 1,
-                "fuzzy_match_percentage": 80,
-                "minimum_wager_amount": 1.0,
-                "max_wager_amount": 100.0,
-                "top_n_games": 10,
-                "nfl_model_on": False,
-                "nfl_minimum_wager_amount": 1.0,
-                "nfl_max_wager_amount": 100.0,
-                "nfl_top_n_games": 5,
-                "nfl_kelly_fraction_multiplier": 1.0,
-                "nfl_edge_threshold": 0.02,
-                "nfl_max_bet_percentage": 0.7,
-            }
+            default_params = (
+                miner_uid,
+                False,  # soccer_model_on
+                1,      # wager_distribution_steepness (changed from False to 1)
+                80,     # fuzzy_match_percentage
+                1.0,    # minimum_wager_amount
+                100.0,  # max_wager_amount
+                10,     # top_n_games
+                False,  # nfl_model_on
+                20.0,   # nfl_minimum_wager_amount
+                1000.0, # nfl_max_wager_amount
+                10,     # nfl_top_n_games
+                1.0,    # nfl_kelly_fraction_multiplier
+                0.02,   # nfl_edge_threshold
+                0.7,    # nfl_max_bet_percentage
+            )
+
             insert_query = """
             INSERT INTO model_params (
-                miner_uid, model_on, wager_distribution_steepness, fuzzy_match_percentage,
-                minimum_wager_amount, max_wager_amount, top_n_games,
-                nfl_model_on, nfl_minimum_wager_amount, nfl_max_wager_amount,
-                nfl_top_n_games, nfl_kelly_fraction_multiplier, nfl_edge_threshold,
-                nfl_max_bet_percentage
+                miner_uid, soccer_model_on, wager_distribution_steepness,
+                fuzzy_match_percentage, minimum_wager_amount, max_wager_amount,
+                top_n_games, nfl_model_on, nfl_minimum_wager_amount,
+                nfl_max_wager_amount, nfl_top_n_games, nfl_kelly_fraction_multiplier,
+                nfl_edge_threshold, nfl_max_bet_percentage
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
-            self.execute_query(insert_query, (miner_uid, *default_params.values()))
-            bt.logging.info(f"Created default model parameters for miner: {miner_uid}")
+            self.execute_query(insert_query, default_params)
+            bt.logging.info(f"Created default model parameters for miner_uid: {miner_uid}")
 
     def get_model_params(self, miner_id):
         query = "SELECT * FROM model_params WHERE miner_uid = %s"
@@ -350,7 +361,7 @@ class DatabaseManager:
     def update_model_params(self, miner_uid, params):
         query = """
         UPDATE model_params SET
-            model_on = %s,
+            soccer_model_on = %s,
             wager_distribution_steepness = %s,
             fuzzy_match_percentage = %s,
             minimum_wager_amount = %s,
@@ -448,7 +459,7 @@ class DatabaseManager:
 
         if not result:
             default_params = {
-                "model_on": False,
+                "soccer_model_on": False,
                 "wager_distribution_steepness": 1,
                 "fuzzy_match_percentage": 80,
                 "minimum_wager_amount": 1.0,
@@ -464,7 +475,7 @@ class DatabaseManager:
             }
             insert_query = """
             INSERT INTO model_params (
-                miner_uid, model_on, wager_distribution_steepness, fuzzy_match_percentage,
+                miner_uid, soccer_model_on, wager_distribution_steepness, fuzzy_match_percentage,
                 minimum_wager_amount, max_wager_amount, top_n_games,
                 nfl_model_on, nfl_minimum_wager_amount, nfl_max_wager_amount,
                 nfl_top_n_games, nfl_kelly_fraction_multiplier, nfl_edge_threshold,
@@ -504,3 +515,8 @@ class DatabaseManager:
                 bt.logging.error(
                     f"Error removing default or NULL rows from {table}: {str(e)}"
                 )
+
+    def get_nfl_model_status(self, miner_uid):
+        query = "SELECT nfl_model_on FROM model_params WHERE miner_uid = %s"
+        result = self.execute_query(query, (miner_uid,))
+        return result[0]['nfl_model_on'] if result else False

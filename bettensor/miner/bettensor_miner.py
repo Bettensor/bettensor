@@ -195,11 +195,11 @@ class BettensorMiner(BaseNeuron):
 
         if synapse.metadata.synapse_type == "game_data":
             return_synapse = self._handle_game_data(synapse)
-            bt.logging.info(f"Return synapse: {return_synapse}")
+            #bt.logging.info(f"Return synapse: {return_synapse}")
             return return_synapse
         elif synapse.metadata.synapse_type == "confirmation":
             return_synapse = self._handle_confirmation(synapse)
-            bt.logging.info(f"Return synapse: {return_synapse}")
+            #bt.logging.info(f"Return synapse: {return_synapse}")
             return return_synapse
         else:
             raise ValueError(f"Unsupported synapse type: {type(synapse)}")

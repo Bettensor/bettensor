@@ -55,7 +55,7 @@ class TestNFLPredictions(unittest.TestCase):
         mock_db_manager = MagicMock()
         mock_db_manager.get_model_params.return_value = {
             "nfl_model_on": True,
-            "model_on": True,
+            "soccer_model_on": True,
             "nfl_minimum_wager_amount": 20.0,
             "nfl_max_wager_amount": 1000,
             "fuzzy_match_percentage": 80,

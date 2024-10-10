@@ -46,7 +46,7 @@ class ModelParamsTUI:
         self.edit_value = ""
         self.error_message = ""
         self.explanations = {
-            "model_on": "Toggle the soccer model on or off.",
+            "soccer_model_on": "Toggle the soccer model on or off.",
             "wager_distribution_steepness": "Controls the steepness of the wager distribution.",
             "fuzzy_match_percentage": "Sets the percentage for fuzzy matching.",
             "minimum_wager_amount": "Sets the minimum wager amount (0-1000).",
@@ -85,7 +85,7 @@ class ModelParamsTUI:
                 CREATE TABLE IF NOT EXISTS model_params (
                     id SERIAL PRIMARY KEY,
                     miner_uid TEXT UNIQUE NOT NULL,
-                    model_on BOOLEAN,
+                    soccer_model_on BOOLEAN,
                     wager_distribution_steepness INTEGER,
                     fuzzy_match_percentage INTEGER,
                     minimum_wager_amount FLOAT,
@@ -124,7 +124,7 @@ class ModelParamsTUI:
                 cur.execute(
                     """
                 UPDATE model_params SET
-                    model_on = %s,
+                    soccer_model_on = %s,
                     wager_distribution_steepness = %s,
                     fuzzy_match_percentage = %s,
                     minimum_wager_amount = %s,
@@ -140,7 +140,7 @@ class ModelParamsTUI:
                 WHERE miner_uid = %s
                 """,
                     (
-                        self.params["model_on"],
+                        self.params["soccer_model_on"],
                         self.params["wager_distribution_steepness"],
                         self.params["fuzzy_match_percentage"],
                         self.params["minimum_wager_amount"],
@@ -221,7 +221,7 @@ class ModelParamsTUI:
         if self.mode == "normal":
             self.mode = "edit"
             key = list(self.params.keys())[self.cursor_position + 1]
-            if key in ["model_on", "nfl_model_on"]:
+            if key in ["soccer_model_on", "nfl_model_on"]:
                 self.params[key] = not self.params[key]
                 self.save_params()
                 self.update_view()
@@ -243,7 +243,7 @@ class ModelParamsTUI:
         self.update_view()
 
     def validate_input(self, key, value):
-        if key in ["model_on", "nfl_model_on"]:
+        if key in ["soccer_model_on", "nfl_model_on"]:
             return value.lower() in ['true', '1', 'yes', 'on']
         try:
             if key == "wager_distribution_steepness":
@@ -278,7 +278,7 @@ class ModelParamsTUI:
                 style = f"reverse {LIGHT_GREEN}" if i - 1 == self.cursor_position else LIGHT_GREEN
                 if self.edit_mode and i - 1 == self.cursor_position:
                     value = f"{self.edit_value}▋"
-                elif key in ["model_on", "nfl_model_on"]:
+                elif key in ["soccer_model_on", "nfl_model_on"]:
                     value = "On" if value else "Off"
                 table.add_row(key.replace("_", " ").title(), str(value), style=style)
 
@@ -371,7 +371,7 @@ class ModelParamsTUI:
     def create_default_params(self):
         default_params = {
             "miner_uid": self.miner_id,
-            "model_on": False,
+            "soccer_model_on": False,
             "wager_distribution_steepness": 1,
             "fuzzy_match_percentage": 80,
             "minimum_wager_amount": 1.0,

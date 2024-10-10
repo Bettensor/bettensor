@@ -32,7 +32,7 @@ class PredictionsHandler:
                 db_manager=self.db_manager,
                 miner_stats_handler=self.stats_handler,
             ),
-            "nfl": NFLPredictor(
+            "football": NFLPredictor(
                 model_name="nfl_wager_model",
                 id=self.miner_uid,
                 db_manager=self.db_manager,
@@ -233,21 +233,13 @@ class PredictionsHandler:
 
         if sport == "soccer":
             encoded_teams = set(model.le.classes_)
-        else:  # NFL
+        else:  # Football
             encoded_teams = model.bet365_teams
 
         matched_games = []
         for game_id, game in games.items():
-            if sport == "soccer":
-                home_match = self.get_best_match(game.team_a, encoded_teams, sport)
-                away_match = self.get_best_match(game.team_b, encoded_teams, sport)
-            else:
-                home_match = model.db_manager.predictions_handler.get_best_match(
-                    game.team_a, encoded_teams, sport
-                )
-                away_match = model.db_manager.predictions_handler.get_best_match(
-                    game.team_b, encoded_teams, sport
-                )
+            home_match = self.get_best_match(game.team_a, encoded_teams, sport)
+            away_match = self.get_best_match(game.team_b, encoded_teams, sport)
 
             if home_match and away_match:
                 matched_games.append(
@@ -271,7 +263,7 @@ class PredictionsHandler:
 
             for game_data, prediction in zip(matched_games, model_predictions):
                 game = game_data["original_game"]
-                model_name = "NFL Model" if sport == "nfl" else "Soccer Model"
+                model_name = "NFL Model" if sport == "football" else "Soccer Model"
                 pred_dict = {
                     "prediction_id": str(uuid.uuid4()),
                     "game_id": game_data["game_id"],
@@ -296,6 +288,11 @@ class PredictionsHandler:
                 
 
                 self.add_prediction(pred_dict)
+
+            # Set the made_daily_predictions flag to True
+            model.made_daily_predictions = True
+            bt.logging.info(f"Set made_daily_predictions to True for {sport} model")
+
         else:
             bt.logging.warning(f"No games found with matching team names for {sport}")
 
@@ -785,3 +782,9 @@ class PredictionsHandler:
             self.stats_handler.increment_miner_losses()
 
         self.stats_handler.update_win_loss_ratio()
+
+    def is_nfl_model_on(self):
+        return self.models['football'].nfl_model_on if 'football' in self.models else False
+
+    def is_soccer_model_on(self):
+        return self.models['soccer'].soccer_model_on if 'soccer' in self.models else False
