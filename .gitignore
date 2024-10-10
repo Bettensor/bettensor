@@ -193,3 +193,4 @@ scoring_system_state.json
 child_certificate.pem
 private_key.pem
 test_database.*
+validator_confirmation_dict.json

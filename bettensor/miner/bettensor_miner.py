@@ -269,7 +269,7 @@ class BettensorMiner(BaseNeuron):
         if synapse.confirmation_dict:
             prediction_ids = list(synapse.confirmation_dict.keys())
             self.predictions_handler.update_prediction_confirmations(
-                prediction_ids, synapse.dendrite.hotkey
+                prediction_ids, synapse.dendrite.hotkey, self.validator_confirmation_dict
             )
         else:
             bt.logging.warning("Received empty confirmation dict")
