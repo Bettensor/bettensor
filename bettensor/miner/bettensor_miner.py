@@ -189,6 +189,7 @@ class BettensorMiner(BaseNeuron):
 
         # Initialize MinerConfig
         self.miner_config = MinerConfig()
+        self.validator_confirmation_dict = {}
 
     def forward(self, synapse: GameData) -> GameData:
 
@@ -253,7 +254,7 @@ class BettensorMiner(BaseNeuron):
 
             # Update validators_sent_to count for each prediction
             for pred_id in unfinished_predictions:
-                self.predictions_handler.update_prediction_sent(pred_id)
+                self.predictions_handler.update_prediction_sent(pred_id,self.validator_confirmation_dict,synapse.dendrite.hotkey)
 
         except Exception as e:
             bt.logging.error(f"Error in forward method: {e}")

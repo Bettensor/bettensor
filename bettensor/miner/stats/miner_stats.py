@@ -4,15 +4,10 @@ from typing import Dict, Any
 from psycopg2.extras import RealDictCursor
 import warnings
 from eth_utils.exceptions import ValidationError
-
-warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
-import warnings
-from eth_utils.exceptions import ValidationError
-
-warnings.filterwarnings("ignore", message="Network .* does not have a valid ChainId.*")
+import json
+import os
 import bittensor as bt
 from datetime import datetime, timezone, timedelta
-
 
 class MinerStatsHandler:
     def __init__(self, state_manager=None):
@@ -22,12 +17,37 @@ class MinerStatsHandler:
         if "miner_current_incentive" not in self.stats:
             self.stats["miner_current_incentive"] = 0.0
         self.lock = threading.Lock()
+        self.validator_confirmation_file = "validator_confirmation_dict.json"
+        self.validator_confirmation_dict = self.load_validator_confirmation_dict()
         if state_manager and state_manager.miner_uid:
             self.update_stats_from_predictions()
+
+    def load_validator_confirmation_dict(self) -> Dict[str, Any]:
+        if os.path.exists(self.validator_confirmation_file):
+            try:
+                with open(self.validator_confirmation_file, "r") as f:
+                    data = json.load(f)
+                    bt.logging.info("Loaded validator_confirmation_dict from JSON file.")
+                    return data
+            except Exception as e:
+                bt.logging.error(f"Error loading validator_confirmation_dict: {e}")
+                return {}
+        else:
+            bt.logging.info("validator_confirmation_dict JSON file not found. Initializing empty dictionary.")
+            return {}
+
+    def save_validator_confirmation_dict(self):
+        try:
+            with open(self.validator_confirmation_file, "w") as f:
+                json.dump(self.validator_confirmation_dict, f, indent=4)
+                bt.logging.info("Saved validator_confirmation_dict to JSON file.")
+        except Exception as e:
+            bt.logging.error(f"Error saving validator_confirmation_dict: {e}")
 
     def load_stats_from_state(self):
         with self.lock:
             self.stats = self.state_manager.get_stats()
+            self.validator_confirmation_dict = self.load_validator_confirmation_dict()
 
     def update_stats(self, new_stats: Dict[str, Any]):
         with self.lock:
@@ -49,6 +69,7 @@ class MinerStatsHandler:
             )
             self.stats["miner_last_prediction_date"] = prediction_data["predictionDate"]
             self.state_manager.update_state(self.stats)
+            self.save_state()
 
     def update_on_game_result(self, result_data: Dict[str, Any]):
         with self.lock:
@@ -85,6 +106,7 @@ class MinerStatsHandler:
             )
             self.update_win_loss_ratio()
             self.state_manager.update_state(self.stats)
+            self.save_state()
 
             # Mark the prediction as processed
             update_query = (
@@ -104,6 +126,7 @@ class MinerStatsHandler:
         with self.lock:
             self.stats["miner_current_incentive"] = incentive
             self.state_manager.update_state({"miner_current_incentive": incentive})
+            self.save_state()
 
     def get_current_incentive(self) -> float:
         return self.stats["miner_current_incentive"]
@@ -115,6 +138,7 @@ class MinerStatsHandler:
                 self.state_manager.update_state(
                     {"miner_cash": self.stats["miner_cash"]}
                 )
+                self.save_state()
                 return True
             return False
 
@@ -123,13 +147,12 @@ class MinerStatsHandler:
             self.stats["miner_cash"] = self.state_manager.DAILY_CASH
             self.stats["last_daily_reset"] = datetime.now(timezone.utc).isoformat()
             self.state_manager.update_state(self.stats)
-            # print(f"DEBUG: Reset daily cash to {self.state_manager.DAILY_CASH}")
+            self.save_state()
+            bt.logging.info(f"Reset daily cash to {self.state_manager.DAILY_CASH}")
 
     def update_stats_from_predictions(self):
-        # print("DEBUG: Updating miner stats from all predictions")
         with self.lock:
             miner_uid = self.state_manager.miner_uid
-            # print(f"DEBUG: Miner UID: {miner_uid}")
             if miner_uid is None:
                 return
 
@@ -147,7 +170,6 @@ class MinerStatsHandler:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
                 cur.execute(query, (miner_uid,))
                 predictions = cur.fetchall()
-                # print(f"DEBUG: Fetched {len(predictions)} predictions")
 
                 total_predictions = 0
                 total_wins = 0
@@ -161,10 +183,8 @@ class MinerStatsHandler:
                 )
 
                 for pred in predictions:
-                    # print(f"DEBUG: Processing prediction: {pred}")
                     total_predictions += 1
                     total_wager += pred["wager"]
-                    # print(f"DEBUG: Total wager so far: {total_wager}")
 
                     pred_date = pred.get("prediction_date")
                     if pred_date:
@@ -177,7 +197,6 @@ class MinerStatsHandler:
                         ):
                             last_prediction_date = pred_date
 
-                    # print(f"DEBUG: Prediction details - Outcome: {pred['outcome']}, Predicted: {pred['predictedoutcome']}, Wager: {pred['wager']}, Odds: {pred['teamaodds']}/{pred['teambodds']}/{pred['tieodds']}, Team A: {pred['teama']}, Team B: {pred['teamb']}")
                     if "Wager Won" in pred["outcome"]:
                         total_wins += 1
                         if pred["predicted_outcome"] == pred["team_a"]:
@@ -188,17 +207,12 @@ class MinerStatsHandler:
                             payout = pred["wager"] * pred["tie_odds"]
                         else:
                             payout = 0
-                        # print(f"DEBUG: Wager won. Payout: {payout}")
                         total_earnings += payout
                     elif "Wager Lost" in pred["outcome"]:
                         total_losses += 1
-                        # print(f"DEBUG: Wager lost. Payout: 0")
 
                 # Calculate current cash
                 current_cash = self.state_manager.DAILY_CASH - daily_wager
-
-                # print(f"DEBUG: Final stats - Total predictions: {total_predictions}, Total wins: {total_wins}, Total losses: {total_losses}")
-                # print(f"DEBUG: Final stats - Total wager: {total_wager}, Total earnings: {total_earnings}")
 
                 self.stats.update(
                     {
@@ -215,11 +229,11 @@ class MinerStatsHandler:
                 )
                 self.update_win_loss_ratio()
                 self.state_manager.update_state(self.stats)
-                # print(f"DEBUG: Updated stats: {self.stats}")
+                self.save_state()
 
             except Exception as e:
-                print(f"DEBUG: Error updating stats from predictions: {str(e)}")
-                print(f"DEBUG: Traceback: {traceback.format_exc()}")
+                bt.logging.error(f"Error updating stats from predictions: {str(e)}")
+                bt.logging.error(traceback.format_exc())
             finally:
                 if cur:
                     cur.close()
@@ -263,7 +277,7 @@ class MinerStatsHandler:
         }
         self.stats.update(default_stats)
         self.state_manager.update_state(default_stats)
-        # bt.logging.info("Initialized stats with default values")
+        self.save_state()
 
     def get_miner_cash(self) -> float:
         with self.lock:
@@ -279,11 +293,13 @@ class MinerStatsHandler:
             self.state_manager.update_state(
                 {"miner_lifetime_earnings": self.stats["miner_lifetime_earnings"]}
             )
+            self.save_state()
 
     def update_miner_cash(self, amount: float):
         with self.lock:
             self.stats["miner_cash"] = self.stats.get("miner_cash", 0) + amount
             self.state_manager.update_state({"miner_cash": self.stats["miner_cash"]})
+            self.save_state()
 
     def increment_miner_wins(self):
         with self.lock:
@@ -293,6 +309,7 @@ class MinerStatsHandler:
             self.state_manager.update_state(
                 {"miner_lifetime_wins": self.stats["miner_lifetime_wins"]}
             )
+            self.save_state()
 
     def increment_miner_losses(self):
         with self.lock:
@@ -302,7 +319,22 @@ class MinerStatsHandler:
             self.state_manager.update_state(
                 {"miner_lifetime_losses": self.stats["miner_lifetime_losses"]}
             )
+            self.save_state()
 
+    def save_state(self):
+        self.state_manager.save_state(self.stats)
+        self.save_validator_confirmation_dict()
+
+    # Add methods to handle validator_confirmation_dict updates
+    def add_validator_confirmation(self, prediction_id: str, validator_hotkey: str):
+        with self.lock:
+            if prediction_id not in self.validator_confirmation_dict:
+                self.validator_confirmation_dict[prediction_id] = {"validators": {validator_hotkey: {'confirmed': False}}}
+                bt.logging.info(f"Added new validator confirmation for prediction_id: {prediction_id}")
+            elif validator_hotkey not in self.validator_confirmation_dict[prediction_id]["validators"]:
+                self.validator_confirmation_dict[prediction_id]["validators"][validator_hotkey] = {'confirmed': False}
+                bt.logging.info(f"Added new validator hotkey: {validator_hotkey} for prediction_id: {prediction_id}")
+            self.save_validator_confirmation_dict()
 
 class MinerStateManager:
     DAILY_CASH = 1000.0
@@ -320,16 +352,12 @@ class MinerStateManager:
         if not self.miner_uid:
             return {}
 
-        if not self.miner_uid:
-            return {}
-
         query = "SELECT * FROM miner_stats WHERE miner_hotkey = %s"
         conn, cur = self.db_manager.connection_pool.getconn(), None
         try:
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(query, (self.miner_hotkey,))
             result = cur.fetchone()
-            return result if result else {}
             return result if result else {}
         finally:
             if cur:
@@ -338,9 +366,6 @@ class MinerStateManager:
                 self.db_manager.connection_pool.putconn(conn)
 
     def initialize_state(self) -> Dict[str, Any]:
-        if not self.miner_uid:
-            return {}
-
         if not self.miner_uid:
             return {}
 
@@ -407,12 +432,6 @@ class MinerStateManager:
         except Exception as e:
             bt.logging.error(f"Error saving miner state: {e}")
             bt.logging.error(traceback.format_exc())
-            bt.logging.error(f"Error saving miner state: {e}")
-            bt.logging.error(traceback.format_exc())
-
-    def update_state(self, new_state):
-        self.state.update(new_state)
-        self.save_state(self.state)
 
     def update_state(self, new_state):
         self.state.update(new_state)
