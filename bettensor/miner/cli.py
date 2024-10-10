@@ -231,11 +231,11 @@ class Application:
 
     def init_miners(self):
         self.available_miners = self.get_available_miners()
-
         if not self.available_miners:
+            if not hasattr(self, 'miner_cash') or self.miner_cash is None:
+                self.miner_cash = 1000
             self.miner_uid = "default"
             self.miner_hotkey = "default"
-            self.miner_cash = 0
             self.miner_is_active = False
         else:
             if self.uid:
@@ -256,7 +256,8 @@ class Application:
             if not valid_miner_found:
                 self.miner_hotkey = str(self.available_miners[0]["miner_hotkey"])
                 self.miner_uid = str(self.available_miners[0]["miner_uid"])
-                self.miner_cash = float(self.available_miners[0]["miner_cash"])
+                if not hasattr(self, 'miner_cash') or self.miner_cash is None:
+                    self.miner_cash = float(self.available_miners[0]["miner_cash"])
                 self.miner_is_active = self.available_miners[0].get("is_active", False)
 
         self.save_miner_uid(self.miner_uid)
@@ -330,7 +331,7 @@ class Application:
                     miner_stats.get("miner_lifetime_earnings", 0)
                 )
                 self.miner_lifetime_wager = float(
-                    miner_stats.get("miner_lifetime_wager", 0)
+                    miner_stats.get("miner_lifetime_wager_amount", 0)
                 )
                 self.miner_lifetime_wins = int(
                     miner_stats.get("miner_lifetime_wins", 0)
@@ -888,9 +889,7 @@ class Application:
 
         @self.kb.add(
             "s",
-            filter=Condition(
-                lambda: self.current_view == "games" and not self.search_mode
-            ),
+            filter=Condition(lambda: self.current_view == "games" and not self.search_mode)
         )
         def _(event):
             self.search_mode = True
@@ -1149,6 +1148,8 @@ class Application:
         self.miner_is_active = next_miner["is_active"]
         self.save_miner_uid(self.miner_uid)
         self.reload_miner_data()
+        self.reset_layout()
+        self.add_log_message(f"Switched to miner: {self.miner_uid}")
 
     def quit(self):
         if self.state_manager:
@@ -1233,57 +1234,58 @@ class Application:
             _ = os.system("clear")
 
     def submit_prediction(self):
+        current_time = time.time()
+        if current_time - self.last_prediction_time < 1:  # 1 second cooldown
+            self.submission_message = "Please wait before submitting another prediction."
+            return
+
+        if not self.prediction_outcome or not self.prediction_wager:
+            self.submission_message = "Please select an outcome and enter a wager."
+            return
+
         try:
-            if self.prediction_outcome and self.prediction_wager is not None:
-                current_time = time.time()
-                if current_time - self.last_prediction_time < 1:  # 1 second cooldown
-                    self.submission_message = "Please wait before submitting another prediction."
-                    return
+            prediction = {
+                "prediction_id": str(uuid.uuid4()),
+                "miner_uid": self.miner_uid,
+                "game_id": self.selected_game.game_id,
+                "prediction_date": datetime.now(timezone.utc).isoformat(),
+                "predicted_outcome": self.prediction_outcome,
+                "team_a": self.selected_game.team_a,
+                "team_b": self.selected_game.team_b,
+                "wager": self.prediction_wager,
+                "team_a_odds": self.selected_game.team_a_odds,
+                "team_b_odds": self.selected_game.team_b_odds,
+                "tie_odds": self.selected_game.tie_odds,
+                "outcome": "Unfinished",
+                "model_name": None,
+                "confidence_score": None,
+            }
 
-                prediction = {
-                    "prediction_id": str(uuid.uuid4()),
-                    "miner_uid": self.miner_uid,
-                    "game_id": self.selected_game.game_id,
-                    "prediction_date": datetime.now(timezone.utc).isoformat(),
-                    "predicted_outcome": self.prediction_outcome,
-                    "team_a": self.selected_game.team_a,
-                    "team_b": self.selected_game.team_b,
-                    "wager": self.prediction_wager,
-                    "team_a_odds": self.selected_game.team_a_odds,
-                    "team_b_odds": self.selected_game.team_b_odds,
-                    "tie_odds": self.selected_game.tie_odds,
-                    "outcome": "Unfinished",
-                    "model_name": None,
-                    "confidence_score": None,
-                }
-
-                result = self.predictions_handler.add_prediction(prediction)
-
-                if result["status"] == "success":
-                    self.submission_message = f"Prediction submitted: {self.prediction_outcome} with wager ${self.prediction_wager:.2f}"
-                    self.add_log_message(f"Prediction added: {self.prediction_outcome} with wager ${self.prediction_wager:.2f}")
-                    self.last_prediction_time = current_time
-                    self.last_prediction_id = prediction["prediction_id"]
-                    self.reload_miner_data()
-                    self.confirmation_mode = True
-                    app = get_app()
-                    app.create_background_task(self.delayed_return_to_games())
-                else:
-                    self.submission_message = f"Failed to submit prediction: {result['message']}"
-                    self.add_log_message(f"Failed to submit prediction: {result['message']}", "ERROR")
+            result = self.predictions_handler.add_prediction(prediction)
+            if result["status"] == "success":
+                self.miner_cash -= self.prediction_wager
+                self.miner_lifetime_wager += self.prediction_wager
+                
+                self.db_manager.execute_query(
+                    "UPDATE miner_stats SET miner_cash = %s, miner_lifetime_wager_amount = %s WHERE miner_uid = %s",
+                    (self.miner_cash, self.miner_lifetime_wager, self.miner_uid)
+                )
+                
+                self.reload_miner_data()
+                self.submission_message = f"Prediction submitted: {self.prediction_outcome} with wager ${self.prediction_wager:.2f}"
+                self.add_log_message(self.submission_message)
+                self.last_prediction_time = current_time
+                self.last_prediction_id = prediction["prediction_id"]
+                self.confirmation_mode = True
+                app = get_app()
+                app.create_background_task(self.delayed_return_to_games())
             else:
-                self.submission_message = "Please select an outcome and enter a wager amount."
-                self.add_log_message("Incomplete prediction. Please select an outcome and enter a wager amount.", "WARNING")
-
-            self.reset_layout()
-            get_app().invalidate()
+                self.add_log_message(f"Failed to submit prediction: {result['message']}")
         except Exception as e:
-            error_message = f"Error in submit_prediction: {str(e)}"
-            self.submission_message = error_message
-            self.add_log_message(error_message, "ERROR")
-            logging.error(error_message)
-            self.reset_layout()
-            get_app().invalidate()
+            self.add_log_message(f"Error in submit_prediction: {str(e)}")
+
+        self.reset_layout()
+        get_app().invalidate()
 
     async def delayed_return_to_games(self):
         await asyncio.sleep(2)
@@ -1305,6 +1307,7 @@ class Application:
         miner_info.add_column(style=GOLD, justify="left")
         miner_info.add_row("Miner UID:", self.miner_uid)
         miner_info.add_row("Cash:", f"${self.miner_cash:.2f}")
+        miner_info.add_row("Lifetime Wager:", f"${self.miner_lifetime_wager:.2f}")
         miner_info.add_row(
             "Last Prediction:",
             self.format_last_prediction_date(self.miner_last_prediction_date),
