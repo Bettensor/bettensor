@@ -179,15 +179,11 @@ def main(miner: BettensorMiner):
                         < miner.predictions_handler.models[
                             "soccer"
                         ].minimum_wager_amount
-                        or miner_cash / len(soccer_games)
-                        < miner.predictions_handler.models[
-                            "soccer"
-                        ].minimum_wager_amount
                         and not miner.predictions_handler.models[
                             "soccer"
                         ].made_daily_predictions
                     ):
-                        bt.logging.warn(
+                        bt.logging.warning(
                             f"Miner cash is insufficient for soccer model predictions. Skipping this step."
                         )
                     else:

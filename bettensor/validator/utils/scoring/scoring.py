@@ -756,7 +756,7 @@ class ScoringSystem:
 
     def _cascade_demotion(self, miner, current_tier, tiers, composite_scores):
         """
-        Demote a miner from the current tier to the next lower tier and handle further demotions if necessary.
+        Demote a miner from the current tier to the next lower tier without violating tier boundaries.
 
         Args:
             miner (int): The miner's UID.
@@ -764,21 +764,27 @@ class ScoringSystem:
             tiers (np.ndarray): The array representing current tiers of all miners.
             composite_scores (np.ndarray): The composite scores array for the current day.
         """
-        bt.logging.debug(f"Demoting miner {miner} from tier {current_tier-1}")
+        bt.logging.debug(f"Demoting miner {miner} from tier {current_tier}")
 
-        # Demote to the next lower tier
+        # Determine if the miner is valid
+        is_valid_miner = miner in self.valid_uids
+
+        # Calculate new tier
         new_tier = current_tier - 1
-        if new_tier >= 1:
-            tiers[miner] = new_tier
-            # bt.logging.info(f"Miner {miner} demoted to tier {new_tier-1}")
 
-            # Check if the miner still meets the min_wager for the new tier
-            if not self._meets_tier_requirements(miner, new_tier):
-                self._cascade_demotion(miner, new_tier, tiers, composite_scores)
+        if is_valid_miner:
+            # Ensure valid miners are not demoted below tier 2
+            new_tier = max(new_tier, 2)
         else:
-            # Set to tier 0 if below the lowest tier
-            tiers[miner] = 0
-            bt.logging.info(f"Miner {miner} demoted to tier 0 (lowest tier)")
+            # Invalid miners can be demoted to tier 1 or 0
+            new_tier = max(new_tier, 1)
+
+        tiers[miner] = new_tier
+        bt.logging.info(f"Miner {miner} demoted to tier {new_tier - 1}")
+
+        # Recursively check if further demotion is needed
+        if not self._meets_tier_requirements(miner, new_tier):
+            self._cascade_demotion(miner, new_tier, tiers, composite_scores)
 
     def reset_miner(self, miner_uid: int):
         """
@@ -942,10 +948,11 @@ class ScoringSystem:
 
         # Set tiers using boolean masks
         if self.init:
-            self.tiers[:, self.current_day] = 2  # Default to tier 2 for valid UIDs, only set if no previous state exists
+            self.tiers[:, self.current_day] = 2  # Initialize valid UIDs to tier 2
             bt.logging.info(f"Assigned {len(self.valid_uids)} valid UIDs to tier 2.")
             self.init = False
 
+        # Assign empty and invalid UIDs
         self.tiers[empty_mask, self.current_day] = 0
         self.tiers[invalid_mask, self.current_day] = 1
 

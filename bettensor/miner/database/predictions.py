@@ -120,8 +120,6 @@ class PredictionsHandler:
         ## this method doesn't update the confirmation count, it only updates the sent count
         is_new = False
 
-
-
         if prediction_id not in validator_confirmation_dict:
             validator_confirmation_dict[prediction_id] = {"validators":{validator_hotkey:{'confirmed':False}}}
             is_new = True
@@ -293,6 +291,10 @@ class PredictionsHandler:
                     "payout": 0.0, #init payout to 0
                 }
                 predictions[game_data["game_id"]] = TeamGamePrediction(**pred_dict)
+
+                #sort predictions by confidence score
+                
+
                 self.add_prediction(pred_dict)
         else:
             bt.logging.warning(f"No games found with matching team names for {sport}")

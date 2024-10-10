@@ -260,7 +260,7 @@ class BettensorMiner(BaseNeuron):
             bt.logging.error(f"Error in forward method: {e}")
             return self._clean_synapse(synapse, f"Error in forward method: {e}")
         
-        bt.logging.info(f"Synapse after processing: {synapse}")
+        #bt.logging.info(f"Synapse after processing: {synapse}")
 
         return synapse
 
