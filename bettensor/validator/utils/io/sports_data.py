@@ -64,7 +64,7 @@ class SportsData:
 
                 team_a_odds = game["teamAOdds"]
                 team_b_odds = game["teamBOdds"]
-                tie_odds = game.get("tieOdds", 0.0)
+                tie_odds = game["drawOdds"]
 
                 can_tie = sport.lower() == "soccer"
 

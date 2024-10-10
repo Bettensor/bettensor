@@ -274,7 +274,7 @@ class MinerDataMixin:
         predictions = {}
         try:
             for synapse in synapses:
-                bt.logging.trace(f"synapse: {synapse}")
+                #bt.logging.trace(f"synapse: {synapse}")
                 
                 prediction_dict = synapse.prediction_dict
                 metadata = synapse.metadata
