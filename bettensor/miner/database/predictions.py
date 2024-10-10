@@ -61,6 +61,13 @@ class PredictionsHandler:
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
 
     def add_prediction(self, prediction: Dict[str, Any]) -> Dict[str, Any]:
+
+        # check miner cash to ensure they have enough to make the wager
+        miner_cash = self.state_manager.get_stats()['miner_cash']
+        if miner_cash < prediction['wager']:
+            bt.logging.warning(f"Miner {self.miner_uid} does not have enough cash to make the wager,skipping prediction")
+            return {"status": "error", "message": "Miner does not have enough cash to make the wager"}
+
         #bt.logging.debug(f"Adding prediction: {prediction}")
         prediction_id = str(uuid.uuid4())
         prediction["prediction_id"] = prediction_id

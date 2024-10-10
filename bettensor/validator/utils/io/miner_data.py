@@ -207,9 +207,13 @@ class MinerDataMixin:
                         bt.logging.error(f"miner_data.py | insert_predictions | An error occurred: {e}")
                         bt.logging.error(f"miner_data.py | insert_predictions | Traceback: {traceback.format_exc()}")
                         raise
-
-                self.send_confirmation_synapse(int(miner_uid), return_dict)
+                
+                bt.logging.info("Updating miner stats")
                 self.scoring_system.scoring_data.update_miner_stats(self.scoring_system.current_day)
+
+                bt.logging.info(f"Sending confirmation synapse to miner {miner_uid}")
+                self.send_confirmation_synapse(int(miner_uid), return_dict)
+                
         except Exception as e:
             bt.logging.error(f"miner_data.py | insert_predictions | An error occurred: {e}")
             #print traceback
@@ -227,10 +231,22 @@ class MinerDataMixin:
             miner_uid: the uid of the miner
             predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
         """
-        formatted_predictions = {
+        confirmation_dict = {
             str(pred_id): {"success": success, "message": message}
             for pred_id, (success, message) in predictions.items()
         }
+
+        #get miner stats for uid
+        miner_stats = self.db_manager.fetch_one("SELECT * FROM miner_stats WHERE miner_uid = ?", (miner_uid,))
+        if miner_stats is None:
+            bt.logging.warning(f"No miner_stats found for miner_uid: {miner_uid}")
+            confirmation_dict['miner_stats'] = {}
+        else:
+            # handle None values in miner_stats 
+            for key, value in miner_stats.items():
+                if value is None:
+                    miner_stats[key] = 0 
+            confirmation_dict['miner_stats'] = miner_stats
 
 
         synapse = GameData.create(
@@ -239,7 +255,7 @@ class MinerDataMixin:
             subnet_version=self.subnet_version,
             neuron_uid=miner_uid,
             synapse_type="confirmation",
-            confirmation_dict=formatted_predictions,
+            confirmation_dict=confirmation_dict,
         )
 
         #get axon for uid
