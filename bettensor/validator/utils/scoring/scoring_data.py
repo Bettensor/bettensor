@@ -365,8 +365,23 @@ class ScoringData:
                         ELSE miner_lifetime_wins 
                     END,
                     miner_lifetime_roi = CASE
-                        WHEN miner_lifetime_wager_amount > 0
-                        THEN (miner_lifetime_earnings - miner_lifetime_wager_amount) / miner_lifetime_wager_amount
+                        WHEN (miner_lifetime_wager_amount - 
+                              (SELECT COALESCE(SUM(p.wager), 0) 
+                               FROM predictions p 
+                               WHERE p.miner_uid = miner_stats.miner_uid 
+                                 AND p.outcome = 3)) > 0
+                        THEN (miner_lifetime_earnings - 
+                              (miner_lifetime_wager_amount - 
+                               (SELECT COALESCE(SUM(p.wager), 0) 
+                                FROM predictions p 
+                                WHERE p.miner_uid = miner_stats.miner_uid 
+                                  AND p.outcome = 3))
+                             ) / 
+                             (miner_lifetime_wager_amount - 
+                              (SELECT COALESCE(SUM(p.wager), 0) 
+                               FROM predictions p 
+                               WHERE p.miner_uid = miner_stats.miner_uid 
+                                 AND p.outcome = 3))
                         ELSE 0
                     END
             """

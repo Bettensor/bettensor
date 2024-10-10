@@ -16,6 +16,22 @@ class MinerStatsHandler:
         self.stats = self.state_manager.state if state_manager else {}
         if "miner_current_incentive" not in self.stats:
             self.stats["miner_current_incentive"] = 0.0
+        new_fields_defaults = {
+            "miner_coldkey": "",
+            "miner_rank": 0,
+            "miner_status": "inactive",
+            "miner_current_tier": 1,
+            "miner_current_scoring_window": 0,
+            "miner_current_composite_score": 0.0,
+            "miner_current_sharpe_ratio": 0.0,
+            "miner_current_sortino_ratio": 0.0,
+            "miner_current_roi": 0.0,
+            "miner_current_clv_avg": 0.0,
+            "miner_lifetime_roi": 0.0,
+        }
+        for key, value in new_fields_defaults.items():
+            if key not in self.stats:
+                self.stats[key] = value
         self.lock = threading.Lock()
         self.validator_confirmation_file = "validator_confirmation_dict.json"
         self.validator_confirmation_dict = self.load_validator_confirmation_dict()
@@ -59,17 +75,17 @@ class MinerStatsHandler:
         with self.lock:
             return self.stats.copy()
 
-    def update_on_prediction(self, prediction_data: Dict[str, Any]):
-        with self.lock:
-            self.stats["miner_lifetime_predictions"] = (
-                self.stats.get("miner_lifetime_predictions", 0) + 1
-            )
-            self.stats["miner_lifetime_wager"] = (
-                self.stats.get("miner_lifetime_wager", 0) + prediction_data["wager"]
-            )
-            self.stats["miner_last_prediction_date"] = prediction_data["predictionDate"]
-            self.state_manager.update_state(self.stats)
-            self.save_state()
+    # def update_on_prediction(self, prediction_data: Dict[str, Any]):
+    #     with self.lock:
+    #         self.stats["miner_lifetime_predictions"] = (
+    #             self.stats.get("miner_lifetime_predictions", 0) + 1
+    #         )
+    #         self.stats["miner_lifetime_wager"] = (
+    #             self.stats.get("miner_lifetime_wager", 0) + prediction_data["wager"]
+    #         )
+    #         self.stats["miner_last_prediction_date"] = prediction_data["predictionDate"]
+    #         self.state_manager.update_state(self.stats)
+    #         self.save_state()
 
     def update_on_game_result(self, result_data: Dict[str, Any]):
         with self.lock:
@@ -156,60 +172,66 @@ class MinerStatsHandler:
             if miner_uid is None:
                 return
 
-            query = """
+            # Query to get total number of predictions
+            total_predictions_query = """
+            SELECT COUNT(*) AS total_predictions
+            FROM predictions
+            WHERE miner_uid = %s
+            """
+
+            # Query to get wagers and earnings from finished predictions
+            finished_predictions_query = """
             SELECT 
-                p.predicted_outcome, p.outcome, p.wager, p.team_a_odds, p.team_b_odds, p.tie_odds, p.prediction_date,
-                g.team_a, g.team_b
+                SUM(p.wager) AS total_wager,
+                SUM(
+                    CASE 
+                        WHEN p.outcome = 'Wager Won' THEN
+                            CASE 
+                                WHEN p.predicted_outcome = g.team_a THEN p.wager * p.team_a_odds
+                                WHEN p.predicted_outcome = g.team_b THEN p.wager * p.team_b_odds
+                                WHEN p.predicted_outcome = 'Tie' THEN p.wager * p.tie_odds
+                                ELSE 0
+                            END
+                        ELSE 0
+                    END
+                ) AS total_earnings,
+                MAX(p.prediction_date) AS last_prediction_date
             FROM predictions p
             JOIN games g ON p.game_id = g.game_id
-            WHERE p.miner_uid = %s
+            WHERE p.miner_uid = %s AND p.outcome IN ('Wager Won', 'Wager Lost')
             """
+
+            # Query to get daily wager (assuming daily_wager is based on finished predictions)
+            daily_wager_query = """
+            SELECT SUM(p.wager) AS daily_wager
+            FROM predictions p
+            WHERE p.miner_uid = %s AND p.outcome IN ('Wager Won', 'Wager Lost') AND p.prediction_date >= %s
+            """
+
+            today = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
 
             conn, cur = self.db_manager.connection_pool.getconn(), None
             try:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
-                cur.execute(query, (miner_uid,))
-                predictions = cur.fetchall()
 
-                total_predictions = 0
-                total_wins = 0
-                total_losses = 0
-                total_wager = 0
-                total_earnings = 0
-                last_prediction_date = None
-                daily_wager = 0
-                today = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                )
+                # Execute total predictions query
+                cur.execute(total_predictions_query, (miner_uid,))
+                total_result = cur.fetchone()
+                total_predictions = total_result['total_predictions'] if total_result else 0
 
-                for pred in predictions:
-                    total_predictions += 1
-                    total_wager += pred["wager"]
+                # Execute finished predictions query
+                cur.execute(finished_predictions_query, (miner_uid,))
+                finished_result = cur.fetchone()
+                total_wager = finished_result['total_wager'] if finished_result['total_wager'] else 0.0
+                total_earnings = finished_result['total_earnings'] if finished_result['total_earnings'] else 0.0
+                last_prediction_date = finished_result['last_prediction_date']
 
-                    pred_date = pred.get("prediction_date")
-                    if pred_date:
-                        pred_date = datetime.fromisoformat(pred_date)
-                        if pred_date >= today:
-                            daily_wager += pred["wager"]
-                        if (
-                            last_prediction_date is None
-                            or pred_date > last_prediction_date
-                        ):
-                            last_prediction_date = pred_date
-
-                    if "Wager Won" in pred["outcome"]:
-                        total_wins += 1
-                        if pred["predicted_outcome"] == pred["team_a"]:
-                            payout = pred["wager"] * pred["team_a_odds"]
-                        elif pred["predicted_outcome"] == pred["team_b"]:
-                            payout = pred["wager"] * pred["team_b_odds"]
-                        elif pred["predicted_outcome"] == "Tie":
-                            payout = pred["wager"] * pred["tie_odds"]
-                        else:
-                            payout = 0
-                        total_earnings += payout
-                    elif "Wager Lost" in pred["outcome"]:
-                        total_losses += 1
+                # Execute daily wager query
+                cur.execute(daily_wager_query, (miner_uid, today.isoformat()))
+                daily_wager_result = cur.fetchone()
+                daily_wager = daily_wager_result['daily_wager'] if daily_wager_result['daily_wager'] else 0.0
 
                 # Calculate current cash
                 current_cash = self.state_manager.DAILY_CASH - daily_wager
@@ -217,14 +239,16 @@ class MinerStatsHandler:
                 self.stats.update(
                     {
                         "miner_lifetime_predictions": total_predictions,
-                        "miner_lifetime_wins": total_wins,
-                        "miner_lifetime_losses": total_losses,
+                        "miner_lifetime_wins": self._count_wins(miner_uid, cur),
+                        "miner_lifetime_losses": self._count_losses(miner_uid, cur),
                         "miner_lifetime_wager": total_wager,
                         "miner_lifetime_earnings": total_earnings,
+                        "miner_lifetime_roi": self.calculate_roi(total_earnings, total_wager),  # Updated calculation
                         "miner_last_prediction_date": last_prediction_date.isoformat()
                         if last_prediction_date
                         else None,
                         "miner_cash": current_cash,
+                        # Optionally update new fields if applicable
                     }
                 )
                 self.update_win_loss_ratio()
@@ -239,6 +263,26 @@ class MinerStatsHandler:
                     cur.close()
                 if conn:
                     self.db_manager.connection_pool.putconn(conn)
+
+    def _count_wins(self, miner_uid, cursor):
+        wins_query = """
+        SELECT COUNT(*) AS total_wins
+        FROM predictions
+        WHERE miner_uid = %s AND outcome = 'Wager Won'
+        """
+        cursor.execute(wins_query, (miner_uid,))
+        result = cursor.fetchone()
+        return result['total_wins'] if result else 0
+
+    def _count_losses(self, miner_uid, cursor):
+        losses_query = """
+        SELECT COUNT(*) AS total_losses
+        FROM predictions
+        WHERE miner_uid = %s AND outcome = 'Wager Lost'
+        """
+        cursor.execute(losses_query, (miner_uid,))
+        result = cursor.fetchone()
+        return result['total_losses'] if result else 0
 
     def check_and_reset_daily_cash(self):
         with self.lock:
@@ -255,14 +299,7 @@ class MinerStatsHandler:
             now = datetime.now(timezone.utc)
             if now.date() > last_reset.date():
                 self.reset_daily_cash()
-                self.update_stats_from_predictions()  # Recalculate stats after reset
-
-    def reset_daily_cash(self):
-        with self.lock:
-            self.stats["miner_cash"] = self.state_manager.DAILY_CASH
-            self.stats["last_daily_reset"] = datetime.now(timezone.utc).isoformat()
-            self.state_manager.update_state(self.stats)
-            print(f"DEBUG: Reset daily cash to {self.state_manager.DAILY_CASH}")
+                self.update_stats_from_predictions()
 
     def initialize_default_stats(self):
         default_stats = {
@@ -271,9 +308,20 @@ class MinerStatsHandler:
             "miner_lifetime_losses": 0,
             "miner_lifetime_wager": 0.0,
             "miner_lifetime_earnings": 0.0,
+            "miner_lifetime_roi": 0.0,
             "miner_win_loss_ratio": 0.0,
             "miner_last_prediction_date": None,
             "last_daily_reset": datetime.now(timezone.utc).isoformat(),
+            "miner_coldkey": "",
+            "miner_rank": 0,
+            "miner_status": "inactive",
+            "miner_current_tier": 1,
+            "miner_current_scoring_window": 0,
+            "miner_current_composite_score": 0.0,
+            "miner_current_sharpe_ratio": 0.0,
+            "miner_current_sortino_ratio": 0.0,
+            "miner_current_roi": 0.0,
+            "miner_current_clv_avg": 0.0,
         }
         self.stats.update(default_stats)
         self.state_manager.update_state(default_stats)
@@ -336,6 +384,11 @@ class MinerStatsHandler:
                 bt.logging.info(f"Added new validator hotkey: {validator_hotkey} for prediction_id: {prediction_id}")
             self.save_validator_confirmation_dict()
 
+    def calculate_roi(self, earnings: float, wager: float) -> float:
+        if wager > 0:
+            return ((earnings - wager) / wager) * 100  # ROI as a percentage
+        return 0.0
+
 class MinerStateManager:
     DAILY_CASH = 1000.0
 
@@ -358,6 +411,23 @@ class MinerStateManager:
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(query, (self.miner_hotkey,))
             result = cur.fetchone()
+            if result:
+                new_fields_defaults = {
+                    "miner_coldkey": "",
+                    "miner_rank": 0,
+                    "miner_status": "inactive",
+                    "miner_current_tier": 1,
+                    "miner_current_scoring_window": 0,
+                    "miner_current_composite_score": 0.0,
+                    "miner_current_sharpe_ratio": 0.0,
+                    "miner_current_sortino_ratio": 0.0,
+                    "miner_current_roi": 0.0,
+                    "miner_current_clv_avg": 0.0,
+                    "miner_lifetime_roi": 0.0,
+                }
+                for key, value in new_fields_defaults.items():
+                    if key not in result:
+                        result[key] = value
             return result if result else {}
         finally:
             if cur:
@@ -382,7 +452,18 @@ class MinerStateManager:
             "miner_lifetime_wins": 0,
             "miner_lifetime_losses": 0,
             "miner_win_loss_ratio": 0.0,
+            "miner_lifetime_roi": 0.0,
             "last_daily_reset": datetime.now(timezone.utc).isoformat(),
+            "miner_coldkey": "",
+            "miner_rank": 0,
+            "miner_status": "inactive",
+            "miner_current_tier": 1,
+            "miner_current_scoring_window": 0,
+            "miner_current_composite_score": 0.0,
+            "miner_current_sharpe_ratio": 0.0,
+            "miner_current_sortino_ratio": 0.0,
+            "miner_current_roi": 0.0,
+            "miner_current_clv_avg": 0.0,
         }
         self.save_state(initial_state)
         return initial_state
@@ -395,18 +476,32 @@ class MinerStateManager:
         try:
             query = """
             INSERT INTO miner_stats (
-                miner_hotkey, miner_uid, miner_cash, miner_current_incentive, 
-                miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager_amount, 
+                miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_status, miner_cash, 
+                miner_current_incentive, miner_current_tier, miner_current_scoring_window, 
+                miner_current_composite_score, miner_current_sharpe_ratio, miner_current_sortino_ratio, 
+                miner_current_roi, miner_current_clv_avg, miner_last_prediction_date, 
+                miner_lifetime_earnings, miner_lifetime_wager_amount, miner_lifetime_roi,  
                 miner_lifetime_predictions, miner_lifetime_wins, miner_lifetime_losses, 
                 miner_win_loss_ratio, last_daily_reset
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (miner_hotkey) DO UPDATE SET
+                miner_coldkey = EXCLUDED.miner_coldkey,
                 miner_uid = EXCLUDED.miner_uid,
+                miner_rank = EXCLUDED.miner_rank,
+                miner_status = EXCLUDED.miner_status,
                 miner_cash = EXCLUDED.miner_cash,
                 miner_current_incentive = EXCLUDED.miner_current_incentive,
+                miner_current_tier = EXCLUDED.miner_current_tier,
+                miner_current_scoring_window = EXCLUDED.miner_current_scoring_window,
+                miner_current_composite_score = EXCLUDED.miner_current_composite_score,
+                miner_current_sharpe_ratio = EXCLUDED.miner_current_sharpe_ratio,
+                miner_current_sortino_ratio = EXCLUDED.miner_current_sortino_ratio,
+                miner_current_roi = EXCLUDED.miner_current_roi,
+                miner_current_clv_avg = EXCLUDED.miner_current_clv_avg,
                 miner_last_prediction_date = EXCLUDED.miner_last_prediction_date,
                 miner_lifetime_earnings = EXCLUDED.miner_lifetime_earnings,
                 miner_lifetime_wager_amount = EXCLUDED.miner_lifetime_wager_amount,
+                miner_lifetime_roi = EXCLUDED.miner_lifetime_roi,
                 miner_lifetime_predictions = EXCLUDED.miner_lifetime_predictions,
                 miner_lifetime_wins = EXCLUDED.miner_lifetime_wins,
                 miner_lifetime_losses = EXCLUDED.miner_lifetime_losses,
@@ -415,16 +510,27 @@ class MinerStateManager:
             """
             params = (
                 self.miner_hotkey,
+                state.get("miner_coldkey", ""),
                 self.miner_uid,
+                state.get("miner_rank", 0),
+                state.get("miner_status", "inactive"),
                 state.get("miner_cash", 0),
                 state.get("miner_current_incentive", 0),
+                state.get("miner_current_tier", 1),                  
+                state.get("miner_current_scoring_window", 0),        
+                state.get("miner_current_composite_score", 0.0),     
+                state.get("miner_current_sharpe_ratio", 0.0),        
+                state.get("miner_current_sortino_ratio", 0.0),       
+                state.get("miner_current_roi", 0.0),                 
+                state.get("miner_current_clv_avg", 0.0),             
                 state.get("miner_last_prediction_date"),
                 state.get("miner_lifetime_earnings", 0),
                 state.get("miner_lifetime_wager", 0),
+                state.get("miner_lifetime_roi", 0.0),               
                 state.get("miner_lifetime_predictions", 0),
                 state.get("miner_lifetime_wins", 0),
                 state.get("miner_lifetime_losses", 0),
-                state.get("miner_win_loss_ratio", 0),
+                state.get("miner_win_loss_ratio", 0.0),
                 state.get("last_daily_reset"),
             )
             self.db_manager.execute_query(query, params)

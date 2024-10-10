@@ -209,6 +209,7 @@ class MinerDataMixin:
                         raise
 
                 self.send_confirmation_synapse(int(miner_uid), return_dict)
+                self.scoring_system.scoring_data.update_miner_stats(self.scoring_system.current_day)
         except Exception as e:
             bt.logging.error(f"miner_data.py | insert_predictions | An error occurred: {e}")
             #print traceback

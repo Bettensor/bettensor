@@ -196,7 +196,7 @@ class DatabaseManager:
                 miner_last_prediction_date TEXT,
                 miner_lifetime_earnings REAL,
                 miner_lifetime_wager_amount REAL,
-                miner_lifetime_profit REAL,
+                miner_lifetime_roi REAL,
                 miner_lifetime_predictions INTEGER,
                 miner_lifetime_wins INTEGER,
                 miner_lifetime_losses INTEGER,
