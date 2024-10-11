@@ -52,10 +52,10 @@ class MinerStatsHandler:
             bt.logging.info("validator_confirmation_dict JSON file not found. Initializing empty dictionary.")
             return {}
 
-    def save_validator_confirmation_dict(self):
+    def save_validator_confirmation_dict(self, validator_confirmation_dict):
         try:
             with open(self.validator_confirmation_file, "w") as f:
-                json.dump(self.validator_confirmation_dict, f, indent=4)
+                json.dump(validator_confirmation_dict, f, indent=4)
                 bt.logging.info("Saved validator_confirmation_dict to JSON file.")
         except Exception as e:
             bt.logging.error(f"Error saving validator_confirmation_dict: {e}")
@@ -244,7 +244,7 @@ class MinerStatsHandler:
                         "miner_lifetime_wager": total_wager,
                         "miner_lifetime_earnings": total_earnings,
                         "miner_lifetime_roi": self.calculate_roi(total_earnings, total_wager),  # Updated calculation
-                        "miner_last_prediction_date": last_prediction_date.isoformat()
+                        "miner_last_prediction_date": last_prediction_date
                         if last_prediction_date
                         else None,
                         "miner_cash": current_cash,
@@ -371,7 +371,7 @@ class MinerStatsHandler:
 
     def save_state(self):
         self.state_manager.save_state(self.stats)
-        self.save_validator_confirmation_dict()
+        
 
     # Add methods to handle validator_confirmation_dict updates
     def add_validator_confirmation(self, prediction_id: str, validator_hotkey: str):

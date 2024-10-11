@@ -210,6 +210,7 @@ class MinerDataMixin:
                 
                 bt.logging.info("Updating miner stats")
                 self.scoring_system.scoring_data.update_miner_stats(self.scoring_system.current_day)
+                self.scoring_system.entropy_system.save_state("entropy_system_state.json")
 
                 bt.logging.info(f"Sending confirmation synapse to miner {miner_uid}")
                 self.send_confirmation_synapse(int(miner_uid), return_dict)

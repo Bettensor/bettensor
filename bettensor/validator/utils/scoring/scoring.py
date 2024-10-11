@@ -15,7 +15,7 @@ Outputs:
 import json
 import numpy as np
 import bittensor as bt
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict
 
 from bettensor.validator.utils.database.database_manager import DatabaseManager
@@ -135,30 +135,32 @@ class ScoringSystem:
         self.incentives = []
 
         self.current_day = 0
-        self.current_date = datetime.now(timezone.utc)  # Initialize current_date
-        self.last_update_date = None
-
-
+        self.current_date = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)  # Initialize to start of current UTC day
+        self.last_update_date = None  # Will store the last day processed as a date object (no time)
 
         # Handle potential downtime
-        self.advance_day(self.current_date)
+        self.advance_day(self.current_date.date())  # Pass only the date part
 
 
         
         # Try to load state from database
         self.init = self.load_state()
 
-    def advance_day(self, current_date):
+    def advance_day(self, current_date: date):
+        bt.logging.debug(f"Attempting to advance day with current_date: {current_date}, last_update_date: {self.last_update_date}")
         if self.last_update_date is None:
             self.last_update_date = current_date
+            bt.logging.info(f"Set last_update_date to {self.last_update_date} without advancing day.")
             return
 
         days_passed = (current_date - self.last_update_date).days
+        bt.logging.debug(f"Days passed since last update: {days_passed}")
+
         if days_passed > 0:
             old_day = self.current_day
             self.current_day = (self.current_day + days_passed) % self.max_days
             self.last_update_date = current_date
-            self.current_date = current_date + timedelta(days=days_passed)
+            self.current_date = datetime.combine(current_date + timedelta(days=days_passed), datetime.min.time(), tzinfo=timezone.utc)
             bt.logging.info(
                 f"Advanced {days_passed} day(s). New current_day index: {self.current_day}"
             )
@@ -172,6 +174,8 @@ class ScoringSystem:
 
             if days_passed > 1:
                 self.handle_downtime(days_passed)
+        else:
+            bt.logging.info("No new day to advance. current_day remains unchanged.")
 
     def handle_downtime(self, days_passed):
         bt.logging.warning(
@@ -960,8 +964,9 @@ class ScoringSystem:
         bt.logging.info(f"Assigned {len(self.invalid_uids)} invalid UIDs to tier 1.")
         
 
-        current_date = self._ensure_datetime(date)
-        self.advance_day(current_date)
+        current_date = self._ensure_date(date)
+        bt.logging.debug(f"Processing scoring_run for date: {current_date}")
+        self.advance_day(current_date)  # Pass only the date part
 
         date_str = current_date.isoformat()
 
@@ -1129,7 +1134,7 @@ class ScoringSystem:
                 self.reference_date.isoformat(),
                 invalid_uids_json,
                 valid_uids_json,
-                self.last_update_date.isoformat() if self.last_update_date else None
+                self.last_update_date.isoformat() if self.last_update_date else None  # Store as date string
             )
 
             self.db_manager.execute_query(insert_state_query, params)
@@ -1215,18 +1220,12 @@ class ScoringSystem:
             state = self.db_manager.fetch_one(fetch_state_query, None)
             if state:
                 self.current_day = state["current_day"]
-                self.current_date = datetime.fromisoformat(state["current_date"]) if state["current_date"] else None
-                if self.current_date and self.current_date.tzinfo is None:
-                    self.current_date = self.current_date.replace(tzinfo=timezone.utc)
-                self.reference_date = datetime.fromisoformat(state["reference_date"])
-                if self.reference_date.tzinfo is None:
-                    self.reference_date = self.reference_date.replace(tzinfo=timezone.utc)
+                self.current_date = datetime.fromisoformat(state["current_date"]).replace(tzinfo=timezone.utc) if state["current_date"] else None
+                self.reference_date = datetime.fromisoformat(state["reference_date"]).replace(tzinfo=timezone.utc) if state["reference_date"] else None
                 self.invalid_uids = set(json.loads(state["invalid_uids"]))
                 self.valid_uids = set(json.loads(state["valid_uids"]))
-                self.last_update_date = datetime.fromisoformat(state["last_update_date"]) if state["last_update_date"] else None
-                if self.last_update_date and self.last_update_date.tzinfo is None:
-                    self.last_update_date = self.last_update_date.replace(tzinfo=timezone.utc)
-                
+                self.last_update_date = datetime.fromisoformat(state["last_update_date"]).date() if state["last_update_date"] else None  # Retrieve as date object
+            
             else:
                 bt.logging.warning("No state found in database. Starting with default state.")
                 return True #initial state
@@ -1285,6 +1284,16 @@ class ScoringSystem:
         elif isinstance(date, datetime) and date.tzinfo is None:
             return date.replace(tzinfo=timezone.utc)
         return date
+
+    def _ensure_date(self, date_input):
+        if isinstance(date_input, str):
+            return datetime.fromisoformat(date_input).date()
+        elif isinstance(date_input, datetime):
+            return date_input.date()
+        elif isinstance(date_input, date):
+            return date_input
+        else:
+            raise TypeError("Date input must be a string, datetime, or date object.")
 
     def reset_miner(self, miner_uid: int):
         """

@@ -107,6 +107,7 @@ class PredictionsHandler:
 
         self.db_manager.execute_query(query, params)
         #bt.logging.info(f"Prediction added with ID: {prediction_id}")
+        
         return {"status": "success", "prediction_id": prediction_id}
 
     def update_prediction_sent(self, prediction_id: str, validator_confirmation_dict,validator_hotkey:str):

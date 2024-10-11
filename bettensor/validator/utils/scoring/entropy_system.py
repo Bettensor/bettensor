@@ -352,10 +352,10 @@ class EntropySystem:
                     str(outcome): {
                         "predictions": [
                             {
-                                "miner_id": pred["miner_id"],
+                                "miner_uid": pred["miner_uid"],
                                 "odds": pred["odds"],
                                 "wager": pred["wager"],
-                                "prediction_time": pred["prediction_time"].isoformat(),
+                                "prediction_date": pred["prediction_date"],
                                 "entropy_contribution": pred["entropy_contribution"],
                             }
                             for pred in pool["predictions"]
@@ -412,15 +412,11 @@ class EntropySystem:
                     self.game_pools[int(game_id)][int(outcome)] = {
                         "predictions": [
                             {
-                                "miner_id": pred["miner_id"],
+                                "miner_uid": pred["miner_uid"],
                                 "odds": pred["odds"],
                                 "wager": pred["wager"],
-                                "prediction_time": datetime.fromisoformat(
-                                    pred["prediction_time"]
-                                ),
-                                "entropy_contribution": float(
-                                    pred["entropy_contribution"]
-                                ),
+                                "prediction_date": pred["prediction_date"],
+                                "entropy_contribution": pred["entropy_contribution"],
                             }
                             for pred in pool["predictions"]
                         ],

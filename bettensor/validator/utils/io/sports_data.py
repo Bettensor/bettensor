@@ -118,6 +118,7 @@ class SportsData:
                 external_ids.append(external_id)
                 outcomes = 3 if can_tie else 2
                 self.entropy_system.add_new_game(external_id, outcomes, [team_a_odds, team_b_odds, tie_odds])
+                self.entropy_system.save_state("entropy_system_state.json")
 
             self.db_manager.commit_transaction()
             bt.logging.info(f"Inserted or updated {len(games)} games in the database")
