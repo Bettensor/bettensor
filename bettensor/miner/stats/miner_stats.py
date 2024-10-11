@@ -170,16 +170,28 @@ class MinerStatsHandler:
         with self.lock:
             miner_uid = self.state_manager.miner_uid
             if miner_uid is None:
+                bt.logging.warning("Miner UID is None. Exiting update_stats_from_predictions.")
                 return
 
-            # Query to get total number of predictions
+            # Define Queries
             total_predictions_query = """
             SELECT COUNT(*) AS total_predictions
             FROM predictions
             WHERE miner_uid = %s
             """
 
-            # Query to get wagers and earnings from finished predictions
+            lifetime_wager_query = """
+            SELECT SUM(p.wager) AS lifetime_wager
+            FROM predictions p
+            WHERE p.miner_uid = %s
+            """
+
+            last_prediction_date_query = """
+            SELECT MAX(p.prediction_date) AS last_prediction_date
+            FROM predictions p
+            WHERE p.miner_uid = %s
+            """
+
             finished_predictions_query = """
             SELECT 
                 SUM(p.wager) AS total_wager,
@@ -187,73 +199,97 @@ class MinerStatsHandler:
                     CASE 
                         WHEN p.outcome = 'Wager Won' THEN
                             CASE 
-                                WHEN p.predicted_outcome = g.team_a THEN p.wager * p.team_a_odds
-                                WHEN p.predicted_outcome = g.team_b THEN p.wager * p.team_b_odds
-                                WHEN p.predicted_outcome = 'Tie' THEN p.wager * p.tie_odds
+                                WHEN p.predicted_outcome = g.team_a THEN p.wager * g.team_a_odds
+                                WHEN p.predicted_outcome = g.team_b THEN p.wager * g.team_b_odds
+                                WHEN p.predicted_outcome = 'Tie' THEN p.wager * g.tie_odds
                                 ELSE 0
                             END
                         ELSE 0
                     END
-                ) AS total_earnings,
-                MAX(p.prediction_date) AS last_prediction_date
+                ) AS total_earnings
             FROM predictions p
             JOIN games g ON p.game_id = g.game_id
             WHERE p.miner_uid = %s AND p.outcome IN ('Wager Won', 'Wager Lost')
             """
 
-            # Query to get daily wager (assuming daily_wager is based on finished predictions)
             daily_wager_query = """
             SELECT SUM(p.wager) AS daily_wager
             FROM predictions p
-            WHERE p.miner_uid = %s AND p.outcome IN ('Wager Won', 'Wager Lost') AND p.prediction_date >= %s
+            WHERE p.miner_uid = %s AND p.prediction_date >= %s
             """
 
+            # Calculate the start of today in UTC
             today = datetime.now(timezone.utc).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
 
-            conn, cur = self.db_manager.connection_pool.getconn(), None
             try:
+                conn = self.db_manager.connection_pool.getconn()
                 cur = conn.cursor(cursor_factory=RealDictCursor)
 
-                # Execute total predictions query
+                # 1. Total Predictions (All)
                 cur.execute(total_predictions_query, (miner_uid,))
                 total_result = cur.fetchone()
-                total_predictions = total_result['total_predictions'] if total_result else 0
+                total_predictions = total_result['total_predictions'] if total_result and total_result['total_predictions'] else 0
+                bt.logging.debug(f"Total predictions: {total_predictions}")
 
-                # Execute finished predictions query
+                # 2. Lifetime Wager (All Predictions)
+                cur.execute(lifetime_wager_query, (miner_uid,))
+                lifetime_wager_result = cur.fetchone()
+                lifetime_wager = lifetime_wager_result['lifetime_wager'] if lifetime_wager_result and lifetime_wager_result['lifetime_wager'] else 0.0
+                bt.logging.debug(f"Lifetime wager: {lifetime_wager}")
+
+                # 3. Last Prediction Date (All Predictions)
+                cur.execute(last_prediction_date_query, (miner_uid,))
+                last_prediction_date_result = cur.fetchone()
+                last_prediction_date = last_prediction_date_result['last_prediction_date'] if last_prediction_date_result and last_prediction_date_result['last_prediction_date'] else None
+                bt.logging.debug(f"Last prediction date: {last_prediction_date}")
+
+                # 4. Finished Predictions (Wager and Earnings)
                 cur.execute(finished_predictions_query, (miner_uid,))
                 finished_result = cur.fetchone()
-                total_wager = finished_result['total_wager'] if finished_result['total_wager'] else 0.0
-                total_earnings = finished_result['total_earnings'] if finished_result['total_earnings'] else 0.0
-                last_prediction_date = finished_result['last_prediction_date']
+                total_wager = finished_result['total_wager'] if finished_result and finished_result['total_wager'] else 0.0
+                total_earnings = finished_result['total_earnings'] if finished_result and finished_result['total_earnings'] else 0.0
+                bt.logging.debug(f"Total wager from finished predictions: {total_wager}")
+                bt.logging.debug(f"Total earnings from finished predictions: {total_earnings}")
 
-                # Execute daily wager query
+                # 5. Daily Wager (Today's Predictions)
                 cur.execute(daily_wager_query, (miner_uid, today.isoformat()))
                 daily_wager_result = cur.fetchone()
-                daily_wager = daily_wager_result['daily_wager'] if daily_wager_result['daily_wager'] else 0.0
+                daily_wager = daily_wager_result['daily_wager'] if daily_wager_result and daily_wager_result['daily_wager'] else 0.0
+                bt.logging.debug(f"Daily wager: {daily_wager}")
 
-                # Calculate current cash
+                # 6. Calculate Current Cash
                 current_cash = self.state_manager.DAILY_CASH - daily_wager
+                bt.logging.debug(f"Current cash: {current_cash}")
 
+                # 7. Calculate Wins and Losses from Finished Predictions
+                miner_lifetime_wins = self._count_wins(miner_uid, cur)
+                miner_lifetime_losses = self._count_losses(miner_uid, cur)
+                bt.logging.debug(f"Lifetime wins: {miner_lifetime_wins}, Lifetime losses: {miner_lifetime_losses}")
+
+                # 8. Update Stats
                 self.stats.update(
                     {
                         "miner_lifetime_predictions": total_predictions,
-                        "miner_lifetime_wins": self._count_wins(miner_uid, cur),
-                        "miner_lifetime_losses": self._count_losses(miner_uid, cur),
-                        "miner_lifetime_wager": total_wager,
+                        "miner_lifetime_wins": miner_lifetime_wins,
+                        "miner_lifetime_losses": miner_lifetime_losses,
+                        "miner_lifetime_wager": lifetime_wager,  # Updated to sum all wagers
                         "miner_lifetime_earnings": total_earnings,
-                        "miner_lifetime_roi": self.calculate_roi(total_earnings, total_wager),  # Updated calculation
-                        "miner_last_prediction_date": last_prediction_date
-                        if last_prediction_date
-                        else None,
+                        "miner_lifetime_roi": self.calculate_roi(total_earnings, lifetime_wager),  # ROI based on lifetime wager
+                        "miner_last_prediction_date": last_prediction_date,
                         "miner_cash": current_cash,
-                        # Optionally update new fields if applicable
                     }
                 )
+
+                # 9. Update Win/Loss Ratio
                 self.update_win_loss_ratio()
+
+                # 10. Persist Updated Stats
                 self.state_manager.update_state(self.stats)
                 self.save_state()
+
+                bt.logging.info("Successfully updated miner stats from predictions.")
 
             except Exception as e:
                 bt.logging.error(f"Error updating stats from predictions: {str(e)}")
@@ -428,6 +464,7 @@ class MinerStateManager:
                 for key, value in new_fields_defaults.items():
                     if key not in result:
                         result[key] = value
+                bt.logging.info(f"Loaded miner state: {result}")
             return result if result else {}
         finally:
             if cur:

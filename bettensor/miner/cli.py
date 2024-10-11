@@ -285,7 +285,7 @@ class Application:
                 self.db_manager, self.miner_hotkey, self.miner_uid
             )
             self.stats_handler = MinerStatsHandler(self.state_manager)
-            self.state_manager.load_state()
+            
         else:
             self.state_manager = None
             self.stats_handler = None
