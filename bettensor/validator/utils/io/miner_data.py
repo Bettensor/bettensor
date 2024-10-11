@@ -32,11 +32,13 @@ class MinerDataMixin:
             current_time = datetime.now(timezone.utc).isoformat()
             bt.logging.trace(f"insert_predictions called with {len(predictions)} predictions")
 
+            return_dict = {}
+
             for miner_uid, prediction_dict in predictions.items():
                 bt.logging.trace(f"insert_predictions processing uid: {miner_uid}, prediction_dict size: {len(prediction_dict)}")
 
                 for prediction_id, res in prediction_dict.items():
-                    return_dict = {}
+                    
 
                     if int(miner_uid) not in processed_uids:
                         bt.logging.trace(f"uid {miner_uid} not in processed_uids, skipping")
@@ -74,6 +76,7 @@ class MinerDataMixin:
                             f"Prediction {prediction_id} already exists, skipping."
                         )
                         return_dict[prediction_id] = (True, "Prediction already exists for this validator") # we return true because it already exists for this validator, so we want to make sure it's confirmed on the miner
+                        #bt.logging.info(f"Prediction {prediction_id} added to return_dict: {return_dict}")
                         continue
 
                     # Check if the game_id exists in the game_data table
@@ -211,7 +214,7 @@ class MinerDataMixin:
                 bt.logging.info("Updating miner stats")
                 self.scoring_system.scoring_data.update_miner_stats(self.scoring_system.current_day)
                 self.scoring_system.entropy_system.save_state("entropy_system_state.json")
-
+                bt.logging.debug(f"Return dict: {return_dict}")
                 bt.logging.info(f"Sending confirmation synapse to miner {miner_uid}")
                 self.send_confirmation_synapse(int(miner_uid), return_dict)
                 
@@ -224,7 +227,7 @@ class MinerDataMixin:
         # game_data = self.prepare_game_data_for_entropy(predictions)
         # self.entropy_system.update_ebdr_scores(game_data)
 
-    def send_confirmation_synapse(self,miner_uid, predictions):
+    def send_confirmation_synapse(self, miner_uid, predictions):
         """
         Sends a confirmation synapse to the miner
 
@@ -236,6 +239,8 @@ class MinerDataMixin:
             str(pred_id): {"success": success, "message": message}
             for pred_id, (success, message) in predictions.items()
         }
+
+        bt.logging.info(f"Full confirmation_dict before adding miner stats: {confirmation_dict}")
 
         #get miner stats for uid
         miner_stats = self.db_manager.fetch_one("SELECT * FROM miner_stats WHERE miner_uid = ?", (miner_uid,))
@@ -249,7 +254,7 @@ class MinerDataMixin:
                     miner_stats[key] = 0 
             confirmation_dict['miner_stats'] = miner_stats
 
-
+        bt.logging.info(f"confirmation_dict after adding miner stats: {confirmation_dict}")
         synapse = GameData.create(
             db_path=self.db_path,
             wallet=self.wallet,

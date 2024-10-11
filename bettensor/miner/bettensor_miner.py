@@ -189,7 +189,7 @@ class BettensorMiner(BaseNeuron):
 
         # Initialize MinerConfig
         self.miner_config = MinerConfig()
-        self.validator_confirmation_dict = {}
+        self.validator_confirmation_dict = self.stats_handler.load_validator_confirmation_dict()
 
     def forward(self, synapse: GameData) -> GameData:
 

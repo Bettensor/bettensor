@@ -144,33 +144,25 @@ class PredictionsHandler:
         if is_new:
             self.db_manager.execute_query(query, (prediction_id,))
 
-    def update_prediction_confirmations(
-        self, prediction_ids: List[str], validator_hotkey: str, validator_confirmation_dict: Dict[str, Any]
-    ) -> None:
-        """
-        Updates the `validators_confirmed` count for the given prediction IDs by marking
-        the specified validator as confirmed.
-
-        Args:
-            prediction_ids (List[str]): List of prediction IDs to update.
-            validator_hotkey (str): The hotkey of the validator confirming the predictions.
-            validator_confirmation_dict (Dict[str, Any]): Dictionary tracking validators and their confirmation status.
-        """
+    def update_prediction_confirmations(self, prediction_ids: List[str], validator_hotkey: str, validator_confirmation_dict: Dict[str, Any]) -> None:
         updated_predictions = []
 
         for prediction_id in prediction_ids:
             if (prediction_id in validator_confirmation_dict and
                 validator_hotkey in validator_confirmation_dict[prediction_id]["validators"]):
-                # Check if already confirmed to avoid redundant increments
                 if not validator_confirmation_dict[prediction_id]["validators"][validator_hotkey]['confirmed']:
                     validator_confirmation_dict[prediction_id]["validators"][validator_hotkey]['confirmed'] = True
                     updated_predictions.append(prediction_id)
+                    bt.logging.debug(f"Marked prediction {prediction_id} as confirmed for validator {validator_hotkey}")
+                else:
+                    bt.logging.debug(f"Prediction {prediction_id} already confirmed for validator {validator_hotkey}")
+            else:
+                bt.logging.warning(f"Prediction ID {prediction_id} or validator {validator_hotkey} not found in confirmation dict.")
 
         if not updated_predictions:
             bt.logging.info("No new confirmations to update.")
             return
 
-        # Prepare SQL placeholders based on the number of prediction IDs to update
         placeholders = ",".join(["%s"] * len(updated_predictions))
         query = f"""
         UPDATE predictions
@@ -179,6 +171,12 @@ class PredictionsHandler:
         AND validators_confirmed < validators_sent_to
         """
         params = updated_predictions
+
+        try:
+            self.db_manager.execute_query(query, params)
+            bt.logging.debug(f"Updated validators_confirmed for prediction_ids: {updated_predictions}")
+        except Exception as e:
+            bt.logging.error(f"Error updating validators_confirmed: {e}")
 
         try:
             self.db_manager.execute_query(query, params)
