@@ -26,7 +26,7 @@ Before you begin, ensure you have the following prerequisites:
 
 
 >[!WARNING]
-> This guide is being updated to use the new interfaces. Please ignore any references to the Central Server Interface, for the time being. This functionality is still being developed and will be available in the near future.
+> The Central Server interface is currently in development, please use the Local Interface for now. We will update this guide with instructions for the new interface when it is production ready.
 
 Clone the Bettensor repository and install the required dependencies:
 
@@ -86,8 +86,6 @@ The Central Server option connects your miner to our web dashboard, allowing for
 
 >[!IMPORTANT]
 > The Central Server option provides a more streamlined experience and shows more comprehensive data than the local interface. However, it does require your miner to accept connections from our server. 
-
-
 
 
 
