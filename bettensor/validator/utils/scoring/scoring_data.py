@@ -9,9 +9,10 @@ from collections import defaultdict
 
 
 class ScoringData:
-    def __init__(self, db_manager, num_miners):
+    def __init__(self, db_manager, num_miners, validator):
         self.db_manager = db_manager
         self.num_miners = num_miners
+        self.validator = validator
         self.miner_stats = defaultdict(lambda: {
             'clv': 0.0,
             'roi': 0.0,
@@ -242,6 +243,20 @@ class ScoringData:
         try:
             self.db_manager.begin_transaction()
             bt.logging.info(f"Updating miner stats for day {current_day}...")
+
+            #get hotkey and coldkey from metagraph
+            for miner_uid in range(self.num_miners):
+                hotkey = self.validator.metagraph.hotkeys[miner_uid]
+                coldkey = self.validator.metagraph.coldkeys[miner_uid]  
+
+                update_keys_query = """
+                    UPDATE miner_stats
+                    SET
+                        miner_hotkey = ?,
+                        miner_coldkey = ?
+                    WHERE miner_uid = ?
+                """
+                self.db_manager.execute_query(update_keys_query, (hotkey, coldkey, miner_uid))
 
             # Fetch and update lifetime statistics
             update_lifetime_query = """

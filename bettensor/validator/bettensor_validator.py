@@ -276,6 +276,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             num_miners=256,
             max_days=45,
             reference_date=datetime.now(timezone.utc).date(),
+            validator=self,
         )
 
         ############## Setup Validator Components ##############

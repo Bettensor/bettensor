@@ -29,13 +29,6 @@ WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
 
-
-
-
-
-
-
-
 async def log_status(validator):
     while True:
         current_time = datetime.now(timezone.utc)
@@ -72,15 +65,17 @@ async def perform_update_task_with_timeout(validator, semaphore):
             bt.logging.error(f"Error in update task: {str(e)}")
             raise
 
-async def update_game_data_task_with_timeout(validator, current_time, semaphore):
-    async with semaphore:
-        try:
-            await asyncio.wait_for(asyncio.to_thread(update_game_data, validator, current_time), timeout=GAME_DATA_TIMEOUT)
-        except asyncio.TimeoutError:
-            bt.logging.error("Game data update task timed out")
-        except Exception as e:
-            bt.logging.error(f"Error in game data update task: {str(e)}")
-            raise
+async def update_game_data_task_with_timeout(validator, current_time, group_lock):
+    async with group_lock:
+        semaphore = asyncio.Semaphore(1)  # If additional control per task is needed
+        async with semaphore:
+            try:
+                await asyncio.wait_for(asyncio.to_thread(update_game_data, validator, current_time), timeout=GAME_DATA_TIMEOUT)
+            except asyncio.TimeoutError:
+                bt.logging.error("Game data update task timed out")
+            except Exception as e:
+                bt.logging.error(f"Error in game data update task: {str(e)}")
+                raise
 
 async def sync_metagraph_task_with_timeout(validator, semaphore):
     async with semaphore:
@@ -104,15 +99,17 @@ async def query_and_process_axons_task_with_timeout(validator, semaphore):
             bt.logging.error(f"Error in query and process axons task: {str(e)}")
             raise
 
-async def send_data_to_website_task_with_timeout(validator, semaphore):
-    async with semaphore:
-        try:
-            await asyncio.wait_for(asyncio.to_thread(send_data_to_website_server, validator), timeout=WEBSITE_TIMEOUT)
-        except asyncio.TimeoutError:
-            bt.logging.error("Send data to website task timed out")
-        except Exception as e:
-            bt.logging.error(f"Error in send data to website task: {str(e)}")
-            raise
+async def send_data_to_website_task_with_timeout(validator, group_lock):
+    async with group_lock:
+        semaphore = asyncio.Semaphore(1)  # If additional control per task is needed
+        async with semaphore:
+            try:
+                await asyncio.wait_for(asyncio.to_thread(send_data_to_website_server, validator), timeout=WEBSITE_TIMEOUT)
+            except asyncio.TimeoutError:
+                bt.logging.error("Send data to website task timed out")
+            except Exception as e:
+                bt.logging.error(f"Error in send data to website task: {str(e)}")
+                raise
 
 async def scoring_run_task_with_timeout(validator, current_time, semaphore):
     async with semaphore:
@@ -135,13 +132,9 @@ async def set_weights_task_with_timeout(validator, semaphore):
             raise
 
 async def async_operations(validator):
-    # Create semaphores for each operation
-    update_semaphore = asyncio.Semaphore(1)
-    game_data_semaphore = asyncio.Semaphore(1)
-    query_semaphore = asyncio.Semaphore(1)
-    website_semaphore = asyncio.Semaphore(1)
-    scoring_semaphore = asyncio.Semaphore(1)
-    weights_semaphore = asyncio.Semaphore(1)
+    # Define shared locks for task groups
+    group1_lock = asyncio.Lock()  # For update_game_data & send_data_to_website
+    group2_lock = asyncio.Lock()  # For set_weights, query_and_process_axons, sync_metagraph
 
     # Create a task for periodic status logging
     status_log_task = asyncio.create_task(log_status(validator))
@@ -153,28 +146,27 @@ async def async_operations(validator):
             bt.logging.info(f"Current block: {current_block}")
 
             # Perform update (if needed)
-            if not update_semaphore.locked():
-                asyncio.create_task(perform_update_task_with_timeout(validator, update_semaphore))
+            asyncio.create_task(perform_update_task_with_timeout(validator, group2_lock))
 
             # Update game data
-            if (current_block - validator.last_updated_block) > validator.update_game_data_interval and not game_data_semaphore.locked():
-                asyncio.create_task(update_game_data_task_with_timeout(validator, current_time, game_data_semaphore))
+            if (current_block - validator.last_updated_block) > validator.update_game_data_interval:
+                asyncio.create_task(update_game_data_task_with_timeout(validator, current_time, group1_lock))
 
             # Query and process axons
-            if (current_block - validator.last_queried_block) > validator.query_axons_interval and not query_semaphore.locked():
-                asyncio.create_task(query_and_process_axons_task_with_timeout(validator, query_semaphore))
+            if (current_block - validator.last_queried_block) > validator.query_axons_interval:
+                asyncio.create_task(query_and_process_axons_task_with_timeout(validator, group2_lock))
 
             # Send data to website
-            if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval and not website_semaphore.locked():
-                asyncio.create_task(send_data_to_website_task_with_timeout(validator, website_semaphore))
+            if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval:
+                asyncio.create_task(send_data_to_website_task_with_timeout(validator, group1_lock))
 
             # Recalculate scores
-            if (current_block - validator.last_scoring_block) > validator.scoring_interval and not scoring_semaphore.locked():
-                asyncio.create_task(scoring_run_task_with_timeout(validator, current_time, scoring_semaphore))
+            if (current_block - validator.last_scoring_block) > validator.scoring_interval:
+                asyncio.create_task(scoring_run_task_with_timeout(validator, current_time, group2_lock))
 
             # Set weights
-            if (current_block - validator.last_set_weights_block) > validator.set_weights_interval and not weights_semaphore.locked():
-                asyncio.create_task(set_weights_task_with_timeout(validator, weights_semaphore))
+            if (current_block - validator.last_set_weights_block) > validator.set_weights_interval:
+                asyncio.create_task(set_weights_task_with_timeout(validator, group2_lock))
 
             await asyncio.sleep(10)  # Control the loop iteration rate
 
@@ -183,10 +175,10 @@ async def async_operations(validator):
         bt.logging.error(traceback.format_exc())
     except KeyboardInterrupt:
         bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
-        #cancel all tasks
+        # Cancel all tasks
         status_log_task.cancel()
-        await status_log_task   
-        
+        await status_log_task
+
     finally:
         # Ensure the status log task is cancelled when the main loop exits
         status_log_task.cancel()
@@ -201,7 +193,7 @@ async def main_async(validator: BettensorValidator):
         validator.update_game_data_interval = 50  # Default value, adjust as needed
 
     if not hasattr(validator, 'query_axons_interval'):
-        validator.query_axons_interval = 10  # Default value, adjust as needed
+        validator.query_axons_interval = 25  # Default value, adjust as needed
 
     if not hasattr(validator, 'send_data_to_website_interval'):
         validator.send_data_to_website_interval = 15  # Default value, adjust as needed

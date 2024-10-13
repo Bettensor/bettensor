@@ -22,7 +22,6 @@ from bettensor.validator.utils.database.database_manager import DatabaseManager
 from .scoring_data import ScoringData
 from .entropy_system import EntropySystem
 
-
 class ScoringSystem:
     def __init__(
         self,
@@ -32,6 +31,8 @@ class ScoringSystem:
         reference_date: datetime = datetime(
             year=2024, month=9, day=30, tzinfo=timezone.utc
         ),
+        validator = None,
+        
     ):
         """
         Initialize the ScoringSystem.
@@ -48,7 +49,7 @@ class ScoringSystem:
             7  # 5 tiers + 2 for invalid UIDs (0) and empty network slots (-1)
         )
         self.valid_uids = set()  # Initialize as an empty set
-
+        self.validator = validator
         self.reference_date = reference_date
         self.invalid_uids = []
         self.epsilon = 1e-8  # Small constant to prevent division by zero
@@ -130,7 +131,7 @@ class ScoringSystem:
 
 
 
-        self.scoring_data = ScoringData(db_manager, num_miners)
+        self.scoring_data = ScoringData(db_manager, num_miners, validator)
         self.entropy_system = EntropySystem(num_miners, max_days)
         self.incentives = []
 
@@ -849,15 +850,16 @@ class ScoringSystem:
     def calculate_weights(self):
         """
         Calculate weights for all miners based on their tier and composite score.
-        Weights sum to 1 and represent both the miner's share of incentives and their influence.
-
+        Ensures the weights array has a length of 256 with correct indices.
+        Weights for invalid or empty UIDs are set to 0.
+        
         Returns:
             np.ndarray: The calculated weights for all miners
         """
         bt.logging.info("Calculating weights")
-
+        
         try:
-            weights = np.zeros(self.num_miners)
+            weights = np.zeros(self.num_miners)  # Ensure length is 256
 
             tier_incentives = np.array(
                 [config["incentive"] for config in self.tier_configs[2:]]
@@ -883,7 +885,7 @@ class ScoringSystem:
             # Check if valid_miners is empty
             if not valid_miners.any():
                 bt.logging.warning("Scoring.py | calculate_weights | No valid miners found. Returning zero weights.")
-                return np.zeros(self.num_miners)
+                return weights  # Already all zeros
 
             tier_counts = np.bincount(
                 current_tiers[valid_miners], minlength=self.num_tiers
@@ -923,8 +925,12 @@ class ScoringSystem:
             if total_weight > 0:
                 weights /= total_weight
             else:
-                bt.logging.warning("Total weight is zero. Distributing weights equally among valid miners.")
+                # If all weights are zero, distribute equally among valid UIDs
                 weights[list(valid_miners)] = 1 / len(valid_miners)
+
+            # Set weights for invalid and empty UIDs to 0 explicitly
+            weights[list(self.invalid_uids)] = 0
+            weights[list(getattr(self, 'empty_uids', []))] = 0
 
             bt.logging.info(f"Weight sum: {weights.sum():.6f}")
             bt.logging.info(
@@ -965,6 +971,9 @@ class ScoringSystem:
         # Assign empty and invalid UIDs
         self.tiers[empty_mask, self.current_day] = 0
         self.tiers[invalid_mask, self.current_day] = 1
+
+        #if any valid uids are in tiers 0 or 1, set them to tier 2. if they are in tiers 2 or higher, do nothing. 
+        self.tiers[valid_mask & (self.tiers[:, self.current_day] < 2)] = 2  
 
         bt.logging.info(f"Assigned {len(self.empty_uids)} empty slots to tier 0.")
         bt.logging.info(f"Assigned {len(self.invalid_uids)} invalid UIDs to tier 1.")
@@ -1040,6 +1049,9 @@ class ScoringSystem:
         # Save state at the end of each run
         self.save_state()
         self.scoring_data.update_miner_stats(self.current_day)
+
+
+        # check that weights are length 256. 
 
         return weights
 
