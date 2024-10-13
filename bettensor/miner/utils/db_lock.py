@@ -3,6 +3,7 @@ import time
 import fcntl
 import bittensor as bt
 
+
 class DatabaseLock:
     def __init__(self, lock_file):
         self.lock_file = lock_file
@@ -12,7 +13,7 @@ class DatabaseLock:
         start_time = time.time()
         while True:
             try:
-                self.lock_fd = open(self.lock_file, 'w')
+                self.lock_fd = open(self.lock_file, "w")
                 fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return True
             except IOError:

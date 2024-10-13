@@ -185,3 +185,13 @@ bettensor_backup*
 bettensor_backup*
 cert.pem
 key.pem
+podos_soccer_model.pt 
+superprompt.md
+
+test_database.db
+scoring_system_state.json
+child_certificate.pem
+private_key.pem
+test_database.*
+validator_confirmation_dict.json
+entropy_system_state.json

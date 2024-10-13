@@ -6,6 +6,7 @@ import json
 import os
 import requests
 
+
 class ArgParserManager(argparse.ArgumentParser):
     def __init__(self, description=None):
         super().__init__(description=description)
@@ -16,33 +17,44 @@ class ArgParserManager(argparse.ArgumentParser):
         self.add_argument("--wallet_name", type=str, help="Name of the wallet to use")
         self.config = bt.config(self)
 
+
 def get_jwt():
     print("Please enter the JWT token you received from the website:")
     jwt = input().strip()
     return jwt
 
+
 def get_wallet(config):
     while True:
-        if config.wallet.name is None or config.wallet.name == 'default':
+        if config.wallet.name is None or config.wallet.name == "default":
             config.wallet.name = input("Enter the name of the wallet to use: ").strip()
 
         wallet = bt.wallet(config=config)
-        
+
         if not wallet.coldkey_file.exists_on_device():
-            print(f"Error: Coldkey file for wallet '{config.wallet.name}' does not exist.")
+            print(
+                f"Error: Coldkey file for wallet '{config.wallet.name}' does not exist."
+            )
             print("Please make sure you've created a wallet and it has a coldkey.")
-            retry = input("Would you like to try another wallet name? (y/n): ").strip().lower()
-            if retry != 'y':
+            retry = (
+                input("Would you like to try another wallet name? (y/n): ")
+                .strip()
+                .lower()
+            )
+            if retry != "y":
                 return None
             config.wallet.name = None  # Reset wallet name to prompt again
         else:
             print("NOTICE: Signing this token will require your coldkey password.")
-            print("This function uses the bittensor library and the password is not stored or recovered by this script.")
+            print(
+                "This function uses the bittensor library and the password is not stored or recovered by this script."
+            )
             return wallet
+
 
 def sign_message(wallet: bt.wallet, message: Any):
     if isinstance(message, str):
-        if message.startswith('0x'):
+        if message.startswith("0x"):
             message_bytes = bytes.fromhex(message[2:])
         else:
             message_bytes = message.encode()
@@ -51,30 +63,32 @@ def sign_message(wallet: bt.wallet, message: Any):
     elif isinstance(message, bytes):
         message_bytes = message
     else:
-        raise ValueError("Message must be ScaleBytes, bytes, hex string, or regular string")
+        raise ValueError(
+            "Message must be ScaleBytes, bytes, hex string, or regular string"
+        )
 
     signature = wallet.coldkey.sign(message_bytes)
     return signature.hex(), wallet.coldkey.ss58_address
 
+
 def store_token(jwt, signature):
-    token_data = {
-        "jwt": jwt,
-        "signature": signature,
-        "revoked": False
-    }
+    token_data = {"jwt": jwt, "signature": signature, "revoked": False}
     with open("token_store.json", "w") as f:
         json.dump(token_data, f)
 
+
 def get_ip():
     try:
-        ip = requests.get('https://api.ipify.org').text
+        ip = requests.get("https://api.ipify.org").text
     except:
         try:
             import socket
+
             ip = socket.gethostbyname(socket.gethostname())
         except:
             ip = "Unable to determine IP"
     return ip
+
 
 def main():
     parser = ArgParserManager(description="Bettensor Token Signing Utility")
@@ -95,7 +109,7 @@ def main():
             print("Signature has been stored in signature.txt")
     else:
         print("Welcome to the Bettensor Token Signing Utility")
-        
+
         jwt = get_jwt()
         wallet = get_wallet(config)
 
@@ -117,7 +131,10 @@ def main():
             print(f"Encoded JWT: 0x{jwt.encode().hex()}")
 
             print("\nToken has been signed and stored successfully.")
-            print("You can now use this signed token for authentication with the miner server.")
+            print(
+                "You can now use this signed token for authentication with the miner server."
+            )
+
 
 if __name__ == "__main__":
     main()

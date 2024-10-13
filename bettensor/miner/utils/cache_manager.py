@@ -2,6 +2,7 @@ import hashlib
 import json
 from bettensor.miner.utils.serialization import custom_serializer
 
+
 class CacheManager:
     def __init__(self):
         self.game_hashes = {}
@@ -19,7 +20,10 @@ class CacheManager:
         changed_games = {}
         for game_id, game_data in games.items():
             game_hash = self._hash_game(game_data)
-            if game_id not in self.game_hashes or self.game_hashes[game_id] != game_hash:
+            if (
+                game_id not in self.game_hashes
+                or self.game_hashes[game_id] != game_hash
+            ):
                 changed_games[game_id] = game_data
                 self.game_hashes[game_id] = game_hash
         return changed_games

@@ -1,88 +1,91 @@
-from argparse import ArgumentParser
-import bittensor as bt
-import json
-from typing import Dict, Tuple
-import sqlite3
 import os
 import sys
-import torch
-from copy import deepcopy
 import copy
-from datetime import datetime, timedelta, timezone
-from bettensor.protocol import TeamGamePrediction
-import uuid
-from pathlib import Path
-from os import path, rename
-import requests
-import time
-from dotenv import load_dotenv
-import os
-import concurrent.futures
+import json
 import math
-import numpy as np
+import time
+import traceback
+import uuid
 import torch
-from bettensor.utils.weights_functions import WeightSetter
-from bettensor.utils.api_client import APIClient
-from bettensor.utils.sports_data import SportsData
-
-# Get the current file's directory
-current_dir = os.path.dirname(os.path.abspath(__file__))
-
-# Get the parent directory
-parent_dir = os.path.dirname(current_dir)
-
-# Get the grandparent directory
-grandparent_dir = os.path.dirname(parent_dir)
-
-# Get the great grandparent directory
-great_grandparent_dir = os.path.dirname(grandparent_dir)
-
-# Add parent, grandparent, and great grandparent directories to sys.path
-sys.path.append(parent_dir)
-sys.path.append(grandparent_dir)
-sys.path.append(great_grandparent_dir)
-from base.neuron import BaseNeuron
+import numpy as np
+import requests
+import bittensor as bt
+import concurrent.futures
+from os import path, rename
+from copy import deepcopy
+from pathlib import Path
 from dotenv import load_dotenv
+from argparse import ArgumentParser
+from typing import Dict, Tuple
+from datetime import datetime, timedelta, timezone
+from bettensor.base.neuron import BaseNeuron
+from bettensor.protocol import TeamGamePrediction
+from bettensor.validator.utils.io.website_handler import WebsiteHandler
+from bettensor.validator.utils.scoring.scoring import ScoringSystem
+from .utils.scoring.entropy_system import EntropySystem
+from bettensor.validator.utils.io.sports_data import SportsData
+from bettensor.validator.utils.scoring.weights_functions import WeightSetter
+from bettensor.validator.utils.database.database_manager import DatabaseManager
+from bettensor.validator.utils.io.miner_data import MinerDataMixin
+from bettensor.validator.utils.io.bettensor_api_client import BettensorAPIClient
+from bettensor.validator.utils.io.base_api_client import BaseAPIClient
+
+DEFAULT_DB_PATH = "data/validator.db"
 
 
-class BettensorValidator(BaseNeuron):
-    default_db_path = "data/validator.db"
+class BettensorValidator(BaseNeuron, MinerDataMixin):
+    """
+    Bettensor Validator Class, Extends the BaseNeuron Class and MinerDataMixin Class
+
+    Contains top-level methods for validator operations.
+    """
 
     def __init__(self, parser: ArgumentParser):
         super().__init__(parser=parser, profile="validator")
+        MinerDataMixin.__init__(self)  # Explicitly initialize the mixin
         parser.add_argument(
             "--db",
             type=str,
-            default=self.default_db_path,
+            default=DEFAULT_DB_PATH,
             help="Path to the validator database",
         )
-
         # Check if the arguments are already defined before adding them
-        if not any(arg.dest == 'subtensor.network' for arg in parser._actions):
-            parser.add_argument('--subtensor.network', type=str, help="The subtensor network to connect to")
-        if not any(arg.dest == 'netuid' for arg in parser._actions):
-            parser.add_argument('--netuid', type=int, help="The network UID")
-        if not any(arg.dest == 'wallet.name' for arg in parser._actions):
-            parser.add_argument('--wallet.name', type=str, help="The name of the wallet to use")
-        if not any(arg.dest == 'wallet.hotkey' for arg in parser._actions):
-            parser.add_argument('--wallet.hotkey', type=str, help="The hotkey of the wallet to use")
-        if not any(arg.dest == 'logging.trace' for arg in parser._actions):
-            parser.add_argument('--logging.trace', action='store_true', help="Enable trace logging")
-        if not any(arg.dest == 'logging.debug' for arg in parser._actions):
-            parser.add_argument('--logging.debug', action='store_true', help="Enable debug logging")
-        if not any(arg.dest == 'logging.info' for arg in parser._actions):
-            parser.add_argument('--logging.info', action='store_true', help="Enable info logging")
-        if not any(arg.dest == 'subtensor.chain_endpoint' for arg in parser._actions):
-            parser.add_argument('--subtensor.chain_endpoint', type=str, help="subtensor endpoint")
-        if not any(arg.dest == 'use_bt_api' for arg in parser._actions):
-            parser.add_argument('--use_bt_api', action='store_true', help="Use the Bettensor API for fetching game data")
+        if not any(arg.dest == "subtensor.network" for arg in parser._actions):
+            parser.add_argument(
+                "--subtensor.network",
+                type=str,
+                help="The subtensor network to connect to",
+            )
+        if not any(arg.dest == "netuid" for arg in parser._actions):
+            parser.add_argument("--netuid", type=int, help="The network UID")
+        if not any(arg.dest == "wallet.name" for arg in parser._actions):
+            parser.add_argument(
+                "--wallet.name", type=str, help="The name of the wallet to use"
+            )
+        if not any(arg.dest == "wallet.hotkey" for arg in parser._actions):
+            parser.add_argument(
+                "--wallet.hotkey", type=str, help="The hotkey of the wallet to use"
+            )
+        if not any(arg.dest == "logging.trace" for arg in parser._actions):
+            parser.add_argument(
+                "--logging.trace", action="store_true", help="Enable trace logging"
+            )
+        if not any(arg.dest == "logging.debug" for arg in parser._actions):
+            parser.add_argument(
+                "--logging.debug", action="store_true", help="Enable debug logging"
+            )
+        if not any(arg.dest == "logging.info" for arg in parser._actions):
+            parser.add_argument(
+                "--logging.info", action="store_true", help="Enable info logging"
+            )
+        if not any(arg.dest == "subtensor.chain_endpoint" for arg in parser._actions):
+            parser.add_argument(
+                "--subtensor.chain_endpoint", type=str, help="subtensor endpoint"
+            )
 
         args = parser.parse_args()
 
-        self.use_bt_api = args.use_bt_api
-        self.sports_data = SportsData(db_name=self.default_db_path, use_bt_api=self.use_bt_api)
-
-        self.timeout = 12
+        self.timeout = 12 
         self.neuron_config = None
         self.wallet = None
         self.dendrite = None
@@ -90,32 +93,25 @@ class BettensorValidator(BaseNeuron):
         self.scores = None
         self.hotkeys = None
         self.subtensor = None
-        self.miner_responses = None
+        self.axon_port = getattr(args, "axon.port", None)
+        self.base_path = "./bettensor/validator/"
         self.max_targets = None
         self.target_group = None
         self.blacklisted_miner_hotkeys = None
         self.load_validator_state = None
         self.data_entry = None
         self.uid = None
+        self.miner_responses = None
+        self.db_path = DEFAULT_DB_PATH
         self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
-        self.axon_port = getattr(args, 'axon.port', None) 
-        self.db_path = "data/validator.db"
-        self.api_hosts = {
-            "baseball": "api-baseball.p.rapidapi.com",
-            "soccer": "api-football-v1.p.rapidapi.com",
-            "nfl": "api.b365api.com"
-        }
+        self.last_api_call = datetime.now(timezone.utc) - timedelta(
+            days=15
+        )  # set to 15 days ago to ensure all games are fetched
 
-        if not self.use_bt_api:
-            load_dotenv()
-        self.rapid_api_key = os.getenv("RAPID_API_KEY") if not self.use_bt_api else None
-        self.bet365_api_key = os.getenv("BET365_API_KEY") if not self.use_bt_api else None
-        self.api_client = APIClient(self.rapid_api_key, self.bet365_api_key)
-
-        self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
-        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
-        self.last_api_call = datetime.now(timezone.utc) - timedelta(minutes=30)
-        self.last_update_recent_games = datetime.now(timezone.utc) - timedelta(minutes=30)
+        self.last_queried_block = 0
+        self.last_sent_data_to_website = 0
+        self.last_scoring_block = 0
+        self.last_set_weights_block = 0
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -131,12 +127,21 @@ class BettensorValidator(BaseNeuron):
         return True
 
     def initialize_connection(self):
-        try:
-            self.subtensor = bt.subtensor(config=self.neuron_config)
-            bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
-        except Exception as e:
-            bt.logging.error(f"Failed to initialize subtensor: {str(e)}")
-            self.subtensor = None
+        max_retries = 5
+        retry_delay = 10
+        for attempt in range(max_retries):
+            try:
+                self.subtensor = bt.subtensor(config=self.neuron_config)
+                bt.logging.info(f"Connected to {self.neuron_config.subtensor.network} network")
+                return self.subtensor
+            except Exception as e:
+                bt.logging.error(f"Failed to initialize subtensor (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    bt.logging.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    bt.logging.error("Max retries reached. Unable to initialize subtensor.")
+                    self.subtensor = None
         return self.subtensor
 
     def print_chain_endpoint(self):
@@ -185,7 +190,7 @@ class BettensorValidator(BaseNeuron):
     def serve_axon(self):
         """Serve the axon to the network"""
         bt.logging.info("Serving axon...")
-        
+
         self.axon = bt.axon(wallet=self.wallet)
 
         self.axon.serve(netuid=self.neuron_config.netuid, subtensor=self.subtensor)
@@ -237,7 +242,7 @@ class BettensorValidator(BaseNeuron):
         if self.metagraph is not None:
             self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
 
-        # read command line arguments and perform actions based on them
+        #
         args = self._parse_args(parser=self.parser)
 
         if args:
@@ -255,52 +260,48 @@ class BettensorValidator(BaseNeuron):
                 self.max_targets = args.max_targets
             else:
                 self.max_targets = 256
-            self.db_path = args.db
+
         else:
             # setup initial scoring weights
             self.init_default_scores()
             self.max_targets = 256
-            self.db_path = self.default_db_path
 
+        self.db_path = args.db
         self.target_group = 0
 
-        # self.miner_stats = MinerStatsHandler(self.db_path, "validator")
-        self.create_table()
+        self.db_manager = DatabaseManager(self.db_path)
+
+        self.scoring_system = ScoringSystem(
+            self.db_manager,
+            num_miners=256,
+            max_days=45,
+            reference_date=datetime.now(timezone.utc).date(),
+        )
+
+        ############## Setup Validator Components ##############
+        self.api_client = BettensorAPIClient(self.db_manager)
+
+        self.sports_data = SportsData(
+            db_manager=self.db_manager,
+            api_client=self.api_client,
+            entropy_system=self.scoring_system.entropy_system,
+        )
 
         self.weight_setter = WeightSetter(
             metagraph=self.metagraph,
             wallet=self.wallet,
             subtensor=self.subtensor,
             neuron_config=self.neuron_config,
-            db_path=self.db_path
+            db_path=self.db_path,
         )
 
-        self.weight_setter.update_all_daily_stats()
+        self.website_handler = WebsiteHandler(self)
+
         return True
 
     def _parse_args(self, parser):
         """parses the command line arguments"""
         return parser.parse_args()
-
-    def calculate_total_wager(self, cursor, minerId, event_start_date, exclude_id=None):
-        """calculates the total wager for a given miner and event start date"""
-        query = """
-            SELECT p.wager 
-            FROM predictions p
-            JOIN game_data g ON p.teamGameId = g.id
-            WHERE p.minerId = ? AND DATE(g.eventStartDate) = DATE(?)
-        """
-        params = (minerId, event_start_date)
-
-        if exclude_id:
-            query += " AND p.teamGameId != ?"
-            params += (exclude_id,)
-
-        cursor.execute(query, params)
-        wagers = cursor.fetchall()
-        total_wager = sum([w[0] for w in wagers])
-
-        return total_wager
 
     def validator_validation(self, metagraph, wallet, subtensor) -> bool:
         """this method validates the validator has registered correctly"""
@@ -311,214 +312,6 @@ class BettensorValidator(BaseNeuron):
             return False
 
         return True
-
-    def insert_predictions(self, processed_uids, predictions):
-        """
-        Inserts new predictions into the database
-
-        Args:
-        processed_uids: list of uids that have been processed
-        predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
-        """
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        current_time = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-
-        # Get today's date in UTC
-        today_utc = datetime.now(timezone.utc).date().isoformat()
-
-        for uid, prediction_dict in predictions.items():
-            for predictionID, res in prediction_dict.items():
-                if int(uid) not in processed_uids:
-                    continue
-
-                # Get today's date in UTC
-                today_utc = datetime.now(timezone.utc).isoformat()
-
-                hotkey = self.metagraph.hotkeys[int(uid)]
-                predictionID = res.predictionID
-                teamGameID = res.teamGameID
-                minerId = hotkey
-                predictionDate = today_utc
-                predictedOutcome = res.predictedOutcome
-                wager = res.wager
-
-                if wager <= 0:
-                    bt.logging.warning(f"Skipping prediction with non-positive wager: {wager} for UID {uid}")
-                    continue
-
-                # Check if the predictionID already exists
-                cursor.execute(
-                    "SELECT COUNT(*) FROM predictions WHERE predictionID = ?",
-                    (predictionID,),
-                )
-                if cursor.fetchone()[0] > 0:
-                    bt.logging.debug(
-                        f"Prediction {predictionID} already exists, skipping."
-                    )
-                    continue
-
-                query = "SELECT sport, league, eventStartDate, teamA, teamB, teamAodds, teamBodds, tieOdds, outcome FROM game_data WHERE externalId = ?"
-                cursor.execute(query, (teamGameID,))
-                result = cursor.fetchone()
-
-                if not result:
-                    continue
-
-                (
-                    sport,
-                    league,
-                    event_start_date,
-                    teamA,
-                    teamB,
-                    teamAodds,
-                    teamBodds,
-                    tieOdds,
-                    outcome,
-                ) = result
-
-                # Convert predictedOutcome to numeric value
-                if predictedOutcome == teamA:
-                    predictedOutcome = 0
-                elif predictedOutcome == teamB:
-                    predictedOutcome = 1
-                elif predictedOutcome.lower() == "tie":
-                    predictedOutcome = 2
-                else:
-                    bt.logging.debug(
-                        f"Invalid predictedOutcome: {predictedOutcome}. Skipping this prediction."
-                    )
-                    continue
-
-                # Check if the game has already started
-                if current_time >= event_start_date:
-                    bt.logging.debug(
-                        f"Prediction not inserted: game {teamGameID} has already started."
-                    )
-                    continue
-
-                conn.execute("BEGIN TRANSACTION")
-                try:
-                    # Calculate total wager for the date, excluding the current prediction
-                    cursor.execute(
-                        """
-                        SELECT SUM(wager) FROM predictions
-                        WHERE minerID = ? AND DATE(predictionDate) = DATE(?)
-                    """,
-                        (minerId, predictionDate),
-                    )
-                    current_total_wager = cursor.fetchone()[0] or 0
-                    new_total_wager = current_total_wager + wager
-
-                    if new_total_wager > 1000:
-                        bt.logging.debug(
-                            f"Prediction for miner {minerId} would exceed daily limit. Current total: ${current_total_wager}, Attempted wager: ${wager}"
-                        )
-                        conn.execute("ROLLBACK")
-                        continue  # Skip this prediction but continue processing others
-
-                    # Insert new prediction
-                    cursor.execute(
-                        """
-                        INSERT INTO predictions (predictionID, teamGameID, minerID, predictionDate, predictedOutcome, teamA, teamB, wager, teamAodds, teamBodds, tieOdds, canOverwrite, outcome)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        (
-                            predictionID,
-                            teamGameID,
-                            minerId,
-                            predictionDate,
-                            predictedOutcome,
-                            teamA,
-                            teamB,
-                            wager,
-                            teamAodds,
-                            teamBodds,
-                            tieOdds,
-                            False,
-                            outcome, 
-                        ),
-                    )
-                    conn.execute("COMMIT")
-                except sqlite3.Error as e:
-                    conn.execute("ROLLBACK")
-                    bt.logging.error(f"An error occurred: {e}")
-
-        # Commit changes and close the connection
-        conn.commit()
-        conn.close()
-
-    def connect_db(self):
-        """connects to the sqlite database"""
-        return sqlite3.connect(self.db_path)
-
-    def create_table(self):
-        """creates the predictions table if it doesn't exist"""
-        conn = self.connect_db()
-        c = conn.cursor()
-
-        # create table if it doesn't exist
-        c.execute(
-            """
-        CREATE TABLE IF NOT EXISTS predictions (
-            predictionID TEXT,
-            teamGameID TEXT,
-            minerId TEXT,
-            predictionDate TEXT,
-            predictedOutcome TEXT,
-            teamA TEXT,
-            teamB TEXT,
-            wager REAL,
-            teamAodds REAL,
-            teamBodds REAL,
-            tieOdds REAL,
-            canOverwrite BOOLEAN,
-            outcome TEXT,
-            sent_to_site INTEGER DEFAULT 0
-        )
-        """
-        )
-
-        # commit the changes and close the connection
-        conn.commit()
-        conn.close()
-
-    def process_prediction(
-        self, processed_uids: torch.tensor, predictions: list
-    ) -> list:
-        """
-        processes responses received by miners
-
-        Args:
-            processed_uids: list of uids that have been processed
-            predictions: list of deserialized synapses
-        """
-
-        predictions_dict = {}
-
-        for synapse in predictions:
-            if len(synapse) >= 3:
-                game_data_dict = synapse[0]
-                prediction_dict: Dict[str, TeamGamePrediction] = synapse[1]
-                metadata = synapse[2]
-                error = synapse[3] if len(synapse) > 3 else None
-                error = synapse[3] if len(synapse) > 3 else None
-
-                if metadata and hasattr(metadata, "neuron_uid"):
-                    uid = metadata.neuron_uid
-
-                    # Ensure prediction_dict is not None before processing
-                    if prediction_dict is not None:
-                        predictions_dict[uid] = prediction_dict
-                    else:
-                        bt.logging.trace(f"prediction from miner {uid} is empty and will be skipped.")
-                else:
-                    bt.logging.warning("metadata is missing or does not contain neuron_uid.")
-            else:
-                bt.logging.warning("synapse data is incomplete or not in the expected format.")
-
-        self.create_table()
-        self.insert_predictions(processed_uids, predictions_dict)
 
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
@@ -538,8 +331,9 @@ class BettensorValidator(BaseNeuron):
                             f"index '{i}' has mismatching hotkey. old hotkey: '{self.hotkeys[i]}', new hotkey: '{hotkey}. resetting score to 0.0"
                         )
                         self.scores[i] = 0.0
+                        self.scoring_system.reset_miner(i)
+                        
             else:
-                # TODO: Here, instead of resetting to default scores, we should just 
                 bt.logging.info(
                     f"init default scores because of state and metagraph hotkey length mismatch. expected: {len(self.metagraph.hotkeys)} had: {len(self.hotkeys)}"
                 )
@@ -554,7 +348,7 @@ class BettensorValidator(BaseNeuron):
         used to reset the scores in case of an internal error"""
 
         bt.logging.info("initiating validator with default scores for all miners")
-        
+
         if self.metagraph is None or self.metagraph.S is None:
             bt.logging.error("Metagraph or metagraph.S is not initialized")
             self.scores = torch.zeros(1, dtype=torch.float32)
@@ -565,57 +359,27 @@ class BettensorValidator(BaseNeuron):
             elif isinstance(self.metagraph.S, torch.Tensor):
                 metagraph_S_tensor = self.metagraph.S.float()
             else:
-                bt.logging.error(f"Unexpected type for metagraph.S: {type(self.metagraph.S)}")
-                metagraph_S_tensor = torch.zeros(len(self.metagraph.hotkeys), dtype=torch.float32)
+                bt.logging.error(
+                    f"Unexpected type for metagraph.S: {type(self.metagraph.S)}"
+                )
+                metagraph_S_tensor = torch.zeros(
+                    len(self.metagraph.hotkeys), dtype=torch.float32
+                )
                 self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
-        
+
         bt.logging.info(f"validation weights have been initialized: {self.scores}")
-
-    def evaluate_miner(self, minerId):
-        """evaluates the performance of a miner
-
-        Args:
-            minerId: id of the miner to evaluate
-        """
-        # fetch data from predictions table for the specified minerId
-        cursor.execute(
-            """
-        SELECT predictions.id, predictions.teamGameId, predictions.predictedOutcome, teamGame.outcome
-        FROM predictions
-        JOIN teamGame ON predictions.teamGameId = teamGame.id
-        WHERE predictions.minerId = ?
-        """,
-            (miner_id,),
-        )
-
-        # update the predictionCorrect column based on the comparison
-        for row in cursor.fetchall():
-            prediction_id, team_game_id, predicted_outcome, actual_outcome = row
-            prediction_correct = 1 if predicted_outcome == actual_outcome else 0
-            cursor.execute(
-                """
-            UPDATE predictions
-            SET predictionCorrect = ?
-            WHERE id = ?
-            """,
-                (prediction_correct, prediction_id),
-            )
-
-        # commit the changes
-        conn.commit()
-        conn.close()
 
     def save_state(self):
         """saves the state of the validator to a file"""
-        bt.logging.info("saving validator state")
+        bt.logging.info("Saving validator state")
 
-        # Convert datetime to timestamp before saving
-        last_api_call_timestamp = self.last_api_call.timestamp()
-        last_update_recent_games_timestamp = self.last_update_recent_games.timestamp()
+        bt.logging.info(f"Last api call, save_state: {self.last_api_call}")
 
-        # Convert datetime to timestamp before saving
-        last_api_call_timestamp = self.last_api_call.timestamp()
-        last_update_recent_games_timestamp = self.last_update_recent_games.timestamp()
+        if isinstance(self.last_api_call, str):
+            self.last_api_call = datetime.fromisoformat(self.last_api_call)
+
+        bt.logging.info(f"Last api call, save_state: {self.last_api_call}")
+        timestamp = self.last_api_call.timestamp()
 
         # save the state of the validator to file
         torch.save(
@@ -625,17 +389,15 @@ class BettensorValidator(BaseNeuron):
                 "hotkeys": self.hotkeys,
                 "last_updated_block": self.last_updated_block,
                 "blacklisted_miner_hotkeys": self.blacklisted_miner_hotkeys,
-                "last_api_call": last_api_call_timestamp,
-                "last_update_recent_games": last_update_recent_games_timestamp,
-                "last_api_call": last_api_call_timestamp,
-                "last_update_recent_games": last_update_recent_games_timestamp,
+                "last_api_call": timestamp,
             },
-            self.base_path + "/state.pt",
+            self.base_path + "state/state.pt",
         )
 
         bt.logging.debug(
-            f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {last_api_call_timestamp}, last_update_recent_games: {last_update_recent_games_timestamp}"
-            f"saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, last_api_call: {last_api_call_timestamp}, last_update_recent_games: {last_update_recent_games_timestamp}"
+            f"Saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, "
+            f"last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, "
+            f"last_api_call: {timestamp}"
         )
 
     def reset_validator_state(self, state_path):
@@ -655,27 +417,36 @@ class BettensorValidator(BaseNeuron):
         self.blacklisted_miner_hotkeys = None
 
     def load_state(self):
-        """loads the state of the validator from a file"""
-        state_path = self.base_path + "/state.pt"
+        state_path = self.base_path + "state/state.pt"
         if path.exists(state_path):
             try:
-                bt.logging.info("loading validator state")
+                bt.logging.info("Loading validator state")
                 state = torch.load(state_path)
-                bt.logging.debug(f"loaded the following state from file: {state}")
+                bt.logging.debug(f"Loaded the following state from file: {state}")
                 self.step = state["step"]
                 self.scores = state["scores"]
                 self.hotkeys = state["hotkeys"]
                 self.last_updated_block = state["last_updated_block"]
                 if "blacklisted_miner_hotkeys" in state.keys():
                     self.blacklisted_miner_hotkeys = state["blacklisted_miner_hotkeys"]
-                
+
                 # Convert timestamps back to datetime
-                self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
-                self.last_update_recent_games = datetime.fromtimestamp(state.get("last_update_recent_games", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
-                
-                # Convert timestamps back to datetime
-                self.last_api_call = datetime.fromtimestamp(state.get("last_api_call", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
-                self.last_update_recent_games = datetime.fromtimestamp(state.get("last_update_recent_games", (datetime.now(timezone.utc) - timedelta(minutes=30)).timestamp()), tz=timezone.utc)
+                last_api_call = state["last_api_call"]
+                if last_api_call is None:
+                    self.last_api_call = datetime.now(timezone.utc) - timedelta(
+                        minutes=30
+                    )
+                else:
+                    try:
+                        self.last_api_call = datetime.fromtimestamp(
+                            last_api_call, tz=timezone.utc
+                        )
+
+                    except (ValueError, TypeError, OverflowError) as e:
+                        bt.logging.warning(
+                            f"Invalid last_api_call timestamp: {last_api_call}. Using current time. Error: {e}"
+                        )
+                        self.last_api_call = datetime.now(timezone.utc)
 
             except Exception as e:
                 bt.logging.error(
@@ -689,7 +460,7 @@ class BettensorValidator(BaseNeuron):
         """returns the blacklisted miners hotkeys from the local file"""
 
         # check if local blacklist exists
-        blacklist_file = f"{self.base_path}/miner_blacklist.json"
+        blacklist_file = f"{self.base_path}state/miner_blacklist.json"
         if Path(blacklist_file).is_file():
             # load the contents of the local blacklist
             bt.logging.trace(f"reading local blacklist file: {blacklist_file}")
@@ -698,7 +469,7 @@ class BettensorValidator(BaseNeuron):
                     file_content = file.read()
 
                 miner_blacklist = json.loads(file_content)
-                if validate_miner_blacklist(miner_blacklist):
+                if self.validate_miner_blacklist(miner_blacklist):
                     bt.logging.trace(f"loaded miner blacklist: {miner_blacklist}")
                     return miner_blacklist
 
@@ -716,8 +487,27 @@ class BettensorValidator(BaseNeuron):
 
         return []
 
+    def validate_miner_blacklist(self, miner_blacklist) -> bool:
+        """validates the miner blacklist. checks if the list is not empty and if all the hotkeys are in the metagraph"""
+        blacklist_file = f"{self.base_path}/miner_blacklist.json"
+        if not miner_blacklist:
+            return False
+        if not all(hotkey in self.metagraph.hotkeys for hotkey in miner_blacklist):
+            # update the blacklist with the valid hotkeys
+            valid_hotkeys = [
+                hotkey for hotkey in miner_blacklist if hotkey in self.metagraph.hotkeys
+            ]
+            self.blacklisted_miner_hotkeys = valid_hotkeys
+            # overwrite the old blacklist with the new blacklist
+            with open(blacklist_file, "w", encoding="utf-8") as file:
+                json.dump(valid_hotkeys, file)
+        return True
+
     def get_uids_to_query(self, all_axons) -> list:
         """returns the list of uids to query"""
+
+        # Define all_uids at the beginning
+        all_uids = set(range(len(self.metagraph.hotkeys)))
 
         # get uids with a positive stake
         uids_with_stake = self.metagraph.total_stake >= 0.0
@@ -737,7 +527,13 @@ class BettensorValidator(BaseNeuron):
             ],
             dtype=torch.bool,
         )
-        bt.logging.trace(f"uids with 0.0.0.0 as an ip address: {invalid_uids}")
+
+        # Append the validator's axon to invalid_uids
+        invalid_uids[self.uid] = True
+
+        bt.logging.trace(f"uids with 0.0.0.0 as an ip address or validator's axon: {invalid_uids}")
+
+       
 
         # get uids that have their hotkey blacklisted
         blacklisted_uids = []
@@ -822,227 +618,41 @@ class BettensorValidator(BaseNeuron):
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
-    def update_game_outcome(self, game_id, numeric_outcome):
-        """Updates the outcome of a game in the database"""
-        conn = self.connect_db()
-        cursor = conn.cursor()
+    async def set_weights(self, scores):
         try:
-            cursor.execute(
-                "UPDATE game_data SET outcome = ?, active = 0 WHERE externalId = ?",
-                (numeric_outcome, game_id),
-            )
-            if cursor.rowcount == 0:
-                bt.logging.trace(f"No game updated for externalId {game_id}")
-            else:
-                bt.logging.trace(f"Updated game {game_id} with outcome: {numeric_outcome}")
-            conn.commit()
-        except Exception as e:
-            bt.logging.error(f"Error updating game outcome: {e}")
-            conn.rollback()
-        finally:
-            conn.close()
-
-
-    def get_recent_games(self):
-        """retrieves recent games from the database"""
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        two_days_ago = (
-            datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(hours=48)
-        ).isoformat()
-        cursor.execute(
-            "SELECT id, teamA, teamB, externalId FROM game_data WHERE eventStartDate >= ? AND outcome = 'Unfinished'",
-            (two_days_ago,),
-        )
-        return cursor.fetchall()
-
-
-    def determine_winner(self, game_info):
-        game_id, teamA, teamB, externalId = game_info
-
-        sport = self.get_sport_from_db(externalId)
-        if not sport:
-            bt.logging.error(f"No game found with externalId {externalId}")
-            return
-
-        bt.logging.trace(f"Fetching {sport} game data for externalId: {externalId}")
-
-        if sport == "baseball":
-            game_data = self.api_client.get_baseball_game(str(externalId))
-        elif sport == "soccer":
-            game_data = self.api_client.get_soccer_game(str(externalId))
-        elif sport.lower() == "nfl":
-            game_data = self.api_client.get_nfl_result(str(externalId))
-        else:
-            bt.logging.error(f"Unsupported sport: {sport}")
-            return
-
-        if not game_data or "results" not in game_data or not game_data["results"]:
-            bt.logging.error(f"Invalid or empty game data for {externalId}")
-            return
-
-        # For NFL, we directly process from 'results'
-        if sport.lower() == "nfl":
-            game_response = game_data["results"][0]
-            status = game_response.get("time_status")
-            if status != "3":  # 3 means the game has finished
-                bt.logging.trace(f"NFL game {externalId} is not finished yet. Current status: {status}")
-                return
-        else:
-            game_response = game_data["response"][0]
-
-        # Check if the game has finished
-        if sport == "baseball":
-            status = game_response.get("status", {}).get("long")
-            if status != "Finished":
-                bt.logging.trace(f"Baseball game {externalId} is not finished yet. Current status: {status}")
-                return
-        elif sport == "soccer":
-            status = game_response.get("fixture", {}).get("status", {}).get("long")
-            if status not in ["Match Finished", "Match Finished After Extra Time", "Match Finished After Penalties"]:
-                bt.logging.trace(f"Soccer game {externalId} is not finished yet. Current status: {status}")
-                return
-
-        # Process scores and update game outcome
-        self.process_game_result(sport, game_response, externalId, teamA, teamB)
-
-    def process_game_result(self, sport, game_response, externalId, teamA, teamB):
-        # Handle NFL scores
-        if sport.lower() == "nfl":
-            # The NFL score is provided as a string like "20-27"
-            scores = game_response.get("ss", "").split("-")
-            if len(scores) == 2:
-                home_score, away_score = map(int, scores)
-            else:
-                bt.logging.error(f"Invalid score format for NFL game {externalId}")
-                return
-        # Handle baseball and soccer scores
-        elif sport == "baseball":
-            home_score = game_response.get("scores", {}).get("home", {}).get("total")
-            away_score = game_response.get("scores", {}).get("away", {}).get("total")
-        elif sport == "soccer":
-            home_score = game_response.get("goals", {}).get("home")
-            away_score = game_response.get("goals", {}).get("away")
-        else:
-            bt.logging.error(f"Unsupported sport: {sport}")
-            return
-
-        # Validate scores
-        if home_score is None or away_score is None:
-            bt.logging.error(f"Unable to extract scores for {sport} game {externalId}")
-            return
-
-        # Convert scores to integers for comparison
-        home_score = int(home_score)
-        away_score = int(away_score)
-
-        # Determine game outcome: 0 for home win, 1 for away win, 2 for tie
-        if home_score > away_score:
-            numeric_outcome = 0
-        elif away_score > home_score:
-            numeric_outcome = 1
-        else:
-            numeric_outcome = 2
-
-        bt.logging.trace(f"Game {externalId} result: {teamA} {home_score} - {away_score} {teamB}")
-
-        # Update the game outcome in the database
-        self.update_game_outcome(externalId, numeric_outcome)
-
-    def get_sport_from_db(self, externalId):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT sport FROM game_data WHERE externalId = ?", (externalId,))
-        result = cursor.fetchone()
-        conn.close()
-        return result[0] if result else None
-
-    def update_recent_games(self):
-        current_time = datetime.utcnow().replace(tzinfo=timezone.utc)
-        
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        
-        # Fetch games that have started at least 4 hours ago but don't have a final outcome yet
-        four_hours_ago = current_time - timedelta(hours=4)
-        cursor.execute("""
-            SELECT id, teamA, teamB, externalId, eventStartDate, sport
-            FROM game_data
-            WHERE eventStartDate <= ? AND outcome = 'Unfinished'
-            ORDER BY eventStartDate
-        """, (four_hours_ago.isoformat(),))
-        
-        recent_games = cursor.fetchall()
-        conn.close()
-
-        bt.logging.info(f"Checking {len(recent_games)} games for updates")
-
-        for game in recent_games:
-            game_id, teamA, teamB, externalId, start_time, sport = game
-            start_time = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
-            
-            # Additional check to ensure the game has indeed started
-            if start_time > current_time:
-                continue
-
-            bt.logging.trace(f"Checking {sport} game {externalId} for results")
-            self.determine_winner((game_id, teamA, teamB, externalId))
-
-        bt.logging.info("Recent games and predictions update process completed")
-
-    def update_prediction_outcomes(self):
-        """
-        Updates the outcomes in the predictions table based on the game_data table.
-        """
-        conn = self.connect_db()
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute("""
-                UPDATE predictions
-                SET outcome = (
-                    SELECT game_data.outcome
-                    FROM game_data
-                    WHERE game_data.externalId = predictions.teamGameID
-                        AND game_data.outcome != 'Unfinished'
-                )
-                WHERE predictions.outcome = 'Unfinished'
-                    AND EXISTS (
-                        SELECT 1
-                        FROM game_data
-                        WHERE game_data.externalId = predictions.teamGameID
-                            AND game_data.outcome != 'Unfinished'
-                    )
-            """)
-
-            updated_rows = cursor.rowcount
-            conn.commit()
-            bt.logging.info(f"Updated outcomes for {updated_rows} predictions")
-
-            # Optionally, update a 'correct' column in the predictions table
-            cursor.execute("""
-                UPDATE predictions
-                SET correct = (CASE WHEN predictedOutcome = outcome THEN 1 ELSE 0 END)
-                WHERE outcome != 'Unfinished'
-                    AND correct IS NULL
-            """)
-
-            correct_updated_rows = cursor.rowcount
-            conn.commit()
-            bt.logging.info(f"Updated correctness for {correct_updated_rows} predictions")
-
-        except Exception as e:
-            bt.logging.error(f"Error updating prediction outcomes: {e}")
-            conn.rollback()
-        finally:
-            conn.close()
-    
-    def recalculate_all_profits(self):
-        self.weight_setter.recalculate_daily_profits()
-
-    def set_weights(self):
-        try:
-            return self.weight_setter.set_weights(self.db_path)
+            return await self.weight_setter.set_weights(scores)
         except StopIteration:
-            bt.logging.warning("StopIteration encountered in set_weights. Handling gracefully.")
+            bt.logging.warning(
+                "StopIteration encountered in set_weights. Handling gracefully."
+            )
             return None
+
+    def reset_scoring_system(self):
+        """
+        Resets the scoring system across all validators.
+        """
+        try:
+            bt.logging.info("Resetting scoring system...")
+            
+            # Reset the scoring system
+            self.scoring_system.full_reset()
+            
+            # Reinitialize the scoring system
+            self.scoring_system = ScoringSystem(
+                self.db_manager,
+                num_miners=256,
+                max_days=45,
+                reference_date=datetime.now(timezone.utc).date()
+            )
+            
+            # Reset scores to zero, ensuring it's a PyTorch tensor
+            if isinstance(self.scores, np.ndarray):
+                self.scores = torch.from_numpy(self.scores).float()
+            self.scores = torch.zeros_like(self.scores)
+            
+            self.save_state()
+            bt.logging.info("Scoring system has been reset and reinitialized.")
+        except Exception as e:
+            bt.logging.error(f"Error resetting scoring system: {e}")
+            bt.logging.error(traceback.format_exc())
+            raise

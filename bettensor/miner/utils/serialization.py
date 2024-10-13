@@ -1,5 +1,6 @@
 from bettensor.protocol import TeamGame
 
+
 def custom_serializer(obj):
     if isinstance(obj, TeamGame):
         return obj.__dict__

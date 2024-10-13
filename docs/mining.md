@@ -26,7 +26,7 @@ Before you begin, ensure you have the following prerequisites:
 
 
 >[!WARNING]
-> This guide is being updated to use the new interfaces. Please ignore any references to the Central Server Interface, for the time being. This functionality is still being developed and will be available in the near future.
+> The Central Server interface is currently in development, please use the Local Interface for now. We will update this guide with instructions for the new interface when it is production ready.
 
 Clone the Bettensor repository and install the required dependencies:
 
@@ -69,7 +69,7 @@ When setting up your miner, you'll be prompted to choose between two interface o
 
 The Local Interface runs on your local machine and is not accessible from the internet.
 
-**Choose Local Interface if:**
+**Choose Local Interface (cli.py) if:**
 - You prioritize privacy and want to keep your miner isolated from external connections.
 - You're comfortable with a more basic user interface and don't need advanced features.
 - You prefer to manage your miner(s) directly on your local machine.
@@ -85,9 +85,7 @@ The Central Server option connects your miner to our web dashboard, allowing for
 - You're interested in more comprehensive data analysis and visualization tools.
 
 >[!IMPORTANT]
-> The Central Server option provides a more streamlined experience and shows more comprehensive data than the local interface. However, it does require your miner to accept connections from our server.
-
-
+> The Central Server option provides a more streamlined experience and shows more comprehensive data than the local interface. However, it does require your miner to accept connections from our server. 
 
 
 
@@ -99,45 +97,11 @@ After setup, your miner will start automatically. You can check the logs to ensu
 pm2 logs miner0
 ```
 
-Wait for some game data to be received before proceeding to submit predictions.
+Wait for some game data to be received before proceeding to submit predictions. 
 
 ## Submitting Predictions
 
-### Local Interface
-
-If you chose the Local Interface, you have two options for interacting with your miner:
-
-#### 1. Web Interface via SSH Tunnel
-
-To access the web interface securely:
-
-1. On your local machine, open a terminal and create an SSH tunnel:
-
-   ```
-   ssh -L 5000:localhost:5000 username@your_vps_ip
-   ```
-
-   Replace `username` with your VPS username and `your_vps_ip` with your VPS's IP address.
-
-2. Enter your VPS password when prompted.
-
-3. Keep this terminal window open to maintain the tunnel.
-
-4. Open a web browser on your local machine and navigate to:
-
-   ```
-   http://localhost:5000
-   ```
-
-5. You should now see the Bettensor Miner Interface.
-
-To close the tunnel when you're done, return to the terminal and press `Ctrl+C`.
-
-Troubleshooting:
-- Ensure the Flask server is running on your VPS.
-- If port 5000 is in use, try a different port, e.g., `ssh -L 8080:localhost:5000 username@your_vps_ip`, then access `http://localhost:8080`.
-
-#### 2. Command-Line Interface (CLI)
+#### 1. Command-Line Interface (CLI)
 
 For direct CLI access:
 
@@ -165,20 +129,16 @@ For direct CLI access:
 
 Choose the method that best suits your needs and comfort level. The web interface provides a more user-friendly experience, while the CLI offers direct control.
 
-<details>
-<summary>
-Coming Soon... New Interfaces
-</summary>
-### Central Server
 
-If you chose the Central Server option, log in to our [web dashboard](https://bettensor.com/dashboard) to connect your miner and submit predictions.
-</details>
+
+
+If you chose the Central Server option, log in to our [web dashboard](https://bettensor.com/dashboard) to connect your miner and submit predictions. You'll need to sign a token generated from the website to connect your miner to the central server. You can access the signing utility from `python bettensor/miner/menu.py` -> option 3 (Sign Token)
 
 
 
 ## Model Predictions
 
-**DISCLAIMER**: This is the first iteration of the model, you may be at risk of deregulation if you have the model predict using your entire wager limit of $1000, and its bets happen to turn out poor.
+**DISCLAIMER**: This is the first iteration of the model, you may be at risk of deregistration if you have the model predict using your entire wager limit of $1000, and its bets happen to turn out poor.
 
 **You need to restart your miner after toggling model predictions on/off or after changing the model parameters**
 
@@ -228,6 +188,9 @@ Then restart your miner
 
 ## Managing Multiple Miners
 
+>[!IMPORTANT]
+> You can run multiple miners on the same machine, but you will need to ensure that each miner has a unique port. The default port is 12345, so if you run a second miner, you should use port 12346, and so on. Additionally, each miner instance uses a lot of simultaneous database connections, so there are practical limits to how many miners you can run on the same machine. We recommend a maximum of 3 miners on a 6 core machine with 32GB of RAM.
+
 ### Local Interface
 
 When running multiple miners locally, you can switch between them in the CLI, there will be a slight delay as the application restarts.
@@ -266,7 +229,7 @@ If you encounter issues:
 
 **Q: Can I switch between Local Interface and Central Server after initial setup?**
 
-A: Yes, you can change your interface type by running the start_neuron.sh script again and selecting a different option.
+A: Yes, as long as you have started the miner with the flask server running, you can switch between the two interfaces freely. If the flask server is not running, you will need to restart the miner in order to switch interfaces.
 
 **Q: Is my data safe when using the Central Server option?**
 
@@ -280,54 +243,8 @@ A: The frequency of predictions can vary based on network activity and your stra
 
 A: Yes, you can run miners on different machines. Each miner will need its own wallet and hotkey.
 
-For more questions or support, please visit our [community forum](https://community.bettensor.com) or [Discord channel](https://discord.gg/bettensor).
-
-# Miner Interface
-
-## Local Server Setup with SSH Tunnel
-
-If you've chosen to run the miner interface as a local server, you'll need to set up an SSH tunnel to access it from your local machine. This ensures that only you can access the interface, providing an additional layer of security.
-
-### Setting up the SSH Tunnel
-
-1. On your local machine, open a terminal or command prompt.
-
-2. Use the following command to create an SSH tunnel:
-
-   ```
-   ssh -L 5000:localhost:5000 username@your_vps_ip
-   ```
-
-   Replace `username` with your VPS username and `your_vps_ip` with the IP address of your VPS.
-
-3. Enter your VPS password when prompted.
-
-4. Keep this terminal window open to maintain the SSH tunnel.
-
-### Accessing the Miner Interface
-
-Once the SSH tunnel is established:
-
-1. Open a web browser on your local machine.
-
-2. Navigate to `http://localhost:5000`
-
-You should now see the Bettensor Miner Interface.
-
-### Closing the SSH Tunnel
-
-When you're done using the interface:
-
-1. Return to the terminal window where you set up the SSH tunnel.
-
-2. Press `Ctrl+C` to close the SSH connection and terminate the tunnel.
-
-### Troubleshooting
-
-- If you can't connect, ensure that the Flask server is running on your VPS and that you've selected the "local" server option when starting the neuron.
-- Check that port 5000 isn't being used by another application on your local machine. If it is, you can use a different local port in the SSH command, e.g., `ssh -L 8080:localhost:5000 username@your_vps_ip`, and then access the interface at `http://localhost:8080`.
-
-Remember, while using the local server option, the interface is only accessible through this SSH tunnel, providing an extra layer of security for your miner operations.
+For more questions or support, please visit our official Bettensor Server on [Discord](https://discord.gg/qj7UzV8Cxd) 
+or on the official [Bittensor Discord, channel #30](https://discord.gg/bittensor).
 
 
 ## Troubleshooting
@@ -449,3 +366,4 @@ The DatabaseManager class handles database initialization:
 - It creates necessary tables if they don't exist.
 
 If you encounter any database-related issues during setup or operation, check the logs for specific error messages and ensure your database configuration is correct.
+

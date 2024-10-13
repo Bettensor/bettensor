@@ -7,6 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class RedisInterface:
     def __init__(self, host="localhost", port=6379):
         self.host = host
@@ -17,9 +18,7 @@ class RedisInterface:
     def connect(self):
         try:
             self.redis_client = redis.Redis(
-                host=self.host,
-                port=self.port,
-                socket_connect_timeout=5
+                host=self.host, port=self.port, socket_connect_timeout=5
             )
             self.redis_client.ping()
             self.is_connected = True
@@ -87,12 +86,8 @@ class RedisInterface:
             return None
         try:
             message_id = str(uuid.uuid4())
-            message = {
-                'id': message_id,
-                'operation': operation,
-                'params': params
-            }
-            self.publish('db_operations', json.dumps(message))
+            message = {"id": message_id, "operation": operation, "params": params}
+            self.publish("db_operations", json.dumps(message))
             result = self.wait_for_result(message_id)
             return json.loads(result) if result else None
         except Exception as e:
