@@ -326,7 +326,7 @@ class EntropySystem:
                 for outcome, pool in self.game_pools[game_id].items():
                     for prediction in pool["predictions"]:
                         # bt.logging.debug(f"Adding entropy contribution for game {game_id}, outcome {outcome}, miner {prediction['miner_uid']}")
-                        miner_uid = prediction["miner_uid"]
+                        miner_uid = int(prediction["miner_uid"])
                         ebdr_scores[miner_uid] += prediction["entropy_contribution"]
 
         # Normalize scores
