@@ -16,6 +16,13 @@ import time
 
 
 class DatabaseManager:
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(DatabaseManager, cls).__new__(cls)
+        return cls._instance
+
     def __init__(
         self,
         db_name,
@@ -23,29 +30,30 @@ class DatabaseManager:
         db_password,
         db_host="localhost",
         db_port=5432,
-        max_connections=10,
+        max_connections=25,
     ):
-        self.db_name = db_name
-        self.db_user = db_user
-        self.db_password = db_password
-        self.db_host = db_host
-        self.db_port = db_port
-        self.max_connections = max_connections
+        if not hasattr(self, 'initialized'):
+            self.db_name = db_name
+            self.db_user = db_user
+            self.db_password = db_password
+            self.db_host = db_host
+            self.db_port = db_port
+            self.max_connections = max_connections
 
-        bt.logging.debug("Initializing DatabaseManager")
-        bt.logging.debug(f"Checking root user")
-        self.is_root = self.check_root_user()
-        bt.logging.debug(f"Ensuring database exists")
-        self.ensure_database_exists()
-        bt.logging.debug(f"Waiting for database")
-        self.wait_for_database()
-        bt.logging.debug(f"Creating connection pool")
-        self.connection_pool = self.create_connection_pool()
-        bt.logging.debug(f"Creating tables")
-        self.create_tables()
-        bt.logging.debug("DatabaseManager initialization complete")
-        self.remove_default_rows()
-        self.remove_default_rows()
+            bt.logging.debug("Initializing DatabaseManager")
+            bt.logging.debug(f"Checking root user")
+            self.is_root = self.check_root_user()
+            bt.logging.debug(f"Ensuring database exists")
+            self.ensure_database_exists()
+            bt.logging.debug(f"Waiting for database")
+            self.wait_for_database()
+            bt.logging.debug(f"Creating connection pool")
+            self.connection_pool = self.create_connection_pool()
+            bt.logging.debug(f"Creating tables")
+            self.create_tables()
+            bt.logging.debug("DatabaseManager initialization complete")
+            self.remove_default_rows()
+            self.initialized = True
 
     def check_root_user(self):
         return self.db_user == "root"
@@ -91,18 +99,19 @@ class DatabaseManager:
         retry_delay = 5  # seconds
 
         for attempt in range(max_retries):
+            conn = None
             try:
-                with psycopg2.connect(
+                conn = psycopg2.connect(
                     host=self.db_host,
                     port=self.db_port,
                     user=self.db_user,
                     password=self.db_password,
                     database=self.db_name,
-                ) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT 1")
-                        bt.logging.debug("Successfully connected to the database.")
-                        return
+                )
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    bt.logging.debug("Successfully connected to the database.")
+                    return
             except psycopg2.OperationalError:
                 if attempt < max_retries - 1:
                     bt.logging.warning(
@@ -114,6 +123,9 @@ class DatabaseManager:
                         "Failed to connect to the database after multiple attempts."
                     )
                     raise
+            finally:
+                if conn:
+                    conn.close()
 
     def create_connection_pool(self):
         return SimpleConnectionPool(
@@ -216,13 +228,13 @@ class DatabaseManager:
                 minimum_wager_amount FLOAT,
                 max_wager_amount FLOAT,
                 top_n_games INTEGER,
-                nfl_model_on BOOLEAN,
-                nfl_minimum_wager_amount FLOAT,
-                nfl_max_wager_amount FLOAT,
-                nfl_top_n_games INTEGER,
-                nfl_kelly_fraction_multiplier FLOAT,
-                nfl_edge_threshold FLOAT,
-                nfl_max_bet_percentage FLOAT
+                nfl_model_on BOOLEAN DEFAULT FALSE,
+                nfl_minimum_wager_amount FLOAT DEFAULT 20.0,
+                nfl_max_wager_amount FLOAT DEFAULT 1000.0,
+                nfl_top_n_games INTEGER DEFAULT 10,
+                nfl_kelly_fraction_multiplier FLOAT DEFAULT 1.0,
+                nfl_edge_threshold FLOAT DEFAULT 0.02,
+                nfl_max_bet_percentage FLOAT DEFAULT 0.7
             );
 
             DO $$
@@ -302,7 +314,6 @@ class DatabaseManager:
         END $$;
         
         ALTER TABLE model_params
-        ADD COLUMN IF NOT EXISTS miner_uid TEXT,
         ADD COLUMN IF NOT EXISTS nfl_model_on BOOLEAN DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS nfl_minimum_wager_amount FLOAT DEFAULT 20.0,
         ADD COLUMN IF NOT EXISTS nfl_max_wager_amount FLOAT DEFAULT 1000.0,
@@ -310,10 +321,6 @@ class DatabaseManager:
         ADD COLUMN IF NOT EXISTS nfl_kelly_fraction_multiplier FLOAT DEFAULT 1.0,
         ADD COLUMN IF NOT EXISTS nfl_edge_threshold FLOAT DEFAULT 0.02,
         ADD COLUMN IF NOT EXISTS nfl_max_bet_percentage FLOAT DEFAULT 0.7;
-
-        -- Ensure miner_uid is the primary key
-        ALTER TABLE model_params DROP CONSTRAINT IF EXISTS model_params_pkey;
-        ALTER TABLE model_params ADD PRIMARY KEY (miner_uid);
         """
         self.execute_query(query)
 
@@ -327,7 +334,7 @@ class DatabaseManager:
             default_params = (
                 miner_uid,
                 False,  # soccer_model_on
-                1,      # wager_distribution_steepness (changed from False to 1)
+                1,      # wager_distribution_steepness
                 80,     # fuzzy_match_percentage
                 1.0,    # minimum_wager_amount
                 100.0,  # max_wager_amount
@@ -379,48 +386,43 @@ class DatabaseManager:
         self.execute_query(query, (*params.values(), miner_uid))
 
     def execute_query(self, query, params=None):
-        # print(f"DatabaseManager: Executing query: {query}")
-        # print(f"DatabaseManager: Query parameters: {params}")
-        try:
-            with self.connection_pool.getconn() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(query, params)
-                    if query.strip().upper().startswith("SELECT"):
-                        result = cur.fetchall()
-                    else:
-                        result = cur.rowcount
-                        conn.commit()
-                    # print(f"DatabaseManager: Query result: {result}")
-                    return result
-        except Exception as e:
-            # print(f"DatabaseManager: Error executing query: {str(e)}")
-            # print(f"DatabaseManager: Traceback: {traceback.format_exc()}")
-            raise
-        finally:
-            self.connection_pool.putconn(conn)
-
-    def execute_batch(self, query, params_list):
-        conn, cur = None, None
+        conn = None
         try:
             conn = self.connection_pool.getconn()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            bt.logging.debug(f"Executing batch query: {query}")
-            bt.logging.debug(f"Number of parameter sets: {len(params_list)}")
-
-            cur.executemany(query, params_list)
-            conn.commit()
-            bt.logging.debug("Batch query executed successfully")
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, params)
+                if query.strip().upper().startswith("SELECT"):
+                    result = cur.fetchall()
+                else:
+                    result = cur.rowcount
+                    conn.commit()
+                return result
         except Exception as e:
-            if conn:
-                conn.rollback()
-            bt.logging.error(f"Error in execute_batch: {str(e)}")
-            bt.logging.error(f"Query: {query}")
-            bt.logging.error(f"Params: {params_list}")
+            bt.logging.error(f"Error executing query: {e}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
             raise
         finally:
-            if cur:
-                cur.close()
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    def execute_batch(self, query, params_list):
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                bt.logging.debug(f"Executing batch query: {query}")
+                bt.logging.debug(f"Number of parameter sets: {len(params_list)}")
+
+                cur.executemany(query, params_list)
+                conn.commit()
+                bt.logging.debug("Batch query executed successfully")
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            bt.logging.error(f"Error in execute_batch: {e}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+            raise
+        finally:
             if conn:
                 self.connection_pool.putconn(conn)
 
@@ -513,7 +515,7 @@ class DatabaseManager:
                     )
             except Exception as e:
                 bt.logging.error(
-                    f"Error removing default or NULL rows from {table}: {str(e)}"
+                    f"Error removing default or NULL rows from {table}: {e}"
                 )
 
     def get_nfl_model_status(self, miner_uid):
