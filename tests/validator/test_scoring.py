@@ -205,6 +205,11 @@ class TestScoringSystem(unittest.TestCase):
                     prediction_date = (
                         current_date + timedelta(days=np.random.randint(-2, 0))
                     ).isoformat()
+                    # Introduce a winning probability, e.g., 50%
+                    if np.random.rand() < 0.5:
+                        payout = wager * float(predicted_odds)  # Ensure payout > wager
+                    else:
+                        payout = 0.0  # Loss
                     prediction_data.append(
                         (
                             f"pred_{miner_uid}_{day}_{pred_num}",
@@ -219,19 +224,20 @@ class TestScoringSystem(unittest.TestCase):
                             team_a_odds,
                             team_b_odds,
                             tie_odds,
-                            False,
                             None,
                             None,
+                            payout,
                             0,
                         )
                     )
                     cls.scoring_system.entropy_system.add_prediction(
-                        miner_uid,
-                        external_id,
-                        predicted_outcome,
-                        predicted_odds,
-                        wager,
-                        prediction_date,
+                        prediction_id=f"pred_{miner_uid}_{day}_{pred_num}",
+                        miner_uid=miner_uid,
+                        game_id=external_id,
+                        predicted_outcome=predicted_outcome,
+                        wager=wager,
+                        predicted_odds=predicted_odds,
+                        prediction_date=prediction_date,
                     )
         # Batch insert for predictions
         try:
@@ -240,7 +246,7 @@ class TestScoringSystem(unittest.TestCase):
                 INSERT INTO predictions (
                     prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, 
                     predicted_odds, team_a, team_b, wager, team_a_odds, team_b_odds, 
-                    tie_odds, is_model_prediction, outcome, payout, sent_to_site
+                    tie_odds, model_name, confidence_score, payout, sent_to_site
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 prediction_data,

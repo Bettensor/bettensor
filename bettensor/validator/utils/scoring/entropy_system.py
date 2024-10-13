@@ -52,8 +52,12 @@ class EntropySystem:
             return
 
         self.game_pools[game_id] = {}
-        if odds[2] == 0.0:
+
+        if len(odds) == 3 and odds[2] == 0.0:
             num_outcomes = 2
+        else:
+            num_outcomes = len(odds)
+
         for i in range(num_outcomes):
             if i < len(odds):
                 self.game_pools[game_id][i] = {
@@ -147,7 +151,12 @@ class EntropySystem:
         prediction_times = [
             p["prediction_date"] for p in predictions if p["miner_uid"] != miner_uid
         ]
+        # if prediction_times are strings, convert them to datetime objects
+        
+
         if prediction_times:
+            if isinstance(prediction_times[0], str):
+                prediction_times = [datetime.fromisoformat(t) for t in prediction_times]
             earliest_time = min(prediction_times)
             latest_time = max(prediction_times)
             time_range = (latest_time - earliest_time).total_seconds() + self.epsilon
@@ -316,9 +325,9 @@ class EntropySystem:
                 # bt.logging.debug(f"Game {game_id} exists in game_pools")
                 for outcome, pool in self.game_pools[game_id].items():
                     for prediction in pool["predictions"]:
-                        # bt.logging.debug(f"Adding entropy contribution for game {game_id}, outcome {outcome}, miner {prediction['miner_id']}")
-                        miner_id = prediction["miner_id"]
-                        ebdr_scores[miner_id] += prediction["entropy_contribution"]
+                        # bt.logging.debug(f"Adding entropy contribution for game {game_id}, outcome {outcome}, miner {prediction['miner_uid']}")
+                        miner_uid = prediction["miner_uid"]
+                        ebdr_scores[miner_uid] += prediction["entropy_contribution"]
 
         # Normalize scores
         max_score = np.max(ebdr_scores)

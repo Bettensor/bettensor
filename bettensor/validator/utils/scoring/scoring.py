@@ -891,7 +891,9 @@ class ScoringSystem:
 
             # Only consider non-empty tiers
             non_empty_tiers = tier_counts > 0
+            bt.logging.info(f"Non-empty tiers: {non_empty_tiers}")
             active_tiers = np.arange(2, self.num_tiers)[non_empty_tiers]
+            bt.logging.info(f"Active tiers: {active_tiers}")
 
             # Assign weights based on incentives and composite scores
             for idx, tier in enumerate(active_tiers):
@@ -902,18 +904,22 @@ class ScoringSystem:
 
                 # Normalize composite scores within the tier
                 composite_scores = self.composite_scores[tier_miners, self.current_day, 0]
+                min_score = composite_scores.min()
                 max_score = composite_scores.max()
-                if max_score == 0:
-                    normalized_scores = np.ones_like(composite_scores)
+
+                if max_score - min_score != 0:
+                    normalized_scores = (composite_scores - min_score) / (max_score - min_score)
                 else:
-                    normalized_scores = composite_scores / max_score
+                    normalized_scores = np.zeros_like(composite_scores)
 
                 # Apply tier incentive to the weights
                 incentive_factor = normalized_incentives[idx]
                 weights[tier_miners] = normalized_scores * incentive_factor
+                bt.logging.info(f"Weights for tier {tier}: {weights[tier_miners]}")
 
             # Normalize the weights to sum to 1
             total_weight = weights.sum()
+            bt.logging.info(f"Total weight: {total_weight}")
             if total_weight > 0:
                 weights /= total_weight
             else:
