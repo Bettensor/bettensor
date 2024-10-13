@@ -214,7 +214,7 @@ class MinerDataMixin:
                 bt.logging.info("Updating miner stats")
                 self.scoring_system.scoring_data.update_miner_stats(self.scoring_system.current_day)
                 self.scoring_system.entropy_system.save_state("entropy_system_state.json")
-                bt.logging.debug(f"Return dict: {return_dict}")
+                #bt.logging.debug(f"Return dict: {return_dict}")
                 bt.logging.info(f"Sending confirmation synapse to miner {miner_uid}")
                 self.send_confirmation_synapse(int(miner_uid), return_dict)
                 
@@ -240,7 +240,7 @@ class MinerDataMixin:
             for pred_id, (success, message) in predictions.items()
         }
 
-        bt.logging.info(f"Full confirmation_dict before adding miner stats: {confirmation_dict}")
+        #bt.logging.info(f"Full confirmation_dict before adding miner stats: {confirmation_dict}")
 
         #get miner stats for uid
         miner_stats = self.db_manager.fetch_one("SELECT * FROM miner_stats WHERE miner_uid = ?", (miner_uid,))
@@ -254,7 +254,7 @@ class MinerDataMixin:
                     miner_stats[key] = 0 
             confirmation_dict['miner_stats'] = miner_stats
 
-        bt.logging.info(f"confirmation_dict after adding miner stats: {confirmation_dict}")
+        #bt.logging.info(f"confirmation_dict after adding miner stats: {confirmation_dict}")
         synapse = GameData.create(
             db_path=self.db_path,
             wallet=self.wallet,

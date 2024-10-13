@@ -156,6 +156,9 @@ class PredictionsHandler:
                     bt.logging.debug(f"Marked prediction {prediction_id} as confirmed for validator {validator_hotkey}")
                 else:
                     bt.logging.debug(f"Prediction {prediction_id} already confirmed for validator {validator_hotkey}")
+            elif prediction_id == "miner_stats":
+                #  ignore miner_stats key, we will use this soon
+                continue
             else:
                 bt.logging.warning(f"Prediction ID {prediction_id} or validator {validator_hotkey} not found in confirmation dict.")
 
