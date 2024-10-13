@@ -199,8 +199,7 @@ class SportsData:
             bt.logging.info(f"Fetched {len(predictions)} predictions to process.")
 
             for prediction in predictions:
-                if game_id == "game_id":
-                    continue
+                
                 (
                     prediction_id,
                     miner_uid,
@@ -209,6 +208,8 @@ class SportsData:
                     predicted_odds,
                     wager,
                 ) = prediction
+                if game_id == "game_id":
+                    continue
                 actual_outcome = game_outcome_map.get(game_id)
 
                 if actual_outcome is None:
