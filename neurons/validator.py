@@ -292,7 +292,7 @@ def update_game_data(validator, current_time):
 
 def sync_metagraph_with_retry(validator):
     max_retries = 3
-    retry_delay = 5
+    retry_delay = 60
     for attempt in range(max_retries):
         try:
             validator.metagraph = validator.sync_metagraph()
