@@ -270,7 +270,15 @@ class PredictionsHandler:
 
             model_predictions = model.predict_games(home_teams, away_teams, odds)
 
+            total_predictions = len(model_predictions)
+            non_zero_predictions = sum(1 for pred in model_predictions if pred['recommendedWager'] > 0)
+            bt.logging.info(f"Total predictions: {total_predictions}, Non-zero predictions: {non_zero_predictions}")
+
+            wager_sum = sum(pred['recommendedWager'] for pred in model_predictions)
+            bt.logging.info(f"Total wager amount: {wager_sum}")
+
             for game_data, prediction in zip(matched_games, model_predictions):
+                bt.logging.debug(f"Recommended wager for game {game_data['game_id']}: {prediction['recommendedWager']}")
                 game = game_data["original_game"]
                 model_name = "NFL Model" if sport == "football" else "Soccer Model"
                 pred_dict = {
@@ -289,21 +297,12 @@ class PredictionsHandler:
                     "model_name": model_name,
                     "confidence_score": float(prediction["ConfidenceScore"]),
                     "outcome": "Pending",
-                    "payout": 0.0, #init payout to 0
+                    "payout": 0.0,
                 }
                 predictions[game_data["game_id"]] = TeamGamePrediction(**pred_dict)
-
-                #sort predictions by confidence score
                 
-
-                self.add_prediction(pred_dict)
-
-            # Set the made_daily_predictions flag to True
-            model.made_daily_predictions = True
-            bt.logging.info(f"Set made_daily_predictions to True for {sport} model")
-
-        else:
-            bt.logging.warning(f"No games found with matching team names for {sport}")
+                if pred_dict["wager"] > 0:
+                    self.add_prediction(pred_dict)
 
         return predictions
 

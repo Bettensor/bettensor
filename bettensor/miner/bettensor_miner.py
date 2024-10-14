@@ -316,8 +316,7 @@ class BettensorMiner(BaseNeuron):
 
     def start(self):
         bt.logging.info("Starting miner")
-        self.stats_handler.reset_daily_cash()
-
+        self.stats_handler.check_and_reset_daily_cash()
         # Start Redis listener in a separate thread
         self.redis_thread = threading.Thread(target=self.listen_for_redis_messages)
         self.redis_thread.daemon = True

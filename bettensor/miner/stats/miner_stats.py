@@ -323,6 +323,7 @@ class MinerStatsHandler:
     def check_and_reset_daily_cash(self):
         with self.lock:
             last_reset_str = self.stats.get("last_daily_reset")
+            bt.logging.info(f"Last daily reset: {last_reset_str}")
             if last_reset_str is None:
                 bt.logging.warning(
                     "last_daily_reset is None, initializing to current time"

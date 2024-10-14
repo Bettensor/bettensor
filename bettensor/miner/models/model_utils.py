@@ -212,7 +212,10 @@ class SoccerPredictor:
         return df[features]
 
     def recommend_wager_distribution(self, confidence_scores):
-        max_daily_wager = self.check_max_wager_vs_miner_cash(self.maximum_wager_amount)
+        current_miner_cash = self.miner_stats_handler.get_miner_cash()
+        bt.logging.info(f"Current miner cash: {current_miner_cash}")
+
+        max_daily_wager = min(self.maximum_wager_amount, current_miner_cash)
         min_wager = self.minimum_wager_amount
         top_n = self.top_n_games
 
@@ -226,17 +229,30 @@ class SoccerPredictor:
         wagers = np.maximum(wagers, min_wager)
         wagers = np.round(wagers, 2)
 
-        if np.sum(wagers) > max_daily_wager:
-            excess = np.sum(wagers) - max_daily_wager
-            while excess > 0.01:
-                wagers[wagers > min_wager] -= 0.01
-                wagers = np.round(wagers, 2)
-                excess = np.sum(wagers) - max_daily_wager
+        total_wager = np.sum(wagers)
+        if total_wager > current_miner_cash:
+            scale_factor = current_miner_cash / total_wager
+            wagers *= scale_factor
+            wagers = np.round(wagers, 2)
+
+        excess = np.sum(wagers) - current_miner_cash
+        while excess > 0.01:
+            wagers_above_min = wagers[wagers > min_wager]
+            if len(wagers_above_min) > 0:
+                reduction = min(excess / len(wagers_above_min), 0.01)
+                wagers[wagers > min_wager] -= reduction
+            else:
+                max_index = np.argmax(wagers)
+                wagers[max_index] = max(wagers[max_index] - 0.01, 0)
+            
+            wagers = np.round(wagers, 2)
+            excess = np.sum(wagers) - current_miner_cash
 
         final_wagers = [0.0] * len(confidence_scores)
         for idx, wager in zip(top_indices, wagers):
             final_wagers[idx] = wager
 
+        bt.logging.info(f"Total wager: {np.sum(final_wagers)}")
         return final_wagers
 
     def predict_games(
@@ -413,7 +429,6 @@ class NFLPredictor:
                 )
                 model = KellyFractionNet.from_pretrained(f"Nickel5HF/{model_name}")
 
-                # Save the model locally
                 os.makedirs(local_model_dir, exist_ok=True)
                 model.save_pretrained(local_model_path)
                 bt.logging.info(f"Saved model to local file: {local_model_path}")
@@ -448,14 +463,6 @@ class NFLPredictor:
                     self.nfl_edge_threshold = row.get("nfl_edge_threshold", 0.02)
                     self.nfl_max_bet_percentage = row.get("nfl_max_bet_percentage", 0.7)
                     
-                    bt.logging.info(f"NFLPredictor: Updated NFL model parameters:")
-                    bt.logging.info(f"  - NFL model on: {self.nfl_model_on}")
-                    bt.logging.info(f"  - Min wager: {self.nfl_minimum_wager_amount}")
-                    bt.logging.info(f"  - Max wager: {self.nfl_maximum_wager_amount}")
-                    bt.logging.info(f"  - Top N games: {self.nfl_top_n_games}")
-                    bt.logging.info(f"  - Kelly fraction multiplier: {self.nfl_kelly_fraction_multiplier}")
-                    bt.logging.info(f"  - Edge threshold: {self.nfl_edge_threshold}")
-                    bt.logging.info(f"  - Max bet percentage: {self.nfl_max_bet_percentage}")
                 else:
                     bt.logging.error(f"NFLPredictor: Failed to retrieve or initialize model parameters for miner ID: {self.id}")
             self.last_param_update = current_time
@@ -532,13 +539,7 @@ class NFLPredictor:
         numerical_features = historical_features + interaction_features
         features = categorical_features + numerical_features
 
-        print("DataFrame shape before preprocessing:", df[features].shape)
-        print("DataFrame columns before preprocessing:", df[features].columns)
-        print("Features to be processed:", features)
-
         processed_features = self.preprocessor.transform(df[features])
-
-        print("Processed features shape:", processed_features.shape)
 
         assert (
             processed_features.shape[1] == 118
@@ -620,19 +621,7 @@ class NFLPredictor:
         raw_features = self.prepare_raw_data(home_teams, away_teams)
         processed_features = self.preprocess_data(home_teams, away_teams)
 
-        print("Raw features shape:", raw_features.shape)
-        print("Processed features shape:", processed_features.shape)
-        print("Home teams:", home_teams)
-        print("Away teams:", away_teams)
-
-        print("Raw features:")
-        print(raw_features)
-        print("Raw features shape:", raw_features.shape)
-        print("Raw features columns:", raw_features.columns)
-
         sklearn_probs = self.calibrated_model.predict_proba(raw_features)[:, 1]
-        print("Sklearn probabilities:", sklearn_probs)
-        print("Unique sklearn probabilities:", np.unique(sklearn_probs))
 
         if scipy.sparse.issparse(processed_features):
             processed_features = processed_features.toarray()
@@ -669,15 +658,16 @@ class NFLPredictor:
 
     def recommend_wager_distribution(self, kelly_fractions, sklearn_probs, odds):
         current_miner_cash = self.miner_stats_handler.get_miner_cash()
+        bt.logging.info(f"Initial current miner cash: {current_miner_cash}")
+        
+        double_checked_cash = self.miner_stats_handler.get_miner_cash()
+        if current_miner_cash != double_checked_cash:
+            bt.logging.warning(f"Miner cash discrepancy detected. Initial: {current_miner_cash}, Double-checked: {double_checked_cash}")
+            current_miner_cash = double_checked_cash
+
         max_daily_wager = min(self.nfl_maximum_wager_amount, current_miner_cash)
         min_wager = self.nfl_minimum_wager_amount
         top_n = self.nfl_top_n_games
-
-        bt.logging.info(f"Current miner cash: {current_miner_cash}")
-        bt.logging.info(f"Max daily wager: {max_daily_wager}")
-        bt.logging.info(f"Min wager: {min_wager}")
-        bt.logging.info(f"Top N: {top_n}")
-        bt.logging.info(f"Kelly fraction multiplier: {self.nfl_kelly_fraction_multiplier}")
         
         kelly_fractions *= self.nfl_kelly_fraction_multiplier
         kelly_fractions = np.clip(kelly_fractions, 0.0, 0.5)
@@ -704,32 +694,34 @@ class NFLPredictor:
             top_sklearn_probs, top_odds, fraction=0.25
         )
         
-        # Use Kelly fractions more directly
         wagers = bet_fractions * max_daily_wager * (1 + top_kelly_fractions)
 
-        # Apply maximum bet percentage constraint
         wagers = np.minimum(wagers, max_daily_wager * self.nfl_max_bet_percentage)
 
-        # Ensure total wagers don't exceed current miner cash
         total_wager = np.sum(wagers)
-        if total_wager > current_miner_cash:
-            scale_factor = current_miner_cash / total_wager
+        max_total_wager = current_miner_cash * self.nfl_max_bet_percentage
+        if total_wager > max_total_wager:
+            scale_factor = max_total_wager / total_wager
             wagers *= scale_factor
 
-        # Apply minimum wager constraint
         wagers = np.maximum(wagers, min_wager)
         wagers = np.round(wagers, 2)
 
-        # Final check to ensure we don't exceed current miner cash
-        while np.sum(wagers) > current_miner_cash:
-            excess = np.sum(wagers) - current_miner_cash
-            wagers[wagers > min_wager] -= min(excess, 0.01)
-            wagers = np.maximum(wagers, min_wager)
+        excess = np.sum(wagers) - current_miner_cash
+        while excess > 0.01:
+            wagers_above_min = wagers[wagers > min_wager]
+            if len(wagers_above_min) > 0:
+                reduction = min(excess / len(wagers_above_min), 0.01)
+                wagers[wagers > min_wager] -= reduction
+            else:
+                max_index = np.argmax(wagers)
+                wagers[max_index] = max(wagers[max_index] - 0.01, 0)
+            
             wagers = np.round(wagers, 2)
+            excess = np.sum(wagers) - current_miner_cash
 
-        final_wagers = [0.0] * len(kelly_fractions)
-        for idx, wager in zip(top_indices, wagers):
-            final_wagers[idx] = wager
+        final_wagers = np.zeros(len(kelly_fractions))
+        final_wagers[top_indices] = wagers
 
         bt.logging.info(f"Total wager: {np.sum(final_wagers)}")
         return final_wagers

@@ -160,67 +160,67 @@ def main(miner: BettensorMiner):
                 bt.logging.info("Checking and resetting daily cash if necessary")
                 miner.stats_handler.check_and_reset_daily_cash()
 
-                bt.logging.info(
-                    f"Soccer Model on: {miner.predictions_handler.models['soccer'].soccer_model_on}"
-                )
+                initial_miner_cash = miner.stats_handler.get_miner_cash()
+                bt.logging.info(f"Initial miner cash: {initial_miner_cash}")
+                remaining_cash = initial_miner_cash
+
+                # Process soccer predictions
+                bt.logging.info(f"Soccer Model on: {miner.predictions_handler.models['soccer'].soccer_model_on}")
                 if miner.predictions_handler.models["soccer"].soccer_model_on:
                     soccer_games = miner.games_handler.get_games_by_sport("soccer")
-                    bt.logging.info(
-                        f"Retrieved {len(soccer_games)} active soccer games"
-                    )
-                    miner_cash = miner.stats_handler.get_miner_cash()
-                    bt.logging.info(f"Miner cash: {miner_cash}")
+                    bt.logging.info(f"Retrieved {len(soccer_games)} active soccer games")
 
-                    if (
-                        miner_cash
-                        < miner.predictions_handler.models[
-                            "soccer"
-                        ].minimum_wager_amount
-                    ):
-                        bt.logging.warning(
-                            f"Miner cash is insufficient for soccer model predictions. Skipping this step."
-                        )
+                    if remaining_cash < miner.predictions_handler.models["soccer"].minimum_wager_amount:
+                        bt.logging.warning("Miner cash is insufficient for soccer model predictions. Skipping this step.")
                     else:
                         if soccer_games:
-                            processed_games = (
-                                miner.predictions_handler.process_model_predictions(
-                                    soccer_games, "soccer"
-                                )
-                            )
-                            bt.logging.info(
-                                f"Processed {len(processed_games)} soccer games"
-                            )
+                            processed_games = miner.predictions_handler.process_model_predictions(soccer_games, "soccer")
+                            bt.logging.info(f"Processed {len(processed_games)} soccer games")
+                            
+                            soccer_wagers = sum(game.wager for game in processed_games.values())
+                            remaining_cash -= soccer_wagers
+                            bt.logging.info(f"Remaining cash after soccer predictions: {remaining_cash}")
                         else:
                             bt.logging.info("No soccer games to process")
 
+                # Process NFL predictions
                 nfl_predictor = miner.predictions_handler.models["football"]
                 nfl_predictor.last_param_update = 0  # Force a refresh
-                nfl_model_on = nfl_predictor.get_model_params(miner.db_manager)
-                bt.logging.info(f"NFL Model on: {nfl_model_on}")
+                nfl_predictor.get_model_params(miner.db_manager)
+                bt.logging.info(f"NFL Model on: {nfl_predictor.nfl_model_on}")
 
-                bt.logging.debug(f"NFL Model on in database: {miner.db_manager.get_nfl_model_status(miner.miner_uid)}")
-                bt.logging.debug(f"NFL Model on in memory: {nfl_predictor.nfl_model_on}")
-
-                if nfl_model_on:
-                    bt.logging.info("NFL Model on, getting games")
+                if nfl_predictor.nfl_model_on:
                     football_games = miner.games_handler.get_games_by_sport("football")
                     bt.logging.info(f"Retrieved {len(football_games)} active football games")
-                    miner_cash = miner.stats_handler.get_miner_cash()
-                    bt.logging.info(f"Miner cash: {miner_cash}")
 
-                    if len(football_games) == 0:
-                        bt.logging.info("No active football games available. Skipping NFL predictions.")
-                    elif (
-                        miner_cash < nfl_predictor.nfl_minimum_wager_amount
-                    ):
-                        bt.logging.warning("Miner cash is insufficient for NFL model predictions. Skipping this step.")
+                    if remaining_cash < nfl_predictor.nfl_minimum_wager_amount:
+                        bt.logging.warning("Remaining cash is insufficient for NFL model predictions. Skipping this step.")
                     else:
-                        processed_games = miner.predictions_handler.process_model_predictions(football_games, "football")
-                        bt.logging.info(f"Processed {len(processed_games)} football games")
+                        if football_games:
+                            processed_games = miner.predictions_handler.process_model_predictions(football_games, "football")
+                            bt.logging.info(f"Processed {len(processed_games)} football games")
+                            
+                            nfl_wagers = sum(game.wager for game in processed_games.values())
+                            remaining_cash -= nfl_wagers
+                            bt.logging.info(f"Remaining cash after NFL predictions: {remaining_cash}")
+                        else:
+                            bt.logging.info("No football games to process")
                 else:
                     bt.logging.info("NFL Model is off. Skipping NFL predictions.")
 
-                bt.logging.info(f"Waiting for Synapses, please be patient...")
+                total_wagers = initial_miner_cash - remaining_cash
+                if remaining_cash < 0 and remaining_cash > -0.01:
+                    bt.logging.warning(f"Rounding error detected. Adjusting remaining cash from {remaining_cash} to 0.")
+                    remaining_cash = 0
+                    total_wagers = initial_miner_cash
+
+                bt.logging.info(f"Total wagers placed: {total_wagers}")
+                bt.logging.info(f"Final remaining cash: {remaining_cash}")
+
+                if remaining_cash != initial_miner_cash:
+                    miner.stats_handler.state_manager.state['miner_cash'] = max(0, round(remaining_cash, 2))
+                    miner.stats_handler.state_manager.save_state()
+                    bt.logging.info(f"Updated miner cash to: {miner.stats_handler.state_manager.state['miner_cash']}")
 
             miner.step += 1
             time.sleep(1)
