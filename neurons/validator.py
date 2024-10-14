@@ -145,7 +145,7 @@ async def async_operations(validator):
             current_block = validator.subtensor.block
             bt.logging.info(f"Current block: {current_block}")
 
-            bt.logging.success(f"TEST: Current time: {current_time}")
+            #bt.logging.success(f"TEST: Current time: {current_time}")
 
             # Perform update (if needed)
             asyncio.create_task(perform_update_task_with_timeout(validator, group2_lock))
