@@ -859,84 +859,48 @@ class ScoringSystem:
         bt.logging.info("Calculating weights")
         
         try:
-            weights = np.zeros(self.num_miners)  # Ensure length is 256
+            weights = np.zeros(self.num_miners)
 
-            tier_incentives = np.array(
-                [config["incentive"] for config in self.tier_configs[2:]]
-            )  # Exclude tiers -1 and 0
+            tier_incentives = np.array([config["incentive"] for config in self.tier_configs[2:]])
             total_incentive = tier_incentives.sum()
-            normalized_incentives = (
-                tier_incentives / total_incentive
-                if total_incentive > 0
-                else np.zeros_like(tier_incentives)
-            )
+            normalized_incentives = tier_incentives / total_incentive if total_incentive > 0 else np.zeros_like(tier_incentives)
 
             current_tiers = self.tiers[:, self.current_day]
+            valid_miners = np.array(list(set(range(self.num_miners)) - self.invalid_uids))
+            valid_miners = valid_miners[(current_tiers[valid_miners] >= 2) & (current_tiers[valid_miners] < self.num_tiers)]
 
-            # Only consider miners in valid tiers (2 to num_tiers - 1) and not in invalid_uids
-            valid_miners = np.array(
-                list(set(range(self.num_miners)) - self.invalid_uids)
-            )
-            valid_miners = valid_miners[
-                (current_tiers[valid_miners] >= 2)
-                & (current_tiers[valid_miners] < self.num_tiers)
-            ]
-
-            # Check if valid_miners is empty
             if not valid_miners.any():
-                bt.logging.warning("Scoring.py | calculate_weights | No valid miners found. Returning zero weights.")
-                return weights  # Already all zeros
+                bt.logging.warning("No valid miners found. Returning zero weights.")
+                return weights
 
-            tier_counts = np.bincount(
-                current_tiers[valid_miners], minlength=self.num_tiers
-            )[2:]
+            # Get composite scores for all valid miners
+            composite_scores = self.composite_scores[valid_miners, self.current_day, 0]
 
-            # Only consider non-empty tiers
-            non_empty_tiers = tier_counts > 0
-            bt.logging.info(f"Non-empty tiers: {non_empty_tiers}")
-            active_tiers = np.arange(2, self.num_tiers)[non_empty_tiers]
-            bt.logging.info(f"Active tiers: {active_tiers}")
+            # Apply non-linear normalization (e.g., exponential)
+            exp_scores = np.exp(composite_scores)
+            normalized_scores = (exp_scores - exp_scores.min()) / (exp_scores.max() - exp_scores.min())
 
-            # Assign weights based on incentives and composite scores
-            for idx, tier in enumerate(active_tiers):
-                # Get miners in the current tier
-                tier_miners = np.where(current_tiers == tier)[0]
-                if len(tier_miners) == 0:
-                    continue
-
-                # Normalize composite scores within the tier
-                composite_scores = self.composite_scores[tier_miners, self.current_day, 0]
-                min_score = composite_scores.min()
-                max_score = composite_scores.max()
-
-                if max_score - min_score != 0:
-                    normalized_scores = (composite_scores - min_score) / (max_score - min_score)
-                else:
-                    normalized_scores = np.zeros_like(composite_scores)
-
-                # Apply tier incentive to the weights
+            # Apply tier incentives
+            for idx, tier in enumerate(range(2, self.num_tiers)):
+                tier_miners = valid_miners[current_tiers[valid_miners] == tier]
                 incentive_factor = normalized_incentives[idx]
-                weights[tier_miners] = normalized_scores * incentive_factor
-                bt.logging.info(f"Weights for tier {tier}: {weights[tier_miners]}")
+                weights[tier_miners] = normalized_scores[np.isin(valid_miners, tier_miners)] * incentive_factor * (1 + idx * 0.1)
 
-            # Normalize the weights to sum to 1
+            # Ensure weights sum to 1
             total_weight = weights.sum()
-            bt.logging.info(f"Total weight: {total_weight}")
             if total_weight > 0:
                 weights /= total_weight
             else:
-                # If all weights are zero, distribute equally among valid UIDs
-                weights[list(valid_miners)] = 1 / len(valid_miners)
+                bt.logging.warning("Total weight is zero. Distributing weights equally among valid miners.")
+                weights[list(self.valid_uids)] = 1 / len(self.valid_uids)
 
-            # Set weights for invalid and empty UIDs to 0 explicitly
-            weights[list(self.invalid_uids)] = 0
-            weights[list(getattr(self, 'empty_uids', []))] = 0
+            # Double-check and log
+            final_sum = weights.sum()
+            bt.logging.info(f"Final weight sum: {final_sum:.6f}")
+            if not np.isclose(final_sum, 1.0):
+                bt.logging.warning(f"Weights sum is not exactly 1.0: {final_sum}")
 
-            bt.logging.info(f"Weight sum: {weights.sum():.6f}")
-            bt.logging.info(
-                f"Min weight: {weights.min():.6f}, Max weight: {weights.max():.6f}"
-            )
-            # Optionally, log individual weights or statistics here
+            bt.logging.info(f"Min weight: {weights.min():.6f}, Max weight: {weights.max():.6f}")
 
             return weights
 

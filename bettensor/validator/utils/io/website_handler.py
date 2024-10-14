@@ -199,16 +199,20 @@ class WebsiteHandler:
 
         :return: API response status code
         """
-        network = self.validator.subtensor.network
-        bt.logging.info(f"Network: {network}")
-        if network == "finney":
-            self.create_keys_table()  # Ensure the keys table exists
-            predictions = self.fetch_predictions_from_db()
-            if predictions:
-                bt.logging.debug("Sending predictions to the Bettensor website.")
-                return self.send_predictions(predictions)
+        try:
+            network = self.validator.subtensor.network
+            bt.logging.info(f"Network: {network}")
+            if network == "finney":
+                self.create_keys_table()  # Ensure the keys table exists
+                predictions = self.fetch_predictions_from_db()
+                if predictions:
+                    bt.logging.debug("Sending predictions to the Bettensor website.")
+                    return self.send_predictions(predictions)
+                else:
+                    bt.logging.info("No new predictions found in the database.")
             else:
-                bt.logging.info("No new predictions found in the database.")
-        else:
-            bt.logging.info("Not on Finney network, skipping prediction sending.")
-        return None
+                bt.logging.info("Not on Finney network, skipping prediction sending.")
+            return None
+        except Exception as e:
+            bt.logging.error(f"Error fetching and sending predictions: {e}")
+            bt.logging.error(f"Error traceback: {traceback.format_exc()}")
