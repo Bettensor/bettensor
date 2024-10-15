@@ -14,7 +14,7 @@ class WebsiteHandler:
         # Initialize the parser and validator
         self.validator = validator
 
-    def create_keys_table(self):
+    def ensure_keys_table(self):
         """
         Creates keys table in db
         """
@@ -57,9 +57,9 @@ class WebsiteHandler:
 
     def fetch_predictions_from_db(self):
         """
-        Fetch predictions from the SQLite3 database.
+        Fetch predictions from the SQLite3 database and organize them by miner_uid.
 
-        :return: List of dictionaries containing prediction data
+        :return: Dictionary with miner_uid as keys and lists of prediction dictionaries as values
         """
         query = """
         SELECT prediction_id, game_id, miner_uid, prediction_date, predicted_outcome,
@@ -71,14 +71,22 @@ class WebsiteHandler:
         
         try:
             predictions = self.validator.db_manager.fetch_all(query)
-            #check if predictions is a list of dictionaries
+            # Check if predictions is a list of dictionaries
             if not isinstance(predictions, list) or not all(isinstance(p, dict) for p in predictions):
                 bt.logging.error("Invalid predictions format. Expected list of dictionaries.")
-                return []
-            return predictions
+                return {}
+            
+            organized_predictions = {}
+            for prediction in predictions:
+                miner_uid = prediction.get('miner_uid')
+                if miner_uid not in organized_predictions:
+                    organized_predictions[miner_uid] = []
+                organized_predictions[miner_uid].append(prediction)
+            
+            return organized_predictions
         except Exception as e:
             bt.logging.error(f"Error fetching predictions: {e}")
-            return []
+            return {}
 
     def update_sent_status(self, prediction_ids):
         query = "UPDATE predictions SET sent_to_site = 1 WHERE prediction_id = ?"
@@ -88,110 +96,119 @@ class WebsiteHandler:
         except Exception as e:
             bt.logging.error(f"Error updating sent_to_site status: {e}")
 
-    def send_predictions(self, predictions):
+    def send_predictions(self, predictions_by_miner_uid):
         """
-        Send predictions to the Bettensor API.
+        Send organized predictions to the Bettensor API.
 
-        :param predictions: List of dictionaries containing prediction data
+        :param predictions_by_miner_uid: Dictionary with miner_uid as keys and lists of prediction data
         :return: API response status code
         """
         url = "https://www.bettensor.com/API/Predictions/"
+        headers = {"Content-Type": "application/json"}
+        network = self.validator.subtensor.network
 
-        transformed_data = []
-
-        for prediction in predictions:
+        for miner_uid, predictions in predictions_by_miner_uid.items():
             try:
-                if not isinstance(prediction, dict):
-                    bt.logging.error(f"Invalid prediction format: Expected dict, got {type(prediction).__name__}. Skipping prediction.")
-                    continue  # Skip this prediction if it's not a dictionary
-
-                # Get hotkey from metagraph
-                hotkey = self.validator.metagraph.hotkeys[prediction.get("miner_uid")] 
-                if not hotkey:
-                    bt.logging.warning(f"Invalid miner_uid: {prediction.get('miner_uid')}. Setting coldkey to 'dummy_coldkey'.")
-                    coldkey = "dummy_coldkey"
-                else:
+                # Fetch or update coldkey once per miner_uid
+                hotkey = self.validator.metagraph.hotkeys[miner_uid]
+                if hotkey:
                     coldkey = self.get_or_update_coldkey(hotkey)
+                else:
+                    bt.logging.warning(f"Invalid miner_uid: {miner_uid}. Setting coldkey to 'dummy_coldkey'.")
+                    coldkey = "dummy_coldkey"
 
-                metadata = {
-                    "miner_uid": prediction.get("miner_uid"),
-                    "miner_hotkey": hotkey,
-                    "miner_coldkey": coldkey,
-                    "prediction_date": prediction.get("prediction_date"),
-                    "predicted_outcome": prediction.get("predicted_outcome"),
-                    "wager": prediction.get("wager"),
-                    "predicted_odds": prediction.get("predicted_odds"),
-                    "team_a_odds": prediction.get("team_a_odds"),
-                    "team_b_odds": prediction.get("team_b_odds"),
-                    "tie_odds": prediction.get("tie_odds"),
-                    "is_model_prediction": prediction.get("is_model_prediction"),
-                    "outcome": prediction.get("outcome"),
-                    "payout": prediction.get("payout"),
-                    "subtensor_network": self.validator.subtensor.network,
-                }
-
-                transformed_prediction = {
-                    "externalGameId": str(prediction.get("game_id")),
-                    "minerHotkey": hotkey,
-                    "minerColdkey": coldkey,
-                    "predictionDate": prediction.get("prediction_date"),
-                    "predictedOutcome": prediction.get("predicted_outcome"),
-                    "wager": prediction.get("wager"),
-                    "modelName": prediction.get("model_name"),
-                    "predictionOdds": prediction.get("predicted_odds"),
-                    "metaData": json.dumps(metadata),
-                }
-
-                # Ensure prediction_date is in ISO 8601 format
-                try:
-                    # First, try to parse the date assuming it's already in ISO format
-                    date = parser.isoparse(prediction.get("prediction_date", ""))
-                    
-                    # Ensure the date is timezone-aware (use UTC if no timezone)
-                    if date.tzinfo is None:
-                        date = date.replace(tzinfo=pytz.UTC)
-                    
-                    # Format to ISO 8601 with 'Z' indicating UTC
-                    transformed_prediction["predictionDate"] = date.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-                except ValueError:
-                    # If parsing fails, attempt to parse with a more flexible parser
+                transformed_data = []
+                for prediction in predictions:
                     try:
-                        date = parser.parse(prediction.get("prediction_date", ""))
-                        if date.tzinfo is None:
-                            date = date.replace(tzinfo=pytz.UTC)
-                        transformed_prediction["predictionDate"] = date.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-                    except ValueError:
-                        bt.logging.warning(f"Invalid date format for prediction_id {prediction.get('prediction_id', 'Unknown')}. Using current UTC time.")
-                        transformed_prediction["predictionDate"] = datetime.now(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                        if not isinstance(prediction, dict):
+                            bt.logging.error(f"Invalid prediction format for miner_uid {miner_uid}: Expected dict, got {type(prediction).__name__}. Skipping prediction.")
+                            continue  # Skip this prediction if it's not a dictionary
 
-                transformed_data.append(transformed_prediction)
+                        metadata = {
+                            "miner_uid": miner_uid,
+                            "miner_hotkey": hotkey,
+                            "miner_coldkey": coldkey,
+                            "prediction_date": prediction.get("prediction_date"),
+                            "predicted_outcome": prediction.get("predicted_outcome"),
+                            "wager": prediction.get("wager"),
+                            "predicted_odds": prediction.get("predicted_odds"),
+                            "team_a_odds": prediction.get("team_a_odds"),
+                            "team_b_odds": prediction.get("team_b_odds"),
+                            "tie_odds": prediction.get("tie_odds"),
+                            "is_model_prediction": prediction.get("is_model_prediction"),
+                            "outcome": prediction.get("outcome"),
+                            "payout": prediction.get("payout"),
+                            "subtensor_network": network,
+                        }
+
+                        transformed_prediction = {
+                            "externalGameId": str(prediction.get("game_id")),
+                            "minerHotKey": hotkey,
+                            "minerColdKey": coldkey,
+                            "predictionDate": self._format_prediction_date(prediction.get("prediction_date")),
+                            "predictedOutcome": prediction.get("predicted_outcome"),
+                            "wager": prediction.get("wager"),
+                            "modelName": prediction.get("model_name"),
+                            "predictionOdds": prediction.get("predicted_odds"),
+                            "metaData": json.dumps(metadata),
+                        }
+
+                        transformed_data.append(transformed_prediction)
+
+                    except Exception as e:
+                        bt.logging.error(f"Error processing prediction_id {prediction.get('prediction_id', 'Unknown')} for miner_uid {miner_uid}: {e}")
+                        bt.logging.error(f"Error traceback: {traceback.format_exc()}")
+                        continue  # Skip this prediction and continue with the next
+
+                if not transformed_data:
+                    bt.logging.info(f"No valid predictions to send for miner_uid: {miner_uid}")
+                    continue
+
+                bt.logging.info(f"Sending {len(transformed_data)} predictions to API for miner_uid: {miner_uid}")
+                bt.logging.debug(f"First prediction (for debugging): {json.dumps(transformed_data[0], indent=2)}")
+
+                response = requests.post(url, data=json.dumps(transformed_data), headers=headers)
+                if response.status_code in [200, 201]:
+                    prediction_ids = [p["prediction_id"] for p in predictions if isinstance(p, dict) and "prediction_id" in p]
+                    self.update_sent_status(prediction_ids)
+                    bt.logging.info(f"Response status code for miner_uid {miner_uid}: {response.status_code}")
+                    bt.logging.debug(f"Response content: {response.text}")
+                else:
+                    bt.logging.error(f"Failed to send predictions for miner_uid {miner_uid}. Status code: {response.status_code}, Response: {response.text}")
 
             except Exception as e:
-                bt.logging.error(f"Error processing prediction_id {prediction.get('prediction_id', 'Unknown')}: {e}")
+                bt.logging.error(f"Error sending predictions for miner_uid {miner_uid}: {e}")
                 bt.logging.error(f"Error traceback: {traceback.format_exc()}")
-                continue  # Skip this prediction and continue with the next
 
-        if not transformed_data:
-            bt.logging.info("No valid predictions to send after processing.")
-            return None
-
-        headers = {"Content-Type": "application/json"}
-
-        bt.logging.info(f"Sending {len(transformed_data)} predictions to API")
-        bt.logging.debug(f"First prediction (for debugging): {json.dumps(transformed_data[0], indent=2)}")
-
-        try:
-            response = requests.post(url, data=json.dumps(transformed_data), headers=headers)
-            if response.status_code in [200, 201]:
-                self.update_sent_status([p["prediction_id"] for p in predictions if isinstance(p, dict) and "prediction_id" in p])
-                bt.logging.info(f"Response status code: {response.status_code}")
-                bt.logging.debug(f"Response content: {response.text}")
-                return response.status_code
-            else:
-                bt.logging.error(f"Failed to send predictions. Status code: {response.status_code}, Response: {response.text}")
-        except requests.exceptions.RequestException as e:
-            bt.logging.error(f"Error sending predictions: {e}")
         return None
+
+    def _format_prediction_date(self, prediction_date):
+        """
+        Ensure prediction_date is in ISO 8601 format with UTC timezone.
+
+        :param prediction_date: Original prediction date string
+        :return: Formatted date string
+        """
+        try:
+            # First, try to parse the date assuming it's already in ISO format
+            date = parser.isoparse(prediction_date)
+            
+            # Ensure the date is timezone-aware (use UTC if no timezone)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=pytz.UTC)
+            
+            # Format to ISO 8601 with 'Z' indicating UTC
+            return date.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        except ValueError:
+            # If parsing fails, attempt to parse with a more flexible parser
+            try:
+                date = parser.parse(prediction_date)
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=pytz.UTC)
+                return date.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            except ValueError:
+                bt.logging.warning(f"Invalid date format for prediction_date '{prediction_date}'. Using current UTC time.")
+                return datetime.now(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
     def fetch_and_send_predictions(self):
         """
@@ -203,7 +220,7 @@ class WebsiteHandler:
             network = self.validator.subtensor.network
             bt.logging.info(f"Network: {network}")
             if network == "finney":
-                self.create_keys_table()  # Ensure the keys table exists
+                self.ensure_keys_table()  # Ensure the keys table exists
                 predictions = self.fetch_predictions_from_db()
                 if predictions:
                     bt.logging.debug("Sending predictions to the Bettensor website.")

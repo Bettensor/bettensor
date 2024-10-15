@@ -108,10 +108,20 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             days=15
         )  # set to 15 days ago to ensure all games are fetched
 
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.determine_max_workers())
+
         self.last_queried_block = 0
         self.last_sent_data_to_website = 0
         self.last_scoring_block = 0
         self.last_set_weights_block = 0
+
+
+    def determine_max_workers(self):
+        num_cores = os.cpu_count()
+        if num_cores <= 4:
+            return num_cores - 1
+        else:
+            return num_cores - 2
 
     def apply_config(self, bt_classes) -> bool:
         """applies the configuration to specified bittensor classes"""
@@ -619,9 +629,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
-    async def set_weights(self, scores):
+    def set_weights(self, scores):
         try:
-            return await self.weight_setter.set_weights(scores)
+            return self.weight_setter.set_weights(scores)
         except StopIteration:
             bt.logging.warning(
                 "StopIteration encountered in set_weights. Handling gracefully."

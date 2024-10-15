@@ -873,8 +873,9 @@ class ScoringSystem:
                 bt.logging.warning("No valid miners found. Returning zero weights.")
                 return weights
 
-            # Get composite scores for all valid miners
-            composite_scores = self.composite_scores[valid_miners, self.current_day, 0]
+            # Use each miner's composite score for their respective tier
+            # Extract the composite scores based on current tier for each miner
+            composite_scores = self.composite_scores[valid_miners, self.current_day, current_tiers[valid_miners]]
 
             # Apply non-linear normalization (e.g., exponential)
             exp_scores = np.exp(composite_scores)
@@ -884,7 +885,9 @@ class ScoringSystem:
             for idx, tier in enumerate(range(2, self.num_tiers)):
                 tier_miners = valid_miners[current_tiers[valid_miners] == tier]
                 incentive_factor = normalized_incentives[idx]
-                weights[tier_miners] = normalized_scores[np.isin(valid_miners, tier_miners)] * incentive_factor * (1 + idx * 0.1)
+                # Select normalized scores for miners in the current tier
+                tier_scores = normalized_scores[current_tiers[valid_miners] == tier]
+                weights[tier_miners] = tier_scores * incentive_factor * (1 + idx * 0.1)
 
             # Ensure weights sum to 1
             total_weight = weights.sum()
@@ -1016,6 +1019,9 @@ class ScoringSystem:
 
 
         # check that weights are length 256. 
+        if len(weights) != 256:
+            bt.logging.error(f"Weights are not length 256. They are length {len(weights)}")
+            return None
 
         return weights
 

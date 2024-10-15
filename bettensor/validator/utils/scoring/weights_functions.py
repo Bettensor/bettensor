@@ -1,5 +1,6 @@
 import functools
 import math
+import multiprocessing
 import traceback
 import numpy as np
 import torch
@@ -28,41 +29,55 @@ class WeightSetter:
 
     def connect_db(self):
         return sqlite3.connect(self.db_path)
+    
+    def timeout_with_multiprocess(seconds):
+        # Thanks Omron (SN2) for the timeout decorator
+        def decorator(func):
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                def target_func(result_dict, *args, **kwargs):
+                    try:
+                        result_dict["result"] = func(*args, **kwargs)
+                    except Exception as e:
+                        result_dict["exception"] = e
 
-    async def run_sync_in_async(self, fn):
-        return await self.loop.run_in_executor(self.thread_executor, fn)
+                manager = multiprocessing.Manager()
+                result_dict = manager.dict()
+                process = multiprocessing.Process(
+                    target=target_func, args=(result_dict, *args), kwargs=kwargs
+                )
+                process.start()
+                process.join(seconds)
 
-    async def set_weights(self, weights: torch.Tensor):
-        np.set_printoptions(precision=8, suppress=True)
+                if process.is_alive():
+                    process.terminate()
+                    process.join()
+                    bt.logging.warning(
+                        f"Function '{func.__name__}' timed out after {seconds} seconds"
+                    )
+                    return None
 
-        bt.logging.info(f"Normalized weights: {weights}")
+                if "exception" in result_dict:
+                    raise result_dict["exception"]
 
-        uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
-        stake = float(self.metagraph.S[uid])
-        if stake < 1000.0:
-            bt.logging.error("Insufficient stake. Failed in setting weights.")
-            return False
+                return result_dict.get("result", None)
 
-        NUM_RETRIES = 3
-        for i in range(NUM_RETRIES):
-            bt.logging.info(
-                f"Attempting to set weights, attempt {i+1} of {NUM_RETRIES}"
-            )
+            return wrapper
+
+        return decorator
+
+
+    @timeout_with_multiprocess(60)
+    def set_weights(self, weights: torch.Tensor):
             try:
-                loop = asyncio.get_running_loop()
-                func = functools.partial(
-                    self.subtensor.set_weights, 
+                bt.logging.info("Attempting to set weights")
+                result = self.subtensor.set_weights(
                     netuid=self.neuron_config.netuid, 
                     wallet=self.wallet, 
                     uids=self.metagraph.uids, 
                     weights=weights, 
                     version_key=__spec_version__, 
-                    wait_for_inclusion=False, 
-                    wait_for_finalization=True, 
-                )
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, func),
-                    timeout=90,
+                    wait_for_inclusion=True, 
                 )
             
                 bt.logging.trace(f"Set weights result: {result}")
@@ -77,15 +92,15 @@ class WeightSetter:
                 else:
                     bt.logging.warning(
                         f"Unexpected result format in setting weights: {result}"
-                    )
+                )
             except TimeoutError:
                 bt.logging.error("Timeout occurred while setting weights.")
             except Exception as e:
                 bt.logging.error(f"Error setting weights: {str(e)}")
                 bt.logging.error(f"Error traceback: {traceback.format_exc()}")
 
-            if i < NUM_RETRIES - 1:
-                await asyncio.sleep(10)
+            bt.logging.error("Failed to set weights after all attempts.")
+            return False
 
-        bt.logging.error("Failed to set weights after all attempts.")
-        return False
+
+    

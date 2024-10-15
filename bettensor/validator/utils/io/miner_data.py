@@ -211,12 +211,12 @@ class MinerDataMixin:
                         bt.logging.error(f"miner_data.py | insert_predictions | Traceback: {traceback.format_exc()}")
                         raise
                 
-                bt.logging.info("Updating miner stats")
-                self.scoring_system.scoring_data.update_miner_stats(self.scoring_system.current_day)
+                #bt.logging.info("Updating miner stats")
+                #self.scoring_system.scoring_data.update_miner_stats(self.scoring_system.current_day)
                 self.scoring_system.entropy_system.save_state("entropy_system_state.json")
                 #bt.logging.debug(f"Return dict: {return_dict}")
                 bt.logging.info(f"Sending confirmation synapse to miner {miner_uid}")
-                self.send_confirmation_synapse(int(miner_uid), return_dict)
+                self.send_confirmation_synapse_async(int(miner_uid), return_dict)
                 
         except Exception as e:
             bt.logging.error(f"miner_data.py | insert_predictions | An error occurred: {e}")
@@ -226,6 +226,9 @@ class MinerDataMixin:
         # After inserting predictions, update entropy scores
         # game_data = self.prepare_game_data_for_entropy(predictions)
         # self.entropy_system.update_ebdr_scores(game_data)
+
+    def send_confirmation_synapse_async(self, miner_uid, predictions):
+        self.executor.submit(self.send_confirmation_synapse, miner_uid, predictions)
 
     def send_confirmation_synapse(self, miner_uid, predictions):
         """
