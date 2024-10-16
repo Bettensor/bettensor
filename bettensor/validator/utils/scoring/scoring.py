@@ -847,11 +847,14 @@ class ScoringSystem:
                 f"non-zero: {np.count_nonzero(current_scores)}"
             )
 
-    def calculate_weights(self):
+    def calculate_weights(self, day=None):
         """
         Calculate weights for all miners based on their tier and composite score.
         Ensures the weights array has a length of 256 with correct indices.
         Weights for invalid or empty UIDs are set to 0.
+        
+        Args:
+            day (int, optional): The day index to calculate weights for. Defaults to current day.
         
         Returns:
             np.ndarray: The calculated weights for all miners
@@ -865,7 +868,10 @@ class ScoringSystem:
             total_incentive = tier_incentives.sum()
             normalized_incentives = tier_incentives / total_incentive if total_incentive > 0 else np.zeros_like(tier_incentives)
 
-            current_tiers = self.tiers[:, self.current_day]
+            if day is None:
+                day = self.current_day
+
+            current_tiers = self.tiers[:, day]
             valid_miners = np.array(list(set(range(self.num_miners)) - self.invalid_uids))
             valid_miners = valid_miners[(current_tiers[valid_miners] >= 2) & (current_tiers[valid_miners] < self.num_tiers)]
 
@@ -875,7 +881,7 @@ class ScoringSystem:
 
             # Use each miner's composite score for their respective tier
             # Extract the composite scores based on current tier for each miner
-            composite_scores = self.composite_scores[valid_miners, self.current_day, current_tiers[valid_miners]]
+            composite_scores = self.composite_scores[valid_miners, day, current_tiers[valid_miners]]
 
             # Apply non-linear normalization (e.g., exponential)
             exp_scores = np.exp(composite_scores)
@@ -939,12 +945,11 @@ class ScoringSystem:
         self.tiers[empty_mask, self.current_day] = 0
         self.tiers[invalid_mask, self.current_day] = 1
 
-        #if any valid uids are in tiers 0 or 1, set them to tier 2. if they are in tiers 2 or higher, do nothing. 
+        # Ensure valid UIDs are at least in tier 2
         self.tiers[valid_mask & (self.tiers[:, self.current_day] < 2)] = 2  
 
         bt.logging.info(f"Assigned {len(self.empty_uids)} empty slots to tier 0.")
         bt.logging.info(f"Assigned {len(self.invalid_uids)} invalid UIDs to tier 1.")
-        
 
         current_date = self._ensure_date(date)
         bt.logging.debug(f"Processing scoring_run for date: {current_date}")
@@ -983,24 +988,34 @@ class ScoringSystem:
             avg_wager = total_wager / self.num_miners
             bt.logging.info(f"Total wager for this run: {total_wager:.2f}")
             bt.logging.info(f"Average wager per miner: {avg_wager:.2f}")
+
+            # Calculate weights using the existing method
+            weights = self.calculate_weights()
+
         else:
             bt.logging.warning(
-                f"No predictions for date {date_str}. Skipping score update."
+                f"No predictions for date {date_str}. Using previous day's weights."
             )
 
-        self.manage_tiers(self.invalid_uids, self.valid_uids)
+            previous_day = (self.current_day - 1) % self.max_days
+            try:
+                weights = self.calculate_weights(day=previous_day)
+                bt.logging.info(f"Using weights from previous day: {previous_day}")
+            except Exception as e:
+                bt.logging.error(
+                    f"Failed to retrieve weights from previous day: {e}. Assigning equal weights."
+                )
+                weights = np.zeros(self.num_miners)
+                weights[list(self.valid_uids)] = 1 / len(self.valid_uids)
 
-        # Calculate weights using the existing method
-        weights = self.calculate_weights()
-
-        # Set weights for invalid UIDs to zero
+        # Assign invalid UIDs to tier 0
         weights[list(self.invalid_uids)] = 0
 
         # Renormalize weights
         if weights.sum() > 0:
             weights /= weights.sum()
         else:
-            # If all weights are zero, distribute equally among valid UIDs
+            bt.logging.warning("Total weight is zero. Distributing weights equally among valid miners.")
             weights[list(self.valid_uids)] = 1 / len(self.valid_uids)
 
         bt.logging.info(f"Weight sum: {weights.sum():.6f}")
@@ -1016,7 +1031,6 @@ class ScoringSystem:
         # Save state at the end of each run
         self.save_state()
         self.scoring_data.update_miner_stats(self.current_day)
-
 
         # check that weights are length 256. 
         if len(weights) != 256:
