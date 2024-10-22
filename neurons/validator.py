@@ -18,7 +18,7 @@ from bettensor.protocol import GameData, Metadata
 from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor.validator.utils.io.sports_data import SportsData
 from bettensor.validator.utils.scoring.watchdog import Watchdog
-from bettensor.validator.utils.io.auto_updater import *
+from bettensor.validator.utils.io.auto_updater import perform_update
 import threading
 import asyncio
 
