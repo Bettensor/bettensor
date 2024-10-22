@@ -291,7 +291,7 @@ class Application:
         self.add_log_message("Retrieving miners from database...")
         query = """
         SELECT ms.miner_uid, ms.miner_hotkey, ms.miner_cash, ms.miner_rank, ms.miner_current_entropy_score, ms.miner_current_clv_avg, ms.miner_current_composite_score, ms.miner_current_sortino_ratio, ms.miner_current_incentive,
-                ms.miner_current_tier,
+                ms.miner_current_tier,ms.miner_lifetime_roi,
 
                CASE WHEN ma.last_active_timestamp > NOW() - INTERVAL '5 minutes' THEN TRUE ELSE FALSE END as is_active
         FROM miner_stats ms
