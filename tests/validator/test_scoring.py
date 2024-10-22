@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock, patch
 import numpy as np
 import tempfile
 import os
@@ -8,6 +9,7 @@ from bettensor.validator.utils.scoring.scoring_data import ScoringData
 from bettensor.validator.utils.database.database_init import initialize_database
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 import bittensor as bt
+
 class TestScoringSystem(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -17,13 +19,14 @@ class TestScoringSystem(unittest.TestCase):
         cls.num_miners = 256
         cls.max_days = 45
         cls.simulation_days = 60  # Extended to 60 days
+
         # Define simulation start and end dates
         cls.simulation_start_date = datetime.now(timezone.utc)
         bt.logging.debug(f"Simulation Start Date: {cls.simulation_start_date}")
+
         # Use in-memory database
         cls.db_path = "test_database.db"
         cls.db_manager = DatabaseManager(cls.db_path)
-        # Verify that tables are created
         cls.db_manager.execute_query(
             "SELECT name FROM sqlite_master WHERE type='table';"
         )
@@ -31,42 +34,71 @@ class TestScoringSystem(unittest.TestCase):
             "SELECT name FROM sqlite_master WHERE type='table';", ()
         )
         bt.logging.debug(f"Tables in database: {tables}")
-        # Initialize ScoringData with the DatabaseManager
+
+        # Mock the validator dependency
+        cls.mock_validator = Mock()
+        
+        # Mock the metagraph attribute within validator
+        cls.mock_validator.metagraph = Mock()
+        
+        # Create mock hotkeys and coldkeys
+        cls.mock_validator.metagraph.hotkeys = {uid: f"hotkey_{uid}" for uid in range(cls.num_miners)}
+        cls.mock_validator.metagraph.coldkeys = {uid: f"coldkey_{uid}" for uid in range(cls.num_miners)}
+        
+        # Initialize ScoringData with the mocked validator
         cls.scoring_data = ScoringData(
-            db_manager=cls.db_manager, num_miners=cls.num_miners
+            db_manager=cls.db_manager,
+            num_miners=cls.num_miners,
+            validator=cls.mock_validator  # Pass the mock here
         )
-        # Initialize ScoringSystem with the ScoringData
-        cls.scoring_system = ScoringSystem(
-            db_manager=cls.db_manager, num_miners=cls.num_miners, max_days=cls.max_days
-        )
+        
+        # Patch ScoringData in the scoring module correctly
+        cls.patcher = patch('bettensor.validator.utils.scoring.scoring.ScoringData', return_value=cls.scoring_data)
+        cls.patcher.start()
+        
+        try:
+            # Initialize ScoringSystem after patching ScoringData
+            cls.scoring_system = ScoringSystem(
+                db_manager=cls.db_manager,
+                num_miners=cls.num_miners,
+                max_days=cls.max_days
+            )
+        finally:
+            pass  # Ensures ScoringSystem is initialized with the patched ScoringData
+
         # Set reference date for scoring
         cls.reference_date = datetime.now(timezone.utc)
         cls.scoring_system.reference_date = cls.reference_date
+
         # Simulation parameters
         cls.valid_uids, cls.invalid_uids = cls._simulate_games_and_predictions()
+
         # Log the created games
         game_count = cls.db_manager.fetch_one("SELECT COUNT(*) FROM game_data", ())
         bt.logging.debug(f"Total games created: {game_count}")
+
         # Log a sample of created games
         sample_games = cls.db_manager.fetch_all(
             "SELECT game_id, external_id, event_start_date, active FROM game_data LIMIT 5",
             (),
         )
         bt.logging.debug(f"Sample games: {sample_games}")
+
         # After simulation
         bt.logging.debug("Verifying inserted games and predictions")
-        games = cls.db_manager.execute_query("SELECT COUNT(*) as count FROM game_data")
+        games = cls.db_manager.execute_query("SELECT COUNT(*) AS count FROM game_data", ())
         predictions = cls.db_manager.execute_query(
-            "SELECT COUNT(*) as count FROM predictions"
+            "SELECT COUNT(*) AS count FROM predictions"
         )
-        # bt.logging.debug(f"Total games inserted: {games}")
-        # bt.logging.debug(f"Total predictions inserted: {predictions}")
+
     @classmethod
     def tearDownClass(cls):
+        cls.patcher.stop()  # Stop patching
         cls.db_manager.conn.close()
         if os.path.exists("test_database.db"):
             os.remove("test_database.db")
         bt.logging.debug("Test Database Closed and Unlinked")
+
     @classmethod
     def _simulate_games_and_predictions(cls):
         bt.logging.debug("Starting game and prediction simulation")
@@ -78,6 +110,7 @@ class TestScoringSystem(unittest.TestCase):
         valid_uids = set(range(cls.num_miners)) - invalid_uids
         # Simulate games for each day
         game_data = []
+        prediction_data = []
         for day in range(cls.simulation_days):
             current_date = cls.simulation_start_date + timedelta(days=day)
             num_games = max(1, np.random.randint(1, 6))
@@ -141,7 +174,6 @@ class TestScoringSystem(unittest.TestCase):
         game_count = cls.db_manager.fetch_one("SELECT COUNT(*) FROM game_data", ())
         bt.logging.debug(f"Number of games in database after insertion: {game_count}")
         # Simulate predictions for each miner per day
-        prediction_data = []
         for miner_uid in valid_uids:
             for day in range(cls.simulation_days):
                 current_date = cls.simulation_start_date + timedelta(days=day)
@@ -195,13 +227,15 @@ class TestScoringSystem(unittest.TestCase):
                         if tie_odds
                         else 0.0
                     )
-                    # Determine predicted_odds based on predicted_outcome
+                    # Define predicted_odds based on predicted_outcome
                     if predicted_outcome == 0:
                         predicted_odds = team_a_odds
                     elif predicted_outcome == 1:
                         predicted_odds = team_b_odds
-                    elif predicted_outcome == 2:
+                    else:
                         predicted_odds = tie_odds
+
+                    # Create prediction entry
                     prediction_date = (
                         current_date + timedelta(days=np.random.randint(-2, 0))
                     ).isoformat()
@@ -259,6 +293,7 @@ class TestScoringSystem(unittest.TestCase):
             raise
         bt.logging.debug("Finished game and prediction simulation")
         return valid_uids, invalid_uids
+
     def test_combined_scoring_run_with_invalid_uids(self):
         """Combined test for scoring run with approximately 20 invalid UIDs over 60 days."""
         bt.logging.debug("Starting combined scoring run test with invalid UIDs")
@@ -311,5 +346,6 @@ class TestScoringSystem(unittest.TestCase):
             bt.logging.error(f"Inconsistency for game {external_id}: DB can_tie={db_can_tie}, Entropy can_tie={entropy_can_tie}")
             return False
         return db_can_tie
+
 if __name__ == "__main__":
     unittest.main()

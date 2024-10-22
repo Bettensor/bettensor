@@ -16,6 +16,7 @@ def initialize_database():
             miner_rank INTEGER,
             miner_status TEXT,
             miner_cash REAL,
+            
             miner_current_incentive REAL,
             miner_current_tier INTEGER,
             miner_current_scoring_window INTEGER,
@@ -83,16 +84,6 @@ def initialize_database():
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS daily_miner_stats (
-            date DATE,
-            minerId TEXT,
-            total_predictions INT,
-            correct_predictions INT,
-            total_wager REAL,
-            total_earnings REAL
-        )
-        """,
-        """
         CREATE TABLE IF NOT EXISTS scores (
             miner_uid INTEGER,
             day_id INTEGER,
@@ -114,7 +105,36 @@ def initialize_database():
             reference_date TEXT,
             invalid_uids TEXT, -- Serialized list or JSON string
             valid_uids TEXT,   -- Serialized list or JSON string
+            tiers TEXT,         -- Serialized list or JSON string
+            amount_wagered TEXT, -- Serialized list or JSON string
             last_update_date TEXT
         )
         """,
+        """
+        -- Trigger to delete old predictions
+        CREATE TRIGGER IF NOT EXISTS delete_old_predictions
+        AFTER INSERT ON predictions
+        BEGIN
+            DELETE FROM predictions
+            WHERE prediction_date < date('now', '-50 days');
+        END;
+        """,
+        """
+        -- Trigger to delete old game data
+        CREATE TRIGGER IF NOT EXISTS delete_old_game_data
+        AFTER INSERT ON game_data
+        BEGIN
+            DELETE FROM game_data
+            WHERE event_start_date < date('now', '-50 days');
+        END;
+        """,
+        """
+        -- Trigger to delete old score_state
+        CREATE TRIGGER IF NOT EXISTS delete_old_score_state
+        AFTER INSERT ON score_state
+        BEGIN
+            DELETE FROM score_state
+            WHERE last_update_date < date('now', '-7 days');
+        END;
+        """
     ]

@@ -576,3 +576,42 @@ class MinerStateManager:
     def update_state(self, new_state):
         self.state.update(new_state)
         self.save_state(self.state)
+    
+    def update_stats_from_confirmation(self, miner_stats):
+        miner_rank = miner_stats["miner_rank"]
+        miner_current_incentive = miner_stats["miner_current_incentive"]
+        miner_current_tier = int(miner_stats["miner_current_tier"]) - 1
+        miner_current_scoring_window = miner_stats["miner_current_scoring_window"]
+        miner_current_composite_score = miner_stats["miner_current_composite_score"]
+        miner_current_entropy_score = miner_stats["miner_current_entropy_score"]
+        miner_current_sharpe_ratio = miner_stats["miner_current_sharpe_ratio"]
+        miner_current_sortino_ratio = miner_stats["miner_current_sortino_ratio"]
+        miner_current_roi = miner_stats["miner_current_roi"]
+        miner_current_clv_avg = miner_stats["miner_current_clv_avg"]
+        miner_last_prediction_date = miner_stats["miner_last_prediction_date"]
+        miner_lifetime_earnings = miner_stats["miner_lifetime_earnings"]
+        miner_lifetime_wager_amount = miner_stats["miner_lifetime_wager_amount"]
+        miner_lifetime_roi = miner_stats["miner_lifetime_roi"]
+        miner_lifetime_predictions = miner_stats["miner_lifetime_predictions"]
+        miner_win_loss_ratio = miner_stats["miner_win_loss_ratio"]
+        query = """
+        UPDATE miner_stats
+        SET miner_rank = %s, 
+            miner_current_incentive = %s, 
+            miner_current_tier = %s, 
+            miner_current_scoring_window = %s, 
+            miner_current_composite_score = %s, 
+            miner_current_entropy_score = %s, 
+            miner_current_sharpe_ratio = %s, 
+            miner_current_sortino_ratio = %s, 
+            miner_current_roi = %s, 
+            miner_current_clv_avg = %s, 
+            miner_last_prediction_date = %s, 
+            miner_lifetime_earnings = %s, 
+            miner_lifetime_wager_amount = %s, 
+            miner_lifetime_roi = %s, 
+            miner_lifetime_predictions = %s, 
+            miner_win_loss_ratio = %s
+            WHERE miner_uid = %s
+            """
+        self.db_manager.execute_query(query, (miner_rank, miner_current_incentive, miner_current_tier, miner_current_scoring_window, miner_current_composite_score, miner_current_entropy_score, miner_current_sharpe_ratio, miner_current_sortino_ratio, miner_current_roi, miner_current_clv_avg, miner_last_prediction_date, miner_lifetime_earnings, miner_lifetime_wager_amount, miner_lifetime_roi, miner_lifetime_predictions, miner_win_loss_ratio, self.miner_uid))

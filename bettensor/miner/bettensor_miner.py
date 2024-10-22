@@ -267,6 +267,8 @@ class BettensorMiner(BaseNeuron):
     def _handle_confirmation(self, synapse: GameData) -> GameData:
         bt.logging.debug(f"Processing confirmation from {synapse.dendrite.hotkey}")
         if synapse.confirmation_dict:
+            miner_stats = synapse.confirmation_dict["miner_stats"]
+            self.stats_handler.state_manager.update_stats_from_confirmation(miner_stats)
             prediction_ids = list(synapse.confirmation_dict.keys())
             self.predictions_handler.update_prediction_confirmations(
                 prediction_ids, synapse.dendrite.hotkey, self.validator_confirmation_dict

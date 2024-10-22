@@ -1,4 +1,5 @@
 import json
+import traceback
 import numpy as np
 import math
 import bittensor as bt
@@ -13,7 +14,7 @@ class EntropySystem:
         self,
         num_miners: int,
         max_days: int,
-        state_file_path: str = "entropy_system_state.json",
+        state_file_path: str = "./entropy_system_state.json",
     ):
         """
         Initialize the EntropySystem object.
@@ -451,15 +452,19 @@ class EntropySystem:
             bt.logging.warning(
                 f"No state file found at {file_path}. Starting with fresh state."
             )
+
         except json.JSONDecodeError:
             bt.logging.error(
                 f"Error decoding JSON from {file_path}. Starting with fresh state."
             )
+            bt.logging.error(traceback.format_exc())
         except KeyError as e:
             bt.logging.error(
                 f"Missing key in state file: {e}. Starting with fresh state."
             )
+            bt.logging.error(traceback.format_exc())
         except Exception as e:
             bt.logging.error(
                 f"Unexpected error loading state: {e}. Starting with fresh state."
             )
+            bt.logging.error(traceback.format_exc())

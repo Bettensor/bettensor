@@ -146,7 +146,7 @@ class PredictionsHandler:
 
     def update_prediction_confirmations(self, prediction_ids: List[str], validator_hotkey: str, validator_confirmation_dict: Dict[str, Any]) -> None:
         updated_predictions = []
-
+        bt.logging.debug(f'Predictions: {prediction_ids}')
         for prediction_id in prediction_ids:
             if (prediction_id in validator_confirmation_dict and
                 validator_hotkey in validator_confirmation_dict[prediction_id]["validators"]):
@@ -157,7 +157,7 @@ class PredictionsHandler:
                 else:
                     bt.logging.debug(f"Prediction {prediction_id} already confirmed for validator {validator_hotkey}")
             elif prediction_id == "miner_stats":
-                #  ignore miner_stats key, we will use this soon
+                
                 continue
             else:
                 bt.logging.warning(f"Prediction ID {prediction_id} or validator {validator_hotkey} not found in confirmation dict.")
