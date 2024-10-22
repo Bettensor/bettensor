@@ -640,29 +640,16 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
     def reset_scoring_system(self):
         """
-        Resets the scoring system across all validators.
+        Resets the scoring/database system across all validators.
         """
         try:
-            bt.logging.info("Resetting scoring system...")
+            bt.logging.info("Resetting scoring system(deleting state files)...")
+                        
+            # delete state files (./bettensor/validator/state/state.pt, ./bettensor/validator/data/validator.db, ./bettensor/validator/entropy_system_state.json)
+            for file in ["./bettensor/validator/state/state.pt", "./data/validator.db", "./entropy_system_state.json"]:
+                if os.path.exists(file):
+                    os.remove(file)
             
-            # Reset the scoring system
-            self.scoring_system.full_reset()
-            
-            # Reinitialize the scoring system
-            self.scoring_system = ScoringSystem(
-                self.db_manager,
-                num_miners=256,
-                max_days=45,
-                reference_date=datetime.now(timezone.utc).date()
-            )
-            
-            # Reset scores to zero, ensuring it's a PyTorch tensor
-            if isinstance(self.scores, np.ndarray):
-                self.scores = torch.from_numpy(self.scores).float()
-            self.scores = torch.zeros_like(self.scores)
-            
-            self.save_state()
-            bt.logging.info("Scoring system has been reset and reinitialized.")
         except Exception as e:
             bt.logging.error(f"Error resetting scoring system: {e}")
             bt.logging.error(traceback.format_exc())

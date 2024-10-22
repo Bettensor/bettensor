@@ -9,6 +9,9 @@ load_dotenv()
 config = configparser.ConfigParser()
 setup_file = path.dirname(path.dirname(path.abspath(__file__))) + "/setup.cfg"
 
+if not path.exists(setup_file):
+    raise FileNotFoundError(f"setup.cfg not found at {setup_file}")
+
 config.read(setup_file)
 
 __version__ = config["metadata"]["version"]

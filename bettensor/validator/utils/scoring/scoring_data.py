@@ -2,17 +2,17 @@ import traceback
 import pytz
 import bittensor as bt
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 from typing import List, Tuple, Dict
 from collections import defaultdict
 
 
 class ScoringData:
-    def __init__(self, db_manager, num_miners, validator):
-        self.db_manager = db_manager
-        self.num_miners = num_miners
-        self.validator = validator
+    def __init__(self, scoring_system):
+        self.scoring_system = scoring_system
+        self.db_manager = scoring_system.db_manager
+        self.validator = scoring_system.validator
         self.miner_stats = defaultdict(lambda: {
             'clv': 0.0,
             'roi': 0.0,
@@ -22,6 +22,18 @@ class ScoringData:
             'tier_scores': {}
         })
         self.init_miner_stats()
+
+    @property
+    def current_day(self):
+        return int(self.scoring_system.current_day)
+
+    @property
+    def num_miners(self):
+        return self.scoring_system.num_miners
+
+    @property
+    def tiers(self):
+        return self.scoring_system.tiers
 
     def preprocess_for_scoring(self, date_str):
         bt.logging.debug(f"Preprocessing for scoring on date: {date_str}")
@@ -180,74 +192,56 @@ class ScoringData:
         else:
             bt.logging.debug("All predictions reference valid closed games.")
 
-    def init_miner_stats(self, num_miners: int = 256):
-            """
-            Populate miner_stats table with initial zero values for all miners if the table is empty.
-
-            Args:
-                db_manager: The database manager object.
-                num_miners (int): The number of miners to initialize. Defaults to 256.
-            """
-            bt.logging.trace("Initializing Miner Stats")
-            try:
-                # Check if the miner_stats table is empty
-                count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")["COUNT(*)"]
-                bt.logging.trace(f"Miner stats count: {count}")
-                
-                if count == 0:
-                    bt.logging.info("Initializing miner_stats table with zero values.")
-                    
-                    # Prepare the insert query
-                    insert_query = """
-                    INSERT INTO miner_stats (
-                        miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_status,
-                        miner_cash, miner_current_incentive, miner_current_tier,
-                        miner_current_scoring_window, miner_current_composite_score,
-                        miner_current_sharpe_ratio, miner_current_sortino_ratio,
-                        miner_current_roi, miner_current_clv_avg, miner_last_prediction_date,
-                        miner_lifetime_earnings, miner_lifetime_wager_amount,
-                        miner_lifetime_roi, miner_lifetime_predictions,
-                        miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """
-                    
-                    # Prepare batch of initial values for all miners
-                    initial_values: List[tuple] = [
-                        (f"hotkey_{i}", f"coldkey_{i}", i, 0, "active",
-                        0.0, 0.0, 0, 0, 0.0,
-                        0.0, 0.0, 0.0, 0.0, None,
-                        0.0, 0.0, 0.0, 0, 0, 0, 0.0)
-                        for i in range(num_miners)
-                    ]
-                    
-                    # Execute batch insert
-                    count = self.db_manager.executemany(insert_query, initial_values)
-                    bt.logging.trace(f"Inserted {count} rows into miner_stats table.")
-
-                    
-                    bt.logging.info(f"Successfully initialized {count} miners in miner_stats table.")
-                else:
-                    bt.logging.info("miner_stats table is not empty. Skipping initialization.")
+    def init_miner_stats(self):
+        bt.logging.trace("Initializing Miner Stats")
+        try:
+            count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")["COUNT(*)"]
+            bt.logging.trace(f"Miner stats count: {count}")
             
-            except Exception as e:
-                bt.logging.error(f"Error initializing miner_stats: {str(e)}")
-                raise
+            if count == 0:
+                bt.logging.info("Initializing miner_stats table with zero values.")
+                
+                insert_query = """
+                INSERT INTO miner_stats (
+                    miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_status,
+                    miner_cash, miner_current_incentive, miner_current_tier,
+                    miner_current_scoring_window, miner_current_composite_score,
+                    miner_current_sharpe_ratio, miner_current_sortino_ratio,
+                    miner_current_roi, miner_current_clv_avg, miner_last_prediction_date,
+                    miner_lifetime_earnings, miner_lifetime_wager_amount,
+                    miner_lifetime_roi, miner_lifetime_predictions,
+                    miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                
+                initial_values = [
+                    (f"hotkey_{i}", f"coldkey_{i}", i, 0, "active",
+                    0.0, 0.0, 0, 0, 0.0,
+                    0.0, 0.0, 0.0, 0.0, None,
+                    0.0, 0.0, 0.0, 0, 0, 0, 0.0)
+                    for i in range(self.num_miners)
+                ]
+                
+                count = self.db_manager.executemany(insert_query, initial_values)
+                bt.logging.trace(f"Inserted {count} rows into miner_stats table.")
+                
+                bt.logging.info(f"Successfully initialized {count} miners in miner_stats table.")
+            else:
+                bt.logging.info("miner_stats table is not empty. Skipping initialization.")
+        
+        except Exception as e:
+            bt.logging.error(f"Error initializing miner_stats: {str(e)}")
+            raise
 
     def update_miner_stats(self, current_day):
-        """
-        Update miner statistics based on the current day's scores.
-        
-        Args:
-            current_day (int): The current day index.
-        """
         try:
             self.db_manager.begin_transaction()
             bt.logging.info(f"Updating miner stats for day {current_day}...")
 
-            #get hotkey and coldkey from metagraph
+            # Update miner_hotkey and miner_coldkey from metagraph
             for miner_uid in range(self.num_miners):
                 hotkey = self.validator.metagraph.hotkeys[miner_uid]
-                coldkey = self.validator.metagraph.coldkeys[miner_uid]  
+                coldkey = self.validator.metagraph.coldkeys[miner_uid]
 
                 update_keys_query = """
                     UPDATE miner_stats
@@ -258,150 +252,32 @@ class ScoringData:
                 """
                 self.db_manager.execute_query(update_keys_query, (hotkey, coldkey, miner_uid))
 
-            # Fetch and update lifetime statistics
-            update_lifetime_query = """
+            # Update lifetime statistics
+            self._update_lifetime_statistics()
+
+            # Retrieve current tiers
+            tiers_dict = self.get_current_tiers()
+
+            # Update current tiers
+            update_tier_query = """
                 UPDATE miner_stats
                 SET
-                    miner_lifetime_earnings = (
-                        SELECT COALESCE(SUM(payout), 0)
-                        FROM predictions p
-                        WHERE p.miner_uid = miner_stats.miner_uid
-                    ),
-                    miner_lifetime_wager_amount = (
-                        SELECT COALESCE(SUM(wager), 0)
-                        FROM predictions p
-                        WHERE p.miner_uid = miner_stats.miner_uid
-                    ),
-                    miner_lifetime_predictions = (
-                        SELECT COUNT(*)
-                        FROM predictions p
-                        WHERE p.miner_uid = miner_stats.miner_uid
-                    ),
-                    miner_lifetime_wins = (
-                        SELECT COUNT(*)
-                        FROM predictions p
-                        WHERE p.miner_uid = miner_stats.miner_uid
-                        AND p.payout > 0
-                    ),
-                    miner_lifetime_losses = (
-                        SELECT COUNT(*)
-                        FROM predictions p
-                        WHERE p.miner_uid = miner_stats.miner_uid
-                        AND p.payout = 0
-                    ),
-                    miner_last_prediction_date = (
-                        SELECT MAX(p.prediction_date)
-                        FROM predictions p
-                        WHERE p.miner_uid = miner_stats.miner_uid
-                    )
+                    miner_current_tier = ?
+                WHERE miner_uid = ?
             """
-            self.db_manager.execute_query(update_lifetime_query)
-            bt.logging.debug("Updated lifetime statistics for miners.")
 
-            # Fetch scores for the current day, excluding 'daily' scores
-            fetch_scores_query = """
-                SELECT 
-                    s.miner_uid,
-                    s.day_id,
-                    s.score_type,
-                    s.composite_score
-                FROM 
-                    scores s
-                WHERE 
-                    s.day_id = ? 
-                    AND s.score_type LIKE 'tier_%'
-            """
-            scores = self.db_manager.fetch_all(fetch_scores_query, (current_day,))
+            tier_records = [
+                (int(current_tier), miner_uid)
+                for miner_uid, current_tier in tiers_dict.items()
+            ]
+            self.db_manager.executemany(update_tier_query, tier_records)
+            bt.logging.debug("Updated current tiers for miners.")
 
-            bt.logging.info(f"Fetched {len(scores)} tier-specific score records for day {current_day}.")
+            # Update current daily scores
+            self._update_current_daily_scores(current_day, tiers_dict)
 
-            # Update miner stats based on tier-specific composite scores
-            for record in scores:
-                miner_uid = record["miner_uid"]
-                day_id = record["day_id"]
-                score_type = record["score_type"]
-                composite_score = record["composite_score"]
-
-                # Extract tier number from score_type, e.g., 'tier_1' -> 1
-                tier_number = int(score_type.split('_')[1]) if score_type.startswith('tier_') else None
-
-                if tier_number is not None:
-                    # Example logic: Assign composite_score to the corresponding tier
-                    # Adjust this logic based on your actual requirements
-                    if 'tier_scores' not in self.miner_stats[miner_uid]:
-                        self.miner_stats[miner_uid]['tier_scores'] = {}
-                    self.miner_stats[miner_uid]['tier_scores'][tier_number] = composite_score
-                    #bt.logging.debug(f"Updated miner_uid {miner_uid} with tier_{tier_number} composite score: {composite_score}")
-
-            # Handle daily scores separately
-            fetch_daily_scores_query = """
-                SELECT 
-                    miner_uid,
-                    day_id,
-                    clv_score,
-                    roi_score,
-                    entropy_score,
-                    sortino_score,
-                    composite_score
-                FROM 
-                    scores
-                WHERE 
-                    day_id = ? 
-                    AND score_type = 'daily'
-            """
-            daily_scores = self.db_manager.fetch_all(fetch_daily_scores_query, (current_day,))
-
-            bt.logging.info(f"Fetched {len(daily_scores)} daily score records for day {current_day}.")
-
-            for record in daily_scores:
-                miner_uid = record["miner_uid"]
-                clv = record["clv_score"] if record["clv_score"] is not None else 0.0
-                roi = record["roi_score"] if record["roi_score"] is not None else 0.0
-                entropy = record["entropy_score"] if record["entropy_score"] is not None else 0.0
-                sortino = record["sortino_score"] if record["sortino_score"] is not None else 0.0
-                composite_daily = record["composite_score"] if record["composite_score"] is not None else 0.0
-
-                # Update miner_stats with daily scores
-                self.miner_stats[miner_uid]['clv'] = clv
-                self.miner_stats[miner_uid]['roi'] = roi
-                self.miner_stats[miner_uid]['entropy'] = entropy
-                self.miner_stats[miner_uid]['sortino'] = sortino
-                self.miner_stats[miner_uid]['composite_daily'] = composite_daily
-
-                #bt.logging.debug(f"Updated miner_uid {miner_uid} with daily scores: CLV={clv}, ROI={roi}, Entropy={entropy}, Sortino={sortino}, Composite Daily={composite_daily}")
-
-            # Update derived lifetime statistics
-            update_derived_lifetime_query = """
-                UPDATE miner_stats
-                SET
-                    miner_win_loss_ratio = CASE 
-                        WHEN miner_lifetime_losses > 0 
-                        THEN CAST(miner_lifetime_wins AS REAL) / miner_lifetime_losses 
-                        ELSE miner_lifetime_wins 
-                    END,
-                    miner_lifetime_roi = CASE
-                        WHEN (miner_lifetime_wager_amount - 
-                              (SELECT COALESCE(SUM(p.wager), 0) 
-                               FROM predictions p 
-                               WHERE p.miner_uid = miner_stats.miner_uid 
-                                 AND p.outcome = 3)) > 0
-                        THEN (miner_lifetime_earnings - 
-                              (miner_lifetime_wager_amount - 
-                               (SELECT COALESCE(SUM(p.wager), 0) 
-                                FROM predictions p 
-                                WHERE p.miner_uid = miner_stats.miner_uid 
-                                  AND p.outcome = 3))
-                             ) / 
-                             (miner_lifetime_wager_amount - 
-                              (SELECT COALESCE(SUM(p.wager), 0) 
-                               FROM predictions p 
-                               WHERE p.miner_uid = miner_stats.miner_uid 
-                                 AND p.outcome = 3))
-                        ELSE 0
-                    END
-            """
-            self.db_manager.execute_query(update_derived_lifetime_query)
-            bt.logging.debug("Updated derived lifetime statistics for miners.")
+            # Update additional fields as needed
+            self._update_additional_fields()
 
             self.db_manager.commit_transaction()
             bt.logging.info("Miner stats update transaction committed successfully.")
@@ -409,17 +285,265 @@ class ScoringData:
         except Exception as e:
             self.db_manager.rollback_transaction()
             bt.logging.error(f"Error updating miner stats: {e}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
             raise
+    
+    def safe_format(self, value, decimal_places=4):
+        return f"{value:.{decimal_places}f}" if value is not None else 'None'
 
-        finally:
-            # Double-check the results
-            final_check_query = """
-                SELECT COUNT(*) as count 
-                FROM miner_stats 
-                WHERE miner_current_composite_score > 0
-            """
-            final_check = self.db_manager.fetch_one(final_check_query, ())
-            bt.logging.info(f"Final check - Miner stats with non-zero composite score: {final_check['count']}")
-            bt.logging.info("Miner stats update process completed.")
+    def _update_current_daily_scores(self, current_day, tiers_dict):
+        """
+        Update the current daily scores for each miner.
+        
+        Args:
+            current_day (int): The current day index.
+            tiers_dict (Dict[int, int]): Mapping of miner_uid to current_tier.
+        """
+        bt.logging.info(f"Updating current daily scores for miners for day {current_day}...")
+
+        # Fetch current day's scores from the 'scores' table
+        fetch_scores_query = """
+            SELECT miner_uid, score_type, clv_score, roi_score, sortino_score, entropy_score, composite_score
+            FROM scores
+            WHERE day_id = ?
+        """
+        scores = self.db_manager.fetch_all(fetch_scores_query, (current_day,))
+
+        # Organize scores by miner_uid and score_type
+        miner_scores = defaultdict(lambda: defaultdict(dict))
+        for score in scores:
+            miner_uid = score["miner_uid"]
+            score_type = score["score_type"]
+            miner_scores[miner_uid][score_type] = {
+                "clv_score": score["clv_score"],
+                "roi_score": score["roi_score"],
+                "sortino_score": score["sortino_score"],
+                "entropy_score": score["entropy_score"],
+                "composite_score": score["composite_score"]
+            }
+
+        # Prepare update records
+        update_current_scores_query = """
+            UPDATE miner_stats
+            SET
+                miner_current_clv_avg = ?,
+                miner_current_roi = ?,
+                miner_current_sortino_ratio = ?,
+                miner_current_entropy_score = ?,
+                miner_current_composite_score = ?
+            WHERE miner_uid = ?
+        """
+        update_records = []
+
+        for miner_uid, current_tier in tiers_dict.items():
+            # Retrieve the daily scores for the miner
+            daily_scores = miner_scores[miner_uid].get('daily', {})
+            
+            # Extract component scores from daily_scores
+            clv_avg = daily_scores.get('clv_score')
+            roi = daily_scores.get('roi_score')
+            sortino = daily_scores.get('sortino_score')
+            entropy = daily_scores.get('entropy_score')
+            composite_score = daily_scores.get('composite_score')
+
+            bt.logging.debug(f"Miner {miner_uid} (Tier {current_tier}) scores: "
+                             f"CLV={self.safe_format(clv_avg)}, "
+                             f"ROI={self.safe_format(roi)}, "
+                             f"Sortino={self.safe_format(sortino)}, "
+                             f"Entropy={self.safe_format(entropy)}, "
+                             f"Composite={self.safe_format(composite_score)}")
+
+            update_records.append((clv_avg, roi, sortino, entropy, composite_score, miner_uid))
+
+        # Execute batch update
+        self.db_manager.executemany(update_current_scores_query, update_records)
+        bt.logging.debug("Current daily scores updated for all miners.")
+
+        # Log some statistics
+        composite_scores = [record[4] for record in update_records if record[4] is not None]
+        if composite_scores:
+            bt.logging.info(f"Composite score stats - min: {min(composite_scores):.4f}, "
+                            f"max: {max(composite_scores):.4f}, "
+                            f"mean: {sum(composite_scores) / len(composite_scores):.4f}")
+        else:
+            bt.logging.warning("No valid composite scores found.")
+
+        # Log the number of miners with non-zero scores
+        non_zero_scores = sum(1 for record in update_records if any(record[:5]))
+        bt.logging.info(f"Number of miners with non-zero scores: {non_zero_scores}")
+
+    def _update_lifetime_statistics(self):
+        """
+        Update lifetime statistics for miners.
+        """
+        update_lifetime_query = """
+            UPDATE miner_stats
+            SET
+                miner_lifetime_earnings = (
+                    SELECT COALESCE(SUM(payout), 0)
+                    FROM predictions p
+                    WHERE p.miner_uid = miner_stats.miner_uid
+                ),
+                miner_lifetime_wager_amount = (
+                    SELECT COALESCE(SUM(wager), 0)
+                    FROM predictions p
+                    WHERE p.miner_uid = miner_stats.miner_uid
+                ),
+                miner_lifetime_predictions = (
+                    SELECT COUNT(*)
+                    FROM predictions p
+                    WHERE p.miner_uid = miner_stats.miner_uid
+                ),
+                miner_lifetime_wins = (
+                    SELECT COUNT(*)
+                    FROM predictions p
+                    WHERE p.miner_uid = miner_stats.miner_uid
+                    AND p.payout > 0
+                ),
+                miner_lifetime_losses = (
+                    SELECT COUNT(*)
+                    FROM predictions p
+                    WHERE p.miner_uid = miner_stats.miner_uid
+                    AND p.payout = 0
+                ),
+                miner_win_loss_ratio = CASE 
+                    WHEN miner_lifetime_losses > 0 
+                    THEN CAST(miner_lifetime_wins AS REAL) / miner_lifetime_losses 
+                    ELSE miner_lifetime_wins 
+                END,
+                miner_lifetime_roi = CASE
+                    WHEN (miner_lifetime_wager_amount - 
+                          (SELECT COALESCE(SUM(p.wager), 0) 
+                           FROM predictions p 
+                           WHERE p.miner_uid = miner_stats.miner_uid 
+                             AND p.outcome = 3)) > 0
+                    THEN (miner_lifetime_earnings - 
+                          (miner_lifetime_wager_amount - 
+                           (SELECT COALESCE(SUM(p.wager), 0) 
+                            FROM predictions p 
+                            WHERE p.miner_uid = miner_stats.miner_uid 
+                              AND p.outcome = 3))
+                         ) / 
+                         (miner_lifetime_wager_amount - 
+                          (SELECT COALESCE(SUM(p.wager), 0) 
+                           FROM predictions p 
+                           WHERE p.miner_uid = miner_stats.miner_uid 
+                             AND p.outcome = 3))
+                    ELSE 0
+                END,
+                miner_last_prediction_date = (
+                    SELECT MAX(p.prediction_date)
+                    FROM predictions p
+                    WHERE p.miner_uid = miner_stats.miner_uid
+                )
+        """
+        self.db_manager.execute_query(update_lifetime_query)
+        bt.logging.debug("Updated lifetime statistics for miners.")
+
+    def _update_additional_fields(self):
+        """
+        Update additional miner fields such as rank, status, and cash.
+        """
+        bt.logging.info("Updating additional miner fields...")
+
+        # Placeholder for additional field updates
+        update_additional_fields_query = """
+            UPDATE miner_stats
+            SET
+                miner_rank = ?,
+                miner_status = ?,
+                miner_cash = ?,
+                miner_current_incentive = ?
+            WHERE miner_uid = ?
+        """
+        additional_records = []
+        for miner_uid in range(self.num_miners):
+            miner_rank = self.get_miner_rank(miner_uid)
+            miner_status = self.get_miner_status(miner_uid)
+            miner_cash = self.calculate_miner_cash(miner_uid)
+            miner_current_incentive = self.get_miner_current_incentive(miner_uid)
+            additional_records.append((miner_rank, miner_status, miner_cash, miner_current_incentive, miner_uid))
+        
+        self.db_manager.executemany(update_additional_fields_query, additional_records)
+        bt.logging.debug("Additional miner fields updated.")
+
+    def get_current_tiers(self):
+        try:
+            current_day = self.current_day
+            bt.logging.debug(f"Current day: {current_day}")
+            bt.logging.debug(f"Tiers shape: {self.tiers.shape}")
+            if current_day < 0 or current_day >= self.tiers.shape[1]:
+                bt.logging.error(f"Invalid current_day: {current_day}")
+                return {}
+            tiers = self.tiers[:, current_day]
+            bt.logging.debug(f"Tiers: {tiers}")
+            return {miner_uid: tier for miner_uid, tier in enumerate(tiers)}
+        except Exception as e:
+            bt.logging.error(f"Error in get_current_tiers: {str(e)}")
+            return {}
+
+    def get_miner_rank(self, miner_uid: int) -> int:
+        """
+        Get the rank for a miner.
+        
+        Args:
+            miner_uid (int): The miner's UID.
+        
+        Returns:
+            int: Calculated rank.
+        """
+        rank = self.validator.metagraph.R[miner_uid]
+        return int(rank)
+
+    def get_miner_status(self, miner_uid: int) -> str:
+        """
+        Get the current status of a miner.
+        
+        Args:
+            miner_uid (int): The miner's UID.
+        
+        Returns:
+            str: Status of the miner.
+        """
+        active = self.validator.metagraph.active[miner_uid]
+        return "active" if active else "inactive"
+
+    def calculate_miner_cash(self, miner_uid: int) -> float:
+        """
+        Calculate the current cash for a miner by subtracting
+        the sum of their wagers made since 00:00 UTC from today.
+
+        Args:
+            miner_uid (int): The miner's UID.
+
+        Returns:
+            float: Current cash of the miner.
+        """
+        # Calculate the start of today in UTC
+        now_utc = datetime.now(timezone.utc)
+        start_of_today = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Query to sum wagers since the start of today
+        query = """
+            SELECT SUM(wager) as total_wager
+            FROM predictions
+            WHERE miner_uid = ?
+              AND prediction_date >= ?
+        """
+        result = self.db_manager.fetch_one(query, (miner_uid, start_of_today))
+        total_wager = result['total_wager'] if result['total_wager'] is not None else 0.0
+
+        return 1000 - float(total_wager)
+
+    def get_miner_current_incentive(self, miner_uid: int) -> float:
+        incentive = self.validator.metagraph.incentive[miner_uid]
+        return float(incentive)
+
+
+
+
+
+
+
+
+
 

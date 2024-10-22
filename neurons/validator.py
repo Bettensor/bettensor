@@ -44,7 +44,7 @@ def log_status(validator):
             "\n"
             "================================ VALIDATOR STATUS ================================\n"
             f"Current time: {current_time}\n"
-            f"Current Step: {validator.step}\n"
+            f"Scoring System, Current Day: {validator.scoring_system.current_day}\n"
             f"Current block: {current_block}\n"
             f"Last updated block: {validator.last_updated_block}\n"
             f"Blocks until next query_and_process_axons: {blocks_until_query_axons}\n"
@@ -53,8 +53,18 @@ def log_status(validator):
             f"Blocks until set_weights: {blocks_until_set_weights}\n"
             "================================================================================\n"
         )
+        
+        debug_message = (
+            f"Scoring System, Current Day: {validator.scoring_system.current_day}\n"
+            f"Scoring System, Current Day Tiers: {validator.scoring_system.tiers[:, validator.scoring_system.current_day]}\n"
+            f"Scoring System, Current Day Tiers Length: {len(validator.scoring_system.tiers[:, validator.scoring_system.current_day])}\n"
+            f"Scoring System, Current Day Scores: {validator.scoring_system.composite_scores[:, validator.scoring_system.current_day, 0]}\n"
+            f"Scoring System, Amount Wagered Last 5 Days: {validator.scoring_system.amount_wagered[:, validator.scoring_system.current_day]}\n"
+
+        )
 
         bt.logging.info(status_message)
+        #bt.logging.debug(debug_message)
         time.sleep(30)
 
 def perform_update_task_with_timeout(validator):
