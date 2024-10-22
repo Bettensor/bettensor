@@ -239,7 +239,7 @@ class ScoringData:
             bt.logging.info(f"Updating miner stats for day {current_day}...")
 
             # Update miner_hotkey and miner_coldkey from metagraph
-            for miner_uid in range(self.num_miners):
+            for miner_uid in range(len(self.validator.metagraph.hotkeys)-1):
                 hotkey = self.validator.metagraph.hotkeys[miner_uid]
                 coldkey = self.validator.metagraph.coldkeys[miner_uid]
 
@@ -456,7 +456,7 @@ class ScoringData:
             WHERE miner_uid = ?
         """
         additional_records = []
-        for miner_uid in range(self.num_miners):
+        for miner_uid in range(len(self.validator.metagraph.hotkeys)-1):
             miner_rank = self.get_miner_rank(miner_uid)
             miner_status = self.get_miner_status(miner_uid)
             miner_cash = self.calculate_miner_cash(miner_uid)

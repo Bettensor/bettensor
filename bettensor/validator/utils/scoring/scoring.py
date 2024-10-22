@@ -633,7 +633,11 @@ class ScoringSystem:
 
             # Apply non-linear normalization (e.g., exponential)
             exp_scores = np.exp(composite_scores)
-            normalized_scores = (exp_scores - exp_scores.min()) / (exp_scores.max() - exp_scores.min())
+            score_range = exp_scores.max() - exp_scores.min()
+            if score_range > 0:
+                normalized_scores = (exp_scores - exp_scores.min()) / score_range
+            else:
+                normalized_scores = np.ones_like(exp_scores) / len(exp_scores)  # Equal distribution if all scores are the same
 
             # Apply tier incentives
             for idx, tier in enumerate(range(2, self.num_tiers)):

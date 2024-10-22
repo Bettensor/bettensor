@@ -69,6 +69,14 @@ class WeightSetter:
 
     @timeout_with_multiprocess(60)
     def set_weights(self, weights: torch.Tensor):
+            # ensure weights and uids are the same length
+            if len(weights) != len(self.metagraph.uids):
+                bt.logging.error(f"Weights and uids are not the same length: {len(weights)} != {len(self.metagraph.uids)}")
+                bt.logging.error(f"Weights: {len(weights)}")
+                bt.logging.error(f"Uids: {len(self.metagraph.uids)}")
+                #trim weights to the length of uids
+                weights = weights[:len(self.metagraph.uids)]
+            
             try:
                 bt.logging.info("Attempting to set weights")
                 result = self.subtensor.set_weights(

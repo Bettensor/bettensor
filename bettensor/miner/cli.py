@@ -128,14 +128,32 @@ class Application:
         self.predictions_handler = None
         self.games_handler = None
         self.available_miners = []
+
+        # Miner stats
+        self.miner_current_tier = 1
+        self.miner_rank = 0
+        self.miner_current_entropy_score = 0
+        self.miner_current_clv_score = 0
+        self.miner_current_composite_score = 0
+        self.miner_current_sortino_ratio = 0
+        self.miner_current_clv_avg = 0
+        self.miner_current_incentive = 0
+
         self.miner_cash = 0
         self.miner_lifetime_earnings = 0
         self.miner_lifetime_wager = 0
+        self.miner_lifetime_predictions = 0
         self.miner_lifetime_wins = 0
         self.miner_lifetime_losses = 0
+        self.miner_lifetime_roi = 0
         self.miner_win_loss_ratio = 0
         self.miner_last_prediction_date = None
+        
+
+        # local active status
         self.miner_is_active = False
+
+
         self.last_key_press = None
         self.search_mode = False
         self.predictions_search_mode = False
@@ -249,7 +267,14 @@ class Application:
                     self.miner_hotkey = str(miner["miner_hotkey"])
                     self.miner_uid = str(miner["miner_uid"])
                     self.miner_cash = float(miner["miner_cash"])
-                    self.miner_is_active = miner.get("is_active", False)
+                    self.miner_rank = int(miner["miner_rank"])
+                    self.miner_current_entropy_score = float(miner["miner_current_entropy_score"])
+                    self.miner_current_clv_avg = float(miner["miner_current_clv_avg"])
+                    self.miner_current_composite_score = float(miner["miner_current_composite_score"])
+                    self.miner_current_sortino_ratio = float(miner["miner_current_sortino_ratio"])
+                    self.miner_current_incentive = float(miner["miner_current_incentive"])
+                    self.miner_current_tier = int(miner["miner_current_tier"])
+                    self.miner_lifetime_roi = float(miner["miner_lifetime_roi"])
                     valid_miner_found = True
                     break
 
@@ -265,7 +290,9 @@ class Application:
     def get_available_miners(self):
         self.add_log_message("Retrieving miners from database...")
         query = """
-        SELECT ms.miner_uid, ms.miner_hotkey, ms.miner_cash, ms.miner_rank,
+        SELECT ms.miner_uid, ms.miner_hotkey, ms.miner_cash, ms.miner_rank, ms.miner_current_entropy_score, ms.miner_current_clv_avg, ms.miner_current_composite_score, ms.miner_current_sortino_ratio, ms.miner_current_incentive,
+                ms.miner_current_tier,
+
                CASE WHEN ma.last_active_timestamp > NOW() - INTERVAL '5 minutes' THEN TRUE ELSE FALSE END as is_active
         FROM miner_stats ms
         LEFT JOIN miner_active ma ON ms.miner_uid::text = ma.miner_uid::text
@@ -467,14 +494,20 @@ class Application:
             ("Miner Cash", f"${self.miner_cash:.2f}"),
             (
                 "Current Incentive",
-                f"{self.stats_handler.get_current_incentive():.2f} τ per day"
-                if self.stats_handler
+                f"{self.miner_current_incentive:.2f} τ per day"
+                if self.miner_current_incentive
                 else "N/A",
             ),
             (
                 "Last Prediction",
                 self.format_last_prediction_date(self.miner_last_prediction_date),
             ),
+            ("Current Tier", str(self.miner_current_tier)),
+            ("Current Entropy Score (Daily)", f"{self.miner_current_entropy_score:.2f}"),
+            ("Current CLV Avg (Daily)", f"{self.miner_current_clv_avg:.2f}"),
+            ("Current Composite Score(Tier Score)", f"{self.miner_current_composite_score:.2f}"),
+            ("Current Risk Score (Daily)", f"{self.miner_current_sortino_ratio:.2f}"),
+            ("Lifetime ROI (%)", f"{self.miner_lifetime_roi:.2f}"),
             ("Lifetime Earnings", f"${self.miner_lifetime_earnings:.2f}"),
             ("Lifetime Wager Amount", f"${self.miner_lifetime_wager:.2f}"),
             ("Lifetime Wins", str(self.miner_lifetime_wins)),
