@@ -134,16 +134,14 @@ class MinerDataMixin:
                         )
                         continue
 
-                    #ensure predicted_odds matches either team_a_odds, team_b_odds, or tie_odds
-                    if (predicted_odds != team_a_odds and predicted_outcome == 0) and (predicted_odds != team_b_odds and predicted_outcome == 1) and (predicted_odds != tie_odds and predicted_outcome == 2)    :
-                        #set predicted_odds based on the predicted_outcome
-                        if predicted_outcome == 0:
-                            predicted_odds = team_a_odds
-                        elif predicted_outcome == 1:
-                            predicted_odds = team_b_odds
-                        elif predicted_outcome == 2:
-                            predicted_odds = tie_odds
+                    # Get the odds for the predicted outcome from game_data. Too vulnerable to manipulation otherwise.
+                    outcome_to_odds = {
+                        0: team_a_odds,
+                        1: team_b_odds,
+                        2: tie_odds
+                    }
 
+                    predicted_odds = outcome_to_odds.get(predicted_outcome, predicted_odds)
 
                     # Check if the game has already started
                     if current_time >= event_start_date:
@@ -445,3 +443,4 @@ class MinerDataMixin:
             gamedata_dict[row["external_id"]] = team_game
 
         return gamedata_dict
+
