@@ -57,6 +57,9 @@ def pull_latest_changes():
             bt.logging.info("No new changes to pull.")
             return False
         
+        #stash any changes
+        subprocess.check_call(["git", "stash"])
+        
         # If hashes are different, pull the changes
         subprocess.check_call(["git", "pull", "origin", current_branch])
         
