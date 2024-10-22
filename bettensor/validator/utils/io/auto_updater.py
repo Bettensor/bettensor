@@ -96,8 +96,7 @@ def get_pm2_process_name():
     except Exception as e:
         print(f"Error getting PM2 process name: {e}")
         return None
-
-async def perform_update(validator):
+def perform_update(validator):
     bt.logging.info("Checking for updates...")
     
     if pull_latest_changes():

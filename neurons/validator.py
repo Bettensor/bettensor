@@ -136,6 +136,7 @@ def run(validator: BettensorValidator):
             bt.logging.info(f"Current block: {current_block}")
 
             # Perform update (if needed)
+            bt.logging.info("Perform_update called")
             perform_update(validator)
 
             # Update game data
