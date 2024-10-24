@@ -116,6 +116,9 @@ class WebsiteHandler:
                 else:
                     bt.logging.warning(f"Invalid miner_uid: {miner_uid}. Setting coldkey to 'dummy_coldkey'.")
                     coldkey = "dummy_coldkey"
+                # fetch miner stats by miner_uid
+
+                miner_stats = self.validator.db_manager.fetch_one("SELECT * FROM miner_stats WHERE miner_uid = ?", (miner_uid,))
 
                 transformed_data = []
                 for prediction in predictions:
@@ -128,6 +131,7 @@ class WebsiteHandler:
                             "miner_uid": miner_uid,
                             "miner_hotkey": hotkey,
                             "miner_coldkey": coldkey,
+                            "miner_stats": miner_stats,
                             "prediction_date": prediction.get("prediction_date"),
                             "predicted_outcome": prediction.get("predicted_outcome"),
                             "wager": prediction.get("wager"),
