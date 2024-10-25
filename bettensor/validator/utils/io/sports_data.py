@@ -70,7 +70,7 @@ class SportsData:
 
                 if sport.lower() == "football":
                     can_tie = False
-                    tie_odds = -1.0
+                    tie_odds = 0.0
 
                 # Convert outcomes to numeric
                 if outcome == "TeamAWin":

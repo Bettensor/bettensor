@@ -288,12 +288,18 @@ class EntropySystem:
         Calculate the initial entropy for a game outcome based on the odds.
 
         Args:
-            closing_line_odds (float): Odds for the outcome.
+            initial_odds (float): Odds for the outcome.
 
         Returns:
             float: Initial entropy value.
         """
+        # Handle invalid odds (negative or zero)
+        if initial_odds <= 0:
+            return 0.0
+        
         prob = 1 / (initial_odds + self.epsilon)
+        # Ensure probability is in valid range [0,1]
+        prob = max(0, min(1, prob))
         entropy = -prob * math.log2(prob + self.epsilon)
         result = max(entropy, self.epsilon)
         bt.logging.debug(
@@ -468,3 +474,4 @@ class EntropySystem:
                 f"Unexpected error loading state: {e}. Starting with fresh state."
             )
             bt.logging.error(traceback.format_exc())
+
