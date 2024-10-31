@@ -1105,6 +1105,7 @@ class ScoringSystem:
         Args:
             miner_uid (int): The UID of the miner to reset.
         """
+        bt.logging.info(f"Resetting miner {miner_uid}, metagraph change detected: {self.validator.metagraph.hotkeys}")
         self.clv_scores[miner_uid] = 0
         self.roi_scores[miner_uid] = 0
         self.amount_wagered[miner_uid] = 0

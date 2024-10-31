@@ -31,6 +31,33 @@ WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
 
+
+
+def time_task(task_name):
+    """
+    Decorator that times the execution of validator tasks and logs the duration.
+    
+    Args:
+        task_name (str): Name of the task being timed
+        
+    Returns:
+        decorator: Wrapped function that times execution
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            try:
+                result = func(*args, **kwargs)
+                duration = time.time() - start_time
+                bt.logging.info(f"{task_name} completed in {duration:.2f} seconds")
+                return result
+            except Exception as e:
+                duration = time.time() - start_time
+                bt.logging.error(f"{task_name} failed after {duration:.2f} seconds with error: {str(e)}")
+                raise
+        return wrapper
+    return decorator
+
 def log_status(validator):
     while True:
         current_time = datetime.now(timezone.utc)
@@ -67,56 +94,7 @@ def log_status(validator):
         #bt.logging.debug(debug_message)
         time.sleep(30)
 
-def perform_update_task_with_timeout(validator):
-    try:
-        perform_update(validator)
-    except Exception as e:
-        bt.logging.error(f"Error in update task: {str(e)}")
-        raise
 
-def update_game_data_task_with_timeout(validator, current_time):
-    try:
-        update_game_data(validator, current_time)
-    except Exception as e:
-        bt.logging.error(f"Error in game data update task: {str(e)}")
-        raise
-
-def sync_metagraph_task_with_timeout(validator):
-    try:
-        sync_metagraph_with_retry(validator)
-    except WebSocketConnectionClosedException:
-        bt.logging.error("WebSocket connection closed during metagraph sync")
-    except Exception as e:
-        bt.logging.error(f"Error in metagraph sync task: {str(e)}")
-        raise
-
-def query_and_process_axons_task_with_timeout(validator):
-    try:
-        query_and_process_axons_with_game_data(validator)
-    except Exception as e:
-        bt.logging.error(f"Error in query and process axons task: {str(e)}")
-        raise
-
-def send_data_to_website_task_with_timeout(validator):
-    try:
-        send_data_to_website_server(validator)
-    except Exception as e:
-        bt.logging.error(f"Error in send data to website task: {str(e)}")
-        raise
-
-def scoring_run_task_with_timeout(validator, current_time):
-    try:
-        scoring_run(validator, current_time)
-    except Exception as e:
-        bt.logging.error(f"Error in scoring_run task: {str(e)}")
-        raise
-
-def set_weights_task_with_timeout(validator):
-    try:
-        set_weights(validator, validator.scores)
-    except Exception as e:
-        bt.logging.error(f"Error in set weights task: {str(e)}")
-        raise
 
 
 
@@ -243,6 +221,7 @@ def update_game_data(validator, current_time):
 
     validator.last_updated_block = validator.subtensor.block
 
+@time_task("sync_metagraph")
 def sync_metagraph_with_retry(validator):
     max_retries = 3
     retry_delay = 60
@@ -263,6 +242,7 @@ def sync_metagraph_with_retry(validator):
             raise
         max_retries -= 1
 
+@time_task("filter_and_update_axons")
 def filter_and_update_axons(validator):
     all_axons = validator.metagraph.axons
     bt.logging.trace(f"All axons: {all_axons}")
@@ -303,6 +283,7 @@ def filter_and_update_axons(validator):
 
     return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
+@time_task("query_and_process_axons")
 def query_and_process_axons_with_game_data(validator):
     """
     Queries axons with game data and processes the responses
@@ -390,6 +371,7 @@ def query_and_process_axons_with_game_data(validator):
             bt.logging.error(f"Error processing predictions: {e}")
             bt.logging.error(traceback.format_exc())
 
+@time_task("send_data_to_website_server")
 def send_data_to_website_server(validator):
     """
     Sends data to the website server
@@ -408,6 +390,7 @@ def send_data_to_website_server(validator):
     except Exception as e:
         bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
+@time_task("scoring_run")
 def scoring_run(validator, current_time):
     """
     calls the scoring system to update miner scores before setting weights
@@ -473,7 +456,7 @@ def scoring_run(validator, current_time):
 
 
 
-
+@time_task("set_weights")
 def set_weights(validator, scores):
     """
     Sets the weights for the validator
@@ -570,6 +553,10 @@ def main():
         sys.exit()
 
     run(validator)
+
+
+
+
 
 if __name__ == "__main__":
     main()
