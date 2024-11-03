@@ -68,18 +68,27 @@ class SportsData:
 
                 can_tie = sport.lower() == "soccer"
 
+                if sport.lower() == "football":
+                    can_tie = False
+                    tie_odds = 0.0
+
+                # Ensure event_start_date is timezone aware
+                event_start_time = datetime.fromisoformat(event_start_date)
+                if event_start_time.tzinfo is None:
+                    event_start_time = event_start_time.replace(tzinfo=timezone.utc)
+
                 # Convert outcomes to numeric
                 if outcome == "TeamAWin":
                     outcome = 0
                 elif outcome == "TeamBWin":
                     outcome = 1
-                elif outcome == "Draw":
+                elif outcome == "Draw" and datetime.now(timezone.utc) - event_start_time > timedelta(hours=4):
                     outcome = 2
-                else:  # Unfinished game
+                else:
                     outcome = 3
 
-                # Set active to 0 if outcome is not "Unfinished"
-                if outcome != 3:
+                # Set active to 0 if outcome is not "Unfinished" and more than 4 hours have passed
+                if outcome != 3 and (datetime.now(timezone.utc) - event_start_time) > timedelta(hours=4):
                     active = 0
 
                 self.db_manager.execute_query(

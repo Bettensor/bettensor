@@ -264,17 +264,17 @@ class Application:
             valid_miner_found = False
             for miner in self.available_miners:
                 if str(miner["miner_uid"]) == str(self.current_miner_uid):
-                    self.miner_hotkey = str(miner["miner_hotkey"])
-                    self.miner_uid = str(miner["miner_uid"])
-                    self.miner_cash = float(miner["miner_cash"])
-                    self.miner_rank = int(miner["miner_rank"])
-                    self.miner_current_entropy_score = float(miner["miner_current_entropy_score"])
-                    self.miner_current_clv_avg = float(miner["miner_current_clv_avg"])
-                    self.miner_current_composite_score = float(miner["miner_current_composite_score"])
-                    self.miner_current_sortino_ratio = float(miner["miner_current_sortino_ratio"])
-                    self.miner_current_incentive = float(miner["miner_current_incentive"])
-                    self.miner_current_tier = int(miner["miner_current_tier"])
-                    self.miner_lifetime_roi = float(miner["miner_lifetime_roi"])
+                    self.miner_hotkey = str(miner.get("miner_hotkey", ''))
+                    self.miner_uid = str(miner.get("miner_uid", ''))
+                    self.miner_cash = float(miner["miner_cash"]) if miner.get("miner_cash") is not None else 0.0
+                    self.miner_rank = int(miner["miner_rank"]) if miner.get("miner_rank") is not None else 0
+                    self.miner_current_entropy_score = float(miner["miner_current_entropy_score"]) if miner.get("miner_current_entropy_score") is not None else 0.0
+                    self.miner_current_clv_avg = float(miner["miner_current_clv_avg"]) if miner.get("miner_current_clv_avg") is not None else 0.0
+                    self.miner_current_composite_score = float(miner["miner_current_composite_score"]) if miner.get("miner_current_composite_score") is not None else 0.0
+                    self.miner_current_sortino_ratio = float(miner["miner_current_sortino_ratio"]) if miner.get("miner_current_sortino_ratio") is not None else 0.0
+                    self.miner_current_incentive = float(miner["miner_current_incentive"]) if miner.get("miner_current_incentive") is not None else 0.0
+                    self.miner_current_tier = int(miner["miner_current_tier"]) if miner.get("miner_current_tier") is not None else 0
+                    self.miner_lifetime_roi = float(miner["miner_lifetime_roi"]) if miner.get("miner_lifetime_roi") is not None else 0.0
                     valid_miner_found = True
                     break
 

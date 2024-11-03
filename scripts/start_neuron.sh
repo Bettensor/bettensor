@@ -15,7 +15,6 @@ chmod +x neurons/*.py
 
 # Default neuron arguments
 DEFAULT_NEURON_ARGS=""
-DISABLE_AUTO_UPDATE=""
 NEURON_TYPE=""
 NETWORK=""
 WALLET_NAME=""
@@ -62,7 +61,6 @@ while [[ $# -gt 0 ]]; do
         --logging.level) LOGGING_LEVEL="$2"; shift 2 ;;
         --axon.port) AXON_PORT="$2"; shift 2 ;;
         --validator_min_stake) VALIDATOR_MIN_STAKE="$2"; shift 2 ;;
-        --disable_auto_update) DISABLE_AUTO_UPDATE="$2"; shift 2 ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
         
     esac
@@ -95,11 +93,13 @@ DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --wallet.name $WALLET_NAME --wallet.ho
 
 # Miner-specific configuration
 if [ "$NEURON_TYPE" = "miner" ]; then
-    prompt_for_input "Enter validator_min_stake" "1000" "VALIDATOR_MIN_STAKE"
+    prompt_for_input "Enter validator_min_stake:(This should be 1000 for mainnet, 10 for testnet)" "1000" "VALIDATOR_MIN_STAKE"
     DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --validator_min_stake $VALIDATOR_MIN_STAKE"
-    prompt_for_input "Enter axon port" "12345" "AXON_PORT"
+    prompt_for_input "Enter axon port(Ensure that you use separate ports for each miner instance)" "12345" "AXON_PORT"
     DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --axon.port $AXON_PORT"
-    
+    # Prompt for starting Flask server
+    prompt_yes_no "Would you like to start flask server for connecting to bettensor.com?" "FLASK_SERVER"
+
     # Set up PostgreSQL database parameters
     DB_NAME="bettensor"
     DB_USER="root"
@@ -115,11 +115,7 @@ prompt_for_input "Enter logging level (info/debug/trace)" "debug" "LOGGING_LEVEL
 DEFAULT_NEURON_ARGS="$DEFAULT_NEURON_ARGS --logging.$LOGGING_LEVEL"
 
 
-# Prompt for disabling auto-update if not provided
-prompt_yes_no "Do you want to disable auto-update? Warning: this will apply to all running neurons" "DISABLE_AUTO_UPDATE"
 
-# Prompt for starting Flask server
-prompt_yes_no "Would you like to start flask server for connecting to bettensor.com?" "FLASK_SERVER"
 
 
 # Start the neuron with PM2
@@ -147,6 +143,7 @@ fi
 
 # Start additional services only for miners
 if [ "$NEURON_TYPE" = "miner" ]; then
+    
     if [ "$FLASK_SERVER" = "true" ]; then
         if ! pm2 list | grep -q "flask-server"; then
             echo "Starting Flask server..."
@@ -170,30 +167,6 @@ if [ "$NEURON_TYPE" = "miner" ]; then
     fi
 fi
 
-# Start auto-updater if not disabled
-if [ "$DISABLE_AUTO_UPDATE" = "false" ]; then
-    if ! pm2 list | grep -q "auto-updater"; then
-        echo "Starting auto-updater..."
-        pm2 start --name "auto-updater" \
-            --cwd "$REPO_ROOT" \
-            bash \
-            -- scripts/auto_update.sh
-        
-        sleep 5  # Give the process a moment to start
-
-        if pm2 list | grep -q "auto-updater"; then
-            echo "Auto-updater started successfully."
-            pm2 logs "auto-updater" --lines 20 --nostream
-        else
-            echo "Failed to start auto-updater. Check logs for details."
-            pm2 logs "auto-updater" --lines 20 --nostream
-        fi
-    else
-        echo "Auto-updater is already running."
-    fi
-else
-    echo "Auto-updater is disabled."
-fi
 
 # Save the PM2 process list
 pm2 save --force
