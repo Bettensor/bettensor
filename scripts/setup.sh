@@ -195,7 +195,7 @@ apt-get update
 apt-get install -y python3.10 python3.10-venv python3.10-dev
 
 # Install npm, jq, and pm2
-apt-get install -y npm jq
+apt-get install -y npm jq libfuzzy-dev
 npm install -g pm2
 
 # Determine the correct directory structure

@@ -344,6 +344,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                         )
                         self.scores[i] = 0.0
                         self.scoring_system.reset_miner(i)
+                        self.save_state()
                         
             else:
                 bt.logging.info(

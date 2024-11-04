@@ -18,6 +18,7 @@ import numpy as np
 import bittensor as bt
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict
+import time
 
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 from .scoring_data import ScoringData
@@ -528,19 +529,62 @@ class ScoringSystem:
         if not self._meets_tier_requirements(miner, new_tier):
             self._cascade_demotion(miner, new_tier, tiers, composite_scores)
 
-    def reset_miner(self, miner_uid: int):
+    def reset_miner(self, miner_uid):
         """
-        Initialize a new miner, replacing any existing miner at the same UID.
-
-        Args:
-            miner_uid (int): The UID of the miner to reset.
+        Completely reset a miner's stats and predictions.
+        This is called when a hotkey changes UIDs or when a miner needs to be reset.
         """
-        self.clv_scores[miner_uid] = 0
-        self.roi_scores[miner_uid] = 0
-        self.amount_wagered[miner_uid] = 0
-        self.composite_scores[miner_uid] = 0
-        self.entropy_scores[miner_uid] = 0
-        self.tiers[miner_uid] = 1 if miner_uid in self.invalid_uids else 2
+        try:
+            queries = [
+                # Clear all stats for the miner
+                ("""UPDATE miner_stats 
+                    SET miner_hotkey = NULL,
+                        miner_coldkey = NULL,
+                        miner_rank = NULL,
+                        miner_status = NULL,
+                        miner_cash = 0,
+                        miner_current_incentive = 0,
+                        miner_current_tier = 1,
+                        miner_current_scoring_window = 0,
+                        miner_current_composite_score = NULL,
+                        miner_current_sharpe_ratio = NULL,
+                        miner_current_sortino_ratio = NULL,
+                        miner_current_roi = NULL,
+                        miner_current_clv_avg = NULL,
+                        miner_last_prediction_date = NULL,
+                        miner_lifetime_earnings = 0,
+                        miner_lifetime_wager_amount = 0,
+                        miner_lifetime_roi = 0,
+                        miner_lifetime_predictions = 0,
+                        miner_lifetime_wins = 0,
+                        miner_lifetime_losses = 0,
+                        miner_win_loss_ratio = 0
+                    WHERE miner_uid = ?""", 
+                 (miner_uid,)),
+                 
+                # Delete all predictions for this miner
+                ("""DELETE FROM predictions 
+                    WHERE miner_uid = ?""",
+                 (miner_uid,)),
+                  
+            ]
+            
+            for query, params in queries:
+                for attempt in range(3):  # Try each query up to 3 times
+                    try:
+                        self.db_manager.execute(query, params)
+                        break
+                    except TimeoutError:
+                        if attempt == 2:  # Last attempt
+                            bt.logging.error(f"Failed to reset miner {miner_uid} after 3 attempts")
+                            raise
+                        time.sleep(1)  # Wait before retry
+                        
+            bt.logging.info(f"Successfully reset all data for miner {miner_uid}")
+                    
+        except Exception as e:
+            bt.logging.error(f"Error resetting miner {miner_uid}: {str(e)}")
+            raise
 
     def get_miner_history(self, miner_uid: int, score_type: str, days: int = None):
         """
@@ -1097,38 +1141,6 @@ class ScoringSystem:
             return date_input
         else:
             raise TypeError("Date input must be a string, datetime, or date object.")
-
-    def reset_miner(self, miner_uid: int):
-        """
-        Initialize a new miner, replacing any existing miner at the same UID.
-
-        Args:
-            miner_uid (int): The UID of the miner to reset.
-        """
-        bt.logging.info(f"Resetting miner {miner_uid}, metagraph change detected: {self.validator.metagraph.hotkeys}")
-        self.clv_scores[miner_uid] = 0
-        self.roi_scores[miner_uid] = 0
-        self.amount_wagered[miner_uid] = 0
-        self.composite_scores[miner_uid] = 0
-        self.entropy_scores[miner_uid] = 0
-        self.tiers[miner_uid] = 1 if miner_uid in self.invalid_uids else 2
-
-        #reset miner stats row, set all columns to null (except miner_uid)
-        self.db_manager.execute("""UPDATE miner_stats SET miner_current_composite_score = NULL, 
-                                miner_current_entropy_score = NULL, miner_current_sortino_ratio = NULL, 
-                                miner_current_roi = NULL, miner_current_clv_avg = NULL,
-                                miner_current_sharpe_ratio = NULL, miner_current_tier = 2,
-                                miner_current_scoring_window = NULL, miner_current_entropy_score = NULL,
-                                miner_current_sortino_ratio = NULL, miner_current_roi = NULL, miner_current_clv_avg = NULL,
-                                miner_last_prediction_date = NULL, miner_lifetime_earnings = NULL, miner_lifetime_wager_amount = NULL,
-                                miner_lifetime_roi = NULL, miner_lifetime_predictions = NULL, miner_lifetime_wins = NULL,
-                                miner_lifetime_losses = NULL, miner_win_loss_ratio = NULL,
-                                miner_hotkey = NULL, miner_coldkey = NULL, miner_status = NULL, miner_cash = NULL,
-                                miner_current_incentive = NULL, miner_current_tier = NULL, miner_current_scoring_window = NULL,
-
-                                WHERE miner_uid = ?""", (miner_uid,))
-        #delete all predictions for this miner
-        self.db_manager.execute("DELETE FROM predictions WHERE miner_uid = ?", (miner_uid,))
 
     def full_reset(self):
         """

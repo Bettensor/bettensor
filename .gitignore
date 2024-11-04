@@ -195,3 +195,5 @@ private_key.pem
 test_database.*
 validator_confirmation_dict.json
 entropy_system_state.json
+state_metadata.json
+state_hashes.txt

@@ -4,6 +4,7 @@ import bittensor as bt
 from queue import Queue, Empty
 from bettensor.validator.utils.database.database_init import initialize_database
 import logging
+import time
 
 class SingletonMeta(type):
     """
@@ -32,140 +33,70 @@ class DatabaseManager(metaclass=SingletonMeta):
             bt.logging.info("DatabaseManager already initialized, skipping initialization.")
             return
 
+        bt.logging.info("Starting DatabaseManager initialization...")
+        
         # Initialize thread lock
-        bt.logging.info("Initializing DatabaseManager thread lock.")
+        bt.logging.info("Initializing thread lock...")
         self.lock = threading.Lock()
-
+        
         # Initialize other attributes
+        bt.logging.info("Initializing attributes...")
         self.queue = Queue()
         self.db_path = db_path
-        self.conn = None
-        self.cursor = None
         self.transaction_active = False
         self.logger = None
 
         # Setup logging
+        bt.logging.info("Setting up logging...")
         logging.basicConfig(level=logging.DEBUG)
         self.logger = logging.getLogger(__name__)
 
-        # Establish database connection
-        self.connect()
-
-        # Initialize database schema
-        self._initialize_database()
-
-        # Check and migrate schema if necessary
-        self.check_and_migrate_schema()
-
-        # Start background worker thread
-        self._start_worker()
+        # Initialize thread local storage
+        self._thread_local = threading.local()
 
         # Mark as initialized
+        bt.logging.info("DatabaseManager initialization complete.")
         self._initialized = True
 
-    def connect(self):
-        """
-        Establish a connection to the SQLite database.
-        """
-        try:
-            self.conn = sqlite3.connect(self.db_path)
-            self.cursor = self.conn.cursor()
-            bt.logging.info(f"Successfully connected to database at {self.db_path}")
-        except sqlite3.Error as e:
-            bt.logging.error(f"Error connecting to database: {e}")
-            raise
+        self.worker_thread = None
+        self.running = True
+        self._start_worker()
 
-    def _initialize_database(self):
-        """
-        Initialize the database with required tables.
-        """
-        queries = initialize_database()
-        with self.lock:
-            for query in queries:
-                self.cursor.execute(query)
-            self.conn.commit()
-        self.logger.debug("Database tables created successfully")
+    def _get_connection(self):
+        """Get a thread-local database connection."""
+        if not hasattr(self._thread_local, 'conn') or self._thread_local.conn is None:
+            self._thread_local.conn = sqlite3.connect(self.db_path)
+            self._thread_local.cursor = self._thread_local.conn.cursor()
+            bt.logging.debug(f"Created new database connection for thread {threading.get_ident()}")
+        return self._thread_local.conn, self._thread_local.cursor
 
-    def check_and_migrate_schema(self):
-        """
-        Check the current database schema version and perform migrations if needed.
-        """
-        try:
-            with self.lock:
-                # Check if version table exists
-                version_exists = self.fetch_one(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='db_version'"
-                )
-
-                if not version_exists:
-                    self.execute_query("CREATE TABLE db_version (version INTEGER PRIMARY KEY)")
-                    self.execute_query("INSERT INTO db_version (version) VALUES (0)")
-                    current_version = 0
+    def execute_query(self, query, params=None, max_retries=3, initial_delay=0.1):
+        attempt = 0
+        while attempt < max_retries:
+            try:
+                with self.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(query, params)
+                        conn.commit()
+                        return cur.rowcount
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e):
+                    attempt += 1
+                    if attempt == max_retries:
+                        raise
+                    delay = initial_delay * (2 ** attempt)  # Exponential backoff
+                    bt.logging.warning(f"Database locked, retrying in {delay:.2f}s (attempt {attempt}/{max_retries})")
+                    time.sleep(delay)
                 else:
-                    version = self.fetch_one("SELECT version FROM db_version")
-                    current_version = version['version'] if version else 0
-
-            # Example migration from version 0 to 1
-            if current_version < 1:
-                bt.logging.info("Migrating database schema to version 1...")
-                self.begin_transaction()
-                try:
-                    # Add migration queries here
-                    # Example:
-                    # self.execute_query("ALTER TABLE some_table ADD COLUMN new_column TEXT")
-
-                    self.execute_query("UPDATE db_version SET version = 1")
-                    
-                    self.commit_transaction()
-                    bt.logging.info("Database migration to version 1 completed successfully.")
-                except Exception as e:
-                    self.rollback_transaction()
-                    bt.logging.error(f"Database migration failed: {e}")
                     raise
-        except Exception as e:
-            bt.logging.error(f"Error checking/migrating database schema: {e}")
-            raise
-
-    def fetch_one(self, query, params=None):
-        """
-        Fetch a single record from the database.
-        """
-        with self.lock:
-            try:
-                if params:
-                    self.cursor.execute(query, params)
-                else:
-                    self.cursor.execute(query)
-                result = self.cursor.fetchone()
-                return dict(result) if result else None
-            except sqlite3.Error as e:
-                self.logger.error(f"Database error in fetch_one: {e}")
-                raise
-
-    def execute_query(self, query, params=None):
-        """
-        Execute a single SQL query.
-        """
-        with self.lock:
-            try:
-                if params:
-                    self.cursor.execute(query, params)
-                else:
-                    self.cursor.execute(query)
-                self.conn.commit()
-            except sqlite3.Error as e:
-                self.logger.error(f"Database error in execute_query: {e}")
-                self.conn.rollback()
-                raise
 
     def begin_transaction(self):
-        """
-        Begin a database transaction.
-        """
+        """Begin a database transaction."""
         with self.lock:
             try:
+                conn, _ = self._get_connection()
                 if not self.transaction_active:
-                    self.conn.execute("BEGIN")
+                    conn.execute("BEGIN")
                     self.transaction_active = True
                     self.logger.debug("Transaction started.")
                 else:
@@ -177,87 +108,150 @@ class DatabaseManager(metaclass=SingletonMeta):
                     raise
 
     def commit_transaction(self):
-        """
-        Commit the current database transaction.
-        """
+        """Commit the current database transaction."""
         with self.lock:
-            if self.transaction_active:
-                self.conn.commit()
-                self.transaction_active = False
-                self.logger.debug("Transaction committed.")
-            else:
-                self.logger.warning("No active transaction to commit.")
+            try:
+                conn, _ = self._get_connection()
+                if self.transaction_active:
+                    conn.commit()
+                    self.transaction_active = False
+                    self.logger.debug("Transaction committed.")
+                else:
+                    self.logger.warning("No active transaction to commit.")
+            except sqlite3.Error as e:
+                self.logger.error(f"Error committing transaction: {e}")
+                raise
 
     def rollback_transaction(self):
-        """
-        Rollback the current database transaction.
-        """
+        """Rollback the current database transaction."""
         with self.lock:
-            if self.transaction_active:
-                self.conn.rollback()
-                self.transaction_active = False
-                self.logger.debug("Transaction rolled back.")
-            else:
-                self.logger.warning("No active transaction to rollback.")
+            try:
+                conn, _ = self._get_connection()
+                if self.transaction_active:
+                    conn.rollback()
+                    self.transaction_active = False
+                    self.logger.debug("Transaction rolled back.")
+                else:
+                    self.logger.warning("No active transaction to rollback.")
+            except sqlite3.Error as e:
+                self.logger.error(f"Error rolling back transaction: {e}")
+                raise
 
     def _start_worker(self):
-        """
-        Start the background worker thread for executing queued database operations.
-        """
-        threading.Thread(target=self._worker, daemon=True).start()
+        """Start the background worker thread for executing queued database operations."""
+        if self.worker_thread is None or not self.worker_thread.is_alive():
+            self.worker_thread = threading.Thread(target=self._worker, daemon=True)
+            self.worker_thread.start()
 
     def _worker(self):
-        """
-        Background worker thread that processes database operations from the queue.
-        """
-        while True:
+        """Background worker thread that processes database operations from the queue."""
+        while self.running:
             try:
-                func, args, kwargs, result_queue = self.queue.get(timeout=1)
+                # Shorter timeout to allow for graceful shutdown
+                func, args, kwargs, result_queue = self.queue.get(timeout=0.1)
+                
                 with self.lock:
                     try:
-                        if callable(func):
-                            result = func(*args, **kwargs)
-                        else:
-                            raise TypeError("The 'func' argument must be callable")
-                        if result_queue is not None:
-                            result_queue.put(result)
-                    except Exception as e:
+                        # Create a new connection for each operation
+                        conn = sqlite3.connect(self.db_path, timeout=30)
+                        cursor = conn.cursor()
+                        
+                        try:
+                            if isinstance(args[0], str):  # If it's a SQL query
+                                cursor.execute(*args)
+                                result = cursor.fetchall()
+                                conn.commit()
+                            else:
+                                result = func(*args, **kwargs)
+                            
+                            if result_queue is not None:
+                                result_queue.put(result)
+                                
+                        except Exception as e:
+                            bt.logging.error(f"Database operation error: {str(e)}")
+                            if result_queue is not None:
+                                result_queue.put(e)
+                            conn.rollback()
+                            
+                        finally:
+                            cursor.close()
+                            conn.close()
+                            
+                    except sqlite3.Error as e:
+                        bt.logging.error(f"SQLite error: {str(e)}")
                         if result_queue is not None:
                             result_queue.put(e)
-                        bt.logging.error(f"Error in database operation: {str(e)}")
+                            
             except Empty:
                 continue
+            except Exception as e:
+                bt.logging.error(f"Worker thread error: {str(e)}")
+                time.sleep(0.1)  # Prevent tight loop on persistent errors
 
-    def execute(self, query, params=None, func=None):
-        """
-        Execute a database operation asynchronously.
-
-        Args:
-            query (str): The SQL query to execute.
-            params (tuple, optional): Parameters for the SQL query.
-            func (callable, optional): A function to execute with the query.
-
-        Returns:
-            The result of the database operation or None if it timed out.
-        """
+    def execute(self, query, params=None):
+        """Execute a query asynchronously through the queue with improved timeout handling."""
+        if not self.worker_thread.is_alive():
+            bt.logging.warning("Database worker thread died, restarting...")
+            self._start_worker()
+            
         result_queue = Queue()
-        self.queue.put(func or self.execute_query, args=(query, params), kwargs={}, result_queue=result_queue)
-
+        self.queue.put((self.execute_query, (query, params), {}, result_queue))
+        
         try:
-            result = result_queue.get(timeout=5)
-            if isinstance(result, Exception):
-                raise result
+            # Increased timeout and added retry logic
+            for attempt in range(3):  # Try up to 3 times
+                try:
+                    result = result_queue.get(timeout=10)  # 10 second timeout per attempt
+                    if isinstance(result, Exception):
+                        raise result
+                    return result
+                except Empty:
+                    if attempt < 2:  # Don't sleep on last attempt
+                        time.sleep(1)  # Wait before retry
+                    continue
+                    
+            raise TimeoutError("Database operation timed out after 3 attempts")
+            
+        except Exception as e:
+            bt.logging.error(f"Database execution error: {str(e)}")
+            raise
+
+    def execute_query(self, query, params=None):
+        """Execute a single query with parameters."""
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            cursor = conn.cursor()
+            
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+                
+            result = cursor.fetchall()
+            conn.commit()
             return result
-        except Empty:
-            self.logger.error("Database operation timed out")
-            return None
+            
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise e
+            
+        finally:
+            if conn:
+                conn.close()
+
+    def shutdown(self):
+        """Gracefully shutdown the database manager."""
+        self.running = False
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=5)
 
     def __del__(self):
-        """
-        Destructor to close the database connection upon deletion.
-        """
-        if self.conn:
-            self.conn.close()
+        """Cleanup thread-local connections on deletion."""
+        if hasattr(self, '_thread_local'):
+            if hasattr(self._thread_local, 'conn') and self._thread_local.conn:
+                self._thread_local.conn.close()
 
     def is_transaction_active(self):
         """
@@ -267,3 +261,114 @@ class DatabaseManager(metaclass=SingletonMeta):
             bool: True if a transaction is active, False otherwise.
         """
         return self.transaction_active
+
+    def executemany(self, query, params):
+        """
+        Execute a query with multiple parameter sets.
+        
+        Args:
+            query (str): The SQL query to execute
+            params (list): List of parameter tuples
+            
+        Returns:
+            int: Number of rows affected
+        """
+        with self.lock:
+            try:
+                conn, cursor = self._get_connection()
+                cursor.executemany(query, params)
+                conn.commit()
+                return cursor.rowcount
+            except sqlite3.Error as e:
+                self.logger.error(f"Database error in executemany: {e}")
+                conn.rollback()
+                raise
+
+    def fetch_all(self, query, params=None):
+        """
+        Fetch all records from the database.
+        
+        Args:
+            query (str): The SQL query to execute
+            params (tuple, optional): Parameters for the SQL query
+            
+        Returns:
+            list: List of dictionaries containing the query results
+        """
+        with self.lock:
+            try:
+                conn, cursor = self._get_connection()
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                
+                results = cursor.fetchall()
+                
+                # If no results, return empty list
+                if not results:
+                    return []
+                    
+                # Convert results to list of dictionaries
+                columns = [col[0] for col in cursor.description]
+                return [dict(zip(columns, row)) for row in results]
+                
+            except sqlite3.Error as e:
+                self.logger.error(f"Database error in fetch_all: {e}")
+                raise
+
+    def fetch_one(self, query, params=None):
+        """
+        Fetch a single record from the database.
+        
+        Args:
+            query (str): The SQL query to execute
+            params (tuple, optional): Parameters for the SQL query
+            
+        Returns:
+            dict or int: Dictionary containing the query results, or integer for COUNT queries
+        """
+        with self.lock:
+            try:
+                conn, cursor = self._get_connection()
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                
+                result = cursor.fetchone()
+                
+                # If result is None, return None
+                if result is None:
+                    return None
+                    
+                # If the query is a COUNT query, return just the count value
+                if query.strip().lower().startswith('select count'):
+                    return result[0]
+                    
+                # Convert result to dictionary
+                columns = [col[0] for col in cursor.description]
+                return dict(zip(columns, result))
+                
+            except sqlite3.Error as e:
+                self.logger.error(f"Database error in fetch_one: {e}")
+                raise
+
+    def transaction(self):
+        return DatabaseTransaction(self)
+
+class DatabaseTransaction:
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
+        self.conn = None
+        
+    def __enter__(self):
+        self.conn = self.db_manager.get_connection()
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.conn.commit()
+        else:
+            self.conn.rollback()
+        self.conn.close()

@@ -146,9 +146,9 @@ async def run(validator: BettensorValidator):
     status_log_thread.start()
     game_data_thread.start()
 
-    # Add state sync task
-    state_sync_task = asyncio.create_task(push_state_periodic(validator))
-    
+    # Add state sync tasks
+    state_sync_task = asyncio.create_task(push_state_periodic(validator)) #primary node, pushes state to github
+    state_check_task = asyncio.create_task(check_state_sync(validator)) #non-primary node, checks if state needs to be pulled from github
     
     try:
         while True:
@@ -201,6 +201,7 @@ async def run(validator: BettensorValidator):
         bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
     finally:
         state_sync_task.cancel()
+        state_check_task.cancel()
         # Wait for threads to finish
         status_log_thread.join(timeout=1)
         game_data_thread.join(timeout=1)
@@ -221,15 +222,19 @@ async def run_with_timeout(func, timeout: int, *args, **kwargs) -> Optional[Any]
     try:
         # Convert sync function to async if needed
         if not asyncio.iscoroutinefunction(func):
-            func = partial(asyncio.to_thread, func)
+            async_func = partial(asyncio.to_thread, func)
+        else:
+            async_func = func
         
         async with async_timeout.timeout(timeout):
-            return await func(*args, **kwargs)
+            return await async_func(*args, **kwargs)
     except asyncio.TimeoutError:
-        bt.logging.error(f"{func.__name__} timed out after {timeout} seconds")
+        func_name = getattr(func, '__name__', str(func))
+        bt.logging.error(f"{func_name} timed out after {timeout} seconds")
         return None
     except Exception as e:
-        bt.logging.error(f"Error in {func.__name__}: {str(e)}")
+        func_name = getattr(func, '__name__', str(func))
+        bt.logging.error(f"Error in {func_name}: {str(e)}")
         bt.logging.error(traceback.format_exc())
         return None
 
@@ -594,6 +599,24 @@ async def set_weights(validator, weights_to_set):
         bt.logging.error(f"Error in set_weights wrapper: {str(e)}")
         bt.logging.error(traceback.format_exc())
         return False
+
+
+@time_task("check_state_sync")
+async def check_state_sync(validator):
+    """Periodically check and sync state if needed"""
+    while True:
+        try:
+            if not validator.is_primary:
+                if validator.state_sync.should_pull_state():
+                    bt.logging.info("State divergence detected, pulling latest state")
+                    if validator.state_sync.pull_state():
+                        bt.logging.info("Successfully pulled latest state")
+                    else:
+                        bt.logging.error("Failed to pull latest state")
+            await asyncio.sleep(3600)  # Check every hour
+        except Exception as e:
+            bt.logging.error(f"Error in state sync check: {e}")
+            await asyncio.sleep(300)  # On error, retry after 5 minutes
 
 def cleanup_pycache():
     """Remove all __pycache__ directories and .pyc files"""
