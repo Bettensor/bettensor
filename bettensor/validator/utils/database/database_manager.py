@@ -20,9 +20,10 @@ class DatabaseManager:
     def __init__(self, db_path):
         if not hasattr(self, "initialized"):
             self.db_path = db_path
-            self.conn = sqlite3.connect(db_path, check_same_thread=False)
-            self.conn.row_factory = sqlite3.Row
-            self.cursor = self.conn.cursor()
+            self.connection = None
+            self.cursor = None
+            self.connect()
+            self.check_and_migrate_schema()
             self.transaction_active = False
             logging.basicConfig(level=logging.DEBUG)
             self.logger = logging.getLogger(__name__)
@@ -180,3 +181,54 @@ class DatabaseManager:
 
     def is_transaction_active(self):
         return self.transaction_active
+
+    def check_and_migrate_schema(self):
+        """Check database version and perform migrations if needed"""
+        try:
+            # Check if version table exists
+            version_exists = self.fetch_one(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='db_version'"
+            )
+            
+            if not version_exists:
+                # Create version table
+                self.execute_query(
+                    "CREATE TABLE db_version (version INTEGER PRIMARY KEY)"
+                )
+                self.execute_query("INSERT INTO db_version (version) VALUES (0)")
+                current_version = 0
+            else:
+                current_version = self.fetch_one(
+                    "SELECT version FROM db_version"
+                )['version']
+
+            # If we're on version 0, migrate to version 1
+            if current_version < 1:
+                bt.logging.info("Migrating database schema to version 1...")
+                
+                # Begin transaction
+                self.begin_transaction()
+                
+                try:
+                    # Run migration queries
+                    migration_queries = initialize_database()
+                    for query in migration_queries:
+                        self.execute_query(query)
+                    
+                    # Update version
+                    self.execute_query(
+                        "UPDATE db_version SET version = 1"
+                    )
+                    
+                    # Commit transaction
+                    self.commit_transaction()
+                    bt.logging.info("Database migration completed successfully")
+                    
+                except Exception as e:
+                    self.rollback_transaction()
+                    bt.logging.error(f"Database migration failed: {e}")
+                    raise
+                    
+        except Exception as e:
+            bt.logging.error(f"Error checking/migrating database schema: {e}")
+            raise

@@ -8,15 +8,25 @@ This file contains the code for initializing the database for the validator.
 
 def initialize_database():
     return [
+        # Backup existing data
         """
-        CREATE TABLE IF NOT EXISTS miner_stats (
-            miner_hotkey TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS miner_stats_backup AS 
+        SELECT * FROM miner_stats;
+        """,
+        
+        # Drop existing table and indices
+        "DROP INDEX IF EXISTS idx_miner_stats_hotkey",
+        "DROP TABLE IF EXISTS miner_stats",
+        
+        # Create new table with correct schema
+        """
+        CREATE TABLE miner_stats (
+            miner_uid INTEGER PRIMARY KEY,
+            miner_hotkey TEXT UNIQUE,
             miner_coldkey TEXT,
-            miner_uid INTEGER,
             miner_rank INTEGER,
             miner_status TEXT,
             miner_cash REAL,
-            
             miner_current_incentive REAL,
             miner_current_tier INTEGER,
             miner_current_scoring_window INTEGER,
@@ -26,7 +36,6 @@ def initialize_database():
             miner_current_sortino_ratio REAL,
             miner_current_roi REAL,
             miner_current_clv_avg REAL,
-            
             miner_last_prediction_date TEXT,
             miner_lifetime_earnings REAL,
             miner_lifetime_wager_amount REAL,
@@ -37,104 +46,43 @@ def initialize_database():
             miner_win_loss_ratio REAL
         )
         """,
+        
+        # Restore data from backup
         """
-        CREATE TABLE IF NOT EXISTS predictions (
-            prediction_id TEXT PRIMARY KEY,
-            game_id INTEGER,
-            miner_uid INTEGER,
-            prediction_date TEXT,
-            predicted_outcome INTEGER,
-            predicted_odds REAL,
-            team_a TEXT,
-            team_b TEXT,
-            wager REAL,
-            team_a_odds REAL,
-            team_b_odds REAL,
-            tie_odds REAL,
-            model_name TEXT,
-            confidence_score REAL,
-            outcome INTEGER,
-            payout REAL,
-            sent_to_site INTEGER DEFAULT 0
-        )
+        INSERT INTO miner_stats 
+        SELECT * FROM miner_stats_backup
+        ON CONFLICT(miner_uid) DO UPDATE SET
+            miner_hotkey = excluded.miner_hotkey,
+            miner_coldkey = excluded.miner_coldkey,
+            miner_rank = excluded.miner_rank,
+            miner_status = excluded.miner_status,
+            miner_cash = excluded.miner_cash,
+            miner_current_incentive = excluded.miner_current_incentive,
+            miner_current_tier = excluded.miner_current_tier,
+            miner_current_scoring_window = excluded.miner_current_scoring_window,
+            miner_current_composite_score = excluded.miner_current_composite_score,
+            miner_current_entropy_score = excluded.miner_current_entropy_score,
+            miner_current_sharpe_ratio = excluded.miner_current_sharpe_ratio,
+            miner_current_sortino_ratio = excluded.miner_current_sortino_ratio,
+            miner_current_roi = excluded.miner_current_roi,
+            miner_current_clv_avg = excluded.miner_current_clv_avg,
+            miner_last_prediction_date = excluded.miner_last_prediction_date,
+            miner_lifetime_earnings = excluded.miner_lifetime_earnings,
+            miner_lifetime_wager_amount = excluded.miner_lifetime_wager_amount,
+            miner_lifetime_roi = excluded.miner_lifetime_roi,
+            miner_lifetime_predictions = excluded.miner_lifetime_predictions,
+            miner_lifetime_wins = excluded.miner_lifetime_wins,
+            miner_lifetime_losses = excluded.miner_lifetime_losses,
+            miner_win_loss_ratio = excluded.miner_win_loss_ratio
         """,
+        
+        # Drop backup table
+        "DROP TABLE IF EXISTS miner_stats_backup",
+        
+        # Add index that allows NULL values in hotkey
         """
-        CREATE TABLE IF NOT EXISTS game_data (
-            game_id TEXT PRIMARY KEY UNIQUE,
-            external_id INTEGER UNIQUE,
-            team_a TEXT,
-            team_b TEXT,
-            team_a_odds REAL,
-            team_b_odds REAL,
-            tie_odds REAL,
-            can_tie BOOLEAN,
-            event_start_date TEXT,
-            create_date TEXT,
-            last_update_date TEXT,
-            sport TEXT,
-            league TEXT,
-            outcome INTEGER DEFAULT 3,
-            active INTEGER
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS keys (
-            hotkey TEXT PRIMARY KEY,
-            coldkey TEXT
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS scores (
-            miner_uid INTEGER,
-            day_id INTEGER,
-            score_type TEXT,
-            clv_score REAL,
-            roi_score REAL,
-            sortino_score REAL,
-            entropy_score REAL,
-            composite_score REAL,
-            PRIMARY KEY (miner_uid, day_id, score_type),
-            FOREIGN KEY (miner_uid) REFERENCES miner_stats(miner_uid)
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS score_state (
-            state_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            current_day INTEGER,
-            current_date TEXT,
-            reference_date TEXT,
-            invalid_uids TEXT, -- Serialized list or JSON string
-            valid_uids TEXT,   -- Serialized list or JSON string
-            tiers TEXT,         -- Serialized list or JSON string
-            amount_wagered TEXT, -- Serialized list or JSON string
-            last_update_date TEXT
-        )
-        """,
-        """
-        -- Trigger to delete old predictions
-        CREATE TRIGGER IF NOT EXISTS delete_old_predictions
-        AFTER INSERT ON predictions
-        BEGIN
-            DELETE FROM predictions
-            WHERE prediction_date < date('now', '-50 days');
-        END;
-        """,
-        """
-        -- Trigger to delete old game data
-        CREATE TRIGGER IF NOT EXISTS delete_old_game_data
-        AFTER INSERT ON game_data
-        BEGIN
-            DELETE FROM game_data
-            WHERE event_start_date < date('now', '-50 days');
-        END;
-        """,
-        """
-        -- Trigger to delete old score_state
-        CREATE TRIGGER IF NOT EXISTS delete_old_score_state
-        AFTER INSERT ON score_state
-        BEGIN
-            DELETE FROM score_state
-            WHERE last_update_date < date('now', '-7 days');
-        END;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_miner_stats_hotkey 
+        ON miner_stats(miner_hotkey) 
+        WHERE miner_hotkey IS NOT NULL
         """
     ]

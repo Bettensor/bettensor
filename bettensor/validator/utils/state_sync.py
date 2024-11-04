@@ -105,8 +105,6 @@ class StateSync:
 
     def push_state(self):
         """Push state using SSH (only for primary node)"""
-        # Use SSH URL for pushing
-        self.repo_url = self.ssh_url
         try:
             env = os.environ.copy()
             
@@ -114,13 +112,13 @@ class StateSync:
             ssh_command = f'ssh -v -i {self.ssh_key_path} -o IdentitiesOnly=yes -o UserKnownHostsFile=/root/.ssh/known_hosts'
             env['GIT_SSH_COMMAND'] = ssh_command
             
-            bt.logging.debug(f"Using SSH command: {ssh_command}")
-            
             # Initialize repository if needed
             if not (self.state_dir / ".git").exists():
+                bt.logging.debug("Initializing new git repository")
                 subprocess.run(["git", "init"], cwd=self.state_dir, check=True, env=env)
+                
                 subprocess.run(
-                    ["git", "remote", "add", "origin", self.repo_url],
+                    ["git", "remote", "add", "origin", self.ssh_url],
                     cwd=self.state_dir,
                     check=True,
                     env=env
@@ -129,39 +127,44 @@ class StateSync:
                 # Set up Git LFS
                 if not self._ensure_git_lfs(env):
                     return False
-            
-            # Update remote URL if needed
-            subprocess.run(
-                ["git", "remote", "set-url", "origin", self.repo_url],
-                cwd=self.state_dir,
-                check=True,
-                env=env
-            )
-            bt.logging.debug(f"Updated remote URL to: {self.repo_url}")
-            
-            # Try to pull first
-            try:
+            else:
+                # Update remote URL to SSH
                 subprocess.run(
-                    ["git", "lfs", "pull", "origin", self.repo_branch],
+                    ["git", "remote", "set-url", "origin", self.ssh_url],
                     cwd=self.state_dir,
                     check=True,
                     env=env
                 )
+            
+            # Create or switch to branch
+            try:
                 subprocess.run(
-                    ["git", "pull", "--allow-unrelated-histories", "origin", self.repo_branch],
+                    ["git", "checkout", self.repo_branch],
                     cwd=self.state_dir,
                     check=True,
                     env=env
                 )
             except subprocess.CalledProcessError:
-                bt.logging.warning("Pull failed, continuing with push")
+                # Branch doesn't exist locally, create it
+                subprocess.run(
+                    ["git", "checkout", "-b", self.repo_branch],
+                    cwd=self.state_dir,
+                    check=True,
+                    env=env
+                )
             
             # Add and commit changes
-            subprocess.run(["git", "add"] + self.state_files, cwd=self.state_dir, check=True, env=env)
+            subprocess.run(
+                ["git", "add", "-f"] + self.state_files,
+                cwd=self.state_dir,
+                check=True,
+                env=env
+            )
+            
             try:
                 subprocess.run(
                     ["git", "commit", "-m", f"State update {datetime.now().isoformat()}"],
-                    cwd=self.state_dir, 
+                    cwd=self.state_dir,
                     check=True,
                     env=env
                 )
@@ -169,42 +172,31 @@ class StateSync:
                 bt.logging.info("No changes to commit")
                 return True
             
-            # Push changes with LFS
-            bt.logging.debug(f"Pushing changes using SSH")
+            # Push changes
+            bt.logging.debug("Pushing changes using SSH")
             try:
                 # Push LFS objects first
                 subprocess.run(
-                    ["git", "lfs", "push", "--all", "origin", self.repo_branch],
+                    ["git", "lfs", "push", "origin", self.repo_branch],
                     cwd=self.state_dir,
                     check=True,
                     env=env
                 )
                 
-                # Then push git changes
-                result = subprocess.run(
-                    ["git", "push", "-u", "origin", self.repo_branch],
+                # Then push git changes (force push to ensure our state is preserved)
+                subprocess.run(
+                    ["git", "push", "-f", "origin", self.repo_branch],
                     cwd=self.state_dir,
-                    capture_output=True,
+                    check=True,
                     env=env
                 )
-                if result.returncode != 0:
-                    bt.logging.warning("Normal push failed, attempting force push")
-                    result = subprocess.run(
-                        ["git", "push", "-f", "origin", self.repo_branch],
-                        cwd=self.state_dir,
-                        capture_output=True,
-                        env=env
-                    )
+                
+                bt.logging.info(f"Successfully pushed state files to branch: {self.repo_branch}")
+                return True
+                
             except subprocess.CalledProcessError as e:
-                bt.logging.error(f"Push failed with output: {e.stderr.decode()}")
+                bt.logging.error(f"Push failed: {e.stderr.decode() if e.stderr else str(e)}")
                 return False
-            
-            if result.returncode != 0:
-                bt.logging.error(f"Push failed with output: {result.stderr.decode()}")
-                return False
-            
-            bt.logging.info("Successfully pushed state files")
-            return True
             
         except subprocess.CalledProcessError as e:
             bt.logging.error(f"Git command failed: {e.cmd} with return code {e.returncode}")
