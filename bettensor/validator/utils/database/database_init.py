@@ -5,17 +5,45 @@ This file contains the code for initializing the database for the validator.
 """
 
 def initialize_database():
-    # Split multi-statement strings into individual statements
     statements = []
     
-    # Version tracking table
+    # 1. Version tracking table first
     statements.append("""
         CREATE TABLE IF NOT EXISTS db_version (
             version INTEGER PRIMARY KEY
         )
     """)
     
-    # Create temporary backup table with explicit column types
+    # 2. Create main miner_stats table first
+    statements.append("""
+        CREATE TABLE IF NOT EXISTS miner_stats (
+            miner_uid INTEGER PRIMARY KEY,
+            miner_hotkey TEXT UNIQUE,
+            miner_coldkey TEXT,
+            miner_rank INTEGER DEFAULT 0,
+            miner_status TEXT DEFAULT 'active',
+            miner_cash REAL DEFAULT 0.0,
+            miner_current_incentive REAL DEFAULT 0.0,
+            miner_current_tier INTEGER DEFAULT 1,
+            miner_current_scoring_window INTEGER DEFAULT 0,
+            miner_current_composite_score REAL DEFAULT 0.0,
+            miner_current_entropy_score REAL DEFAULT 0.0,
+            miner_current_sharpe_ratio REAL DEFAULT 0.0,
+            miner_current_sortino_ratio REAL DEFAULT 0.0,
+            miner_current_roi REAL DEFAULT 0.0,
+            miner_current_clv_avg REAL DEFAULT 0.0,
+            miner_last_prediction_date TEXT,
+            miner_lifetime_earnings REAL DEFAULT 0.0,
+            miner_lifetime_wager_amount REAL DEFAULT 0.0,
+            miner_lifetime_roi REAL DEFAULT 0.0,
+            miner_lifetime_predictions INTEGER DEFAULT 0,
+            miner_lifetime_wins INTEGER DEFAULT 0,
+            miner_lifetime_losses INTEGER DEFAULT 0,
+            miner_win_loss_ratio REAL DEFAULT 0.0
+        )
+    """)
+    
+    # 3. Create backup table
     statements.append("""
         CREATE TABLE IF NOT EXISTS miner_stats_backup (
             miner_uid INTEGER,
@@ -44,7 +72,7 @@ def initialize_database():
         )
     """)
     
-    # Copy data to backup with explicit column selection
+    # 4. Backup existing data with proper casting
     statements.append("""
         INSERT OR IGNORE INTO miner_stats_backup 
         SELECT 
@@ -74,41 +102,9 @@ def initialize_database():
         FROM miner_stats WHERE EXISTS (SELECT 1 FROM miner_stats)
     """)
     
-    # Drop existing table
-    statements.append("DROP TABLE IF EXISTS miner_stats")
-    
-    # Create new miner_stats table
+    # 5. Restore from backup with proper casting
     statements.append("""
-        CREATE TABLE IF NOT EXISTS miner_stats (
-            miner_uid INTEGER PRIMARY KEY,
-            miner_hotkey TEXT UNIQUE,
-            miner_coldkey TEXT,
-            miner_rank INTEGER DEFAULT 0,
-            miner_status TEXT DEFAULT 'active',
-            miner_cash REAL DEFAULT 0.0,
-            miner_current_incentive REAL DEFAULT 0.0,
-            miner_current_tier INTEGER DEFAULT 1,
-            miner_current_scoring_window INTEGER DEFAULT 0,
-            miner_current_composite_score REAL DEFAULT 0.0,
-            miner_current_entropy_score REAL DEFAULT 0.0,
-            miner_current_sharpe_ratio REAL DEFAULT 0.0,
-            miner_current_sortino_ratio REAL DEFAULT 0.0,
-            miner_current_roi REAL DEFAULT 0.0,
-            miner_current_clv_avg REAL DEFAULT 0.0,
-            miner_last_prediction_date TEXT,
-            miner_lifetime_earnings REAL DEFAULT 0.0,
-            miner_lifetime_wager_amount REAL DEFAULT 0.0,
-            miner_lifetime_roi REAL DEFAULT 0.0,
-            miner_lifetime_predictions INTEGER DEFAULT 0,
-            miner_lifetime_wins INTEGER DEFAULT 0,
-            miner_lifetime_losses INTEGER DEFAULT 0,
-            miner_win_loss_ratio REAL DEFAULT 0.0
-        )
-    """)
-    
-    # Restore data from backup
-    statements.append("""
-        INSERT INTO miner_stats 
+        INSERT OR REPLACE INTO miner_stats 
         SELECT 
             CAST(miner_uid AS INTEGER) as miner_uid,
             miner_hotkey,
@@ -136,8 +132,8 @@ def initialize_database():
         FROM miner_stats_backup 
         WHERE EXISTS (SELECT 1 FROM miner_stats_backup)
     """)
-
-    # Add remaining table creation statements
+    
+    # 6. Create dependent tables
     statements.extend([
         # Create predictions table
         """CREATE TABLE IF NOT EXISTS predictions (
@@ -213,8 +209,10 @@ def initialize_database():
             amount_wagered TEXT,
             last_update_date TEXT
         )""",
-        
-        # Create cleanup triggers
+    ])
+    
+    # 7. Create triggers
+    statements.extend([
         """CREATE TRIGGER IF NOT EXISTS delete_old_predictions
         AFTER INSERT ON predictions
         BEGIN
@@ -235,9 +233,11 @@ def initialize_database():
             DELETE FROM score_state
             WHERE last_update_date < date('now', '-7 days');
         END""",
-        
-        # Initialize version
-        """INSERT OR IGNORE INTO db_version (version) VALUES (1)"""
     ])
+    
+    # 8. Initialize version
+    statements.append(
+        """INSERT OR IGNORE INTO db_version (version) VALUES (1)"""
+    )
     
     return statements
