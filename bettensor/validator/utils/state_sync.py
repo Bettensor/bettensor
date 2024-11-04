@@ -33,7 +33,7 @@ class StateSync:
 
         # Get Azure configuration from environment
         sas_url = os.getenv('AZURE_STORAGE_SAS_URL','https://devbettensorstore.blob.core.windows.net')
-        container_name = os.getenv('AZURE_STORAGE_CONTAINER', 'data')
+        container_name = os.getenv('AZURE_STORAGE_CONTAINER','data')
         credential = os.getenv('VALIDATOR_API_TOKEN', readonly_token)
 
         self.state_dir = Path(state_dir)
@@ -54,7 +54,8 @@ class StateSync:
             "validator.db",
             "state.pt", 
             "entropy_system_state.json",
-            "state_hashes.txt"
+            "state_hashes.txt",
+            "state_metadata.json"
         ]
 
         self.hash_file = self.state_dir / "state_hashes.txt"
