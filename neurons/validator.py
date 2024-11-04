@@ -17,6 +17,7 @@ import websocket
 from websocket._exceptions import WebSocketConnectionClosedException
 from bettensor.protocol import GameData, Metadata
 from bettensor.validator.bettensor_validator import BettensorValidator
+from bettensor.validator.utils.ensure_dependencies import ensure_dependencies
 from bettensor.validator.utils.io.sports_data import SportsData
 from bettensor.validator.utils.scoring.watchdog import Watchdog
 from bettensor.validator.utils.io.auto_updater import perform_update
@@ -253,14 +254,12 @@ def initialize(validator):
         branch = "main"
 
     validator.state_sync = StateSync(
-        repo_url="https://github.com/Bettensor/data-sync",
-        repo_branch=branch,
         state_dir="./bettensor/validator/state",
     )
     
     # Pull latest state before starting if configured to do so
     if should_pull_state:
-        bt.logging.info("Pulling latest state from GitHub...")
+        bt.logging.info("Pulling latest state from Azure blob storage...")
         if validator.state_sync.pull_state():
             bt.logging.info("Successfully pulled latest state")
         else:
@@ -310,11 +309,11 @@ def initialize(validator):
 
 # Add periodic state pushing for primary node
 async def push_state_periodic(validator):
-    """Periodically push state files to GitHub if primary node"""
-    bt.logging.info("--------------------------------Pushing state files to GitHub--------------------------------")
+    """Periodically push state files to Azure blob storage if primary node"""
+    bt.logging.info("--------------------------------Pushing state files to Azure blob storage--------------------------------")
     while True:
         if validator.is_primary:
-            bt.logging.debug("Primary node, pushing state files to GitHub")
+            bt.logging.debug("Primary node, pushing state files to Azure blob storage")
             if validator.state_sync.push_state():
                 bt.logging.info("Successfully pushed state files")
             else:
@@ -714,4 +713,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_dependencies()
     main()

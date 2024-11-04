@@ -9,108 +9,57 @@ import json
 import logging
 from pathlib import Path
 import bittensor as bt
-import ssdeep  # You'll need to pip install ssdeep
+import ssdeep 
 import sqlite3
+from azure.storage.blob import BlobServiceClient
+from azure.core.exceptions import AzureError
+from dotenv import load_dotenv
 
 class StateSync:
     def __init__(self, 
-                 repo_url: str,
-                 repo_branch: str,
                  state_dir: str = "./state"):
+        """
+        Initialize StateSync with Azure blob storage for both uploads and downloads
         
-        # Store both HTTPS and SSH URLs
-        self.https_url = repo_url if repo_url.startswith('https://') else f'https://github.com/{repo_url.split(":")[-1]}'
+        Args:
+            state_dir: Local directory for state files
+        """
+        # Load environment variables
+        load_dotenv()
         
-        # SSH URL only needed for pushing (primary node)
-        if repo_url.startswith('https://github.com/'):
-            repo_path = repo_url.replace('https://github.com/', '')
-            self.ssh_url = f'git@github.com-datasync:{repo_path}'
-        else:
-            self.ssh_url = repo_url
-            
-        # Use HTTPS by default (for pulling)
-        self.repo_url = self.https_url
         
-        # Use the non-password protected deploy key
-        self.ssh_key_path = os.path.expanduser('~/.ssh/data_sync_deploy')
-        
-        # Set up git SSH command to use specific key
-        os.environ['GIT_SSH_COMMAND'] = f'ssh -i {self.ssh_key_path} -o IdentitiesOnly=yes'
-        
-        # Validate branch name
-        if repo_branch not in ["main", "test"]:
-            bt.logging.warning(f"Invalid branch. Setting to main by default for data sync")
-            repo_branch = "main"
-        self.repo_branch = repo_branch
-        
+        #hardcoded read-only token for easy distribution - will issue tokens via api in the futute
+        readonly_token = "sp=r&st=2024-11-04T20:00:26Z&se=2024-11-05T04:00:26Z&spr=https&sv=2022-11-02&sr=c&sig=OIvDP%2FCSmRkGokddtGJLOGVDNbIf4YdvaH4BBb%2FZqQk%3D"
+
+        # Get Azure configuration from environment
+        sas_url = os.getenv('AZURE_STORAGE_SAS_URL')
+        container_name = os.getenv('AZURE_STORAGE_CONTAINER', 'data')
+        credential = os.getenv('VALIDATOR_API_TOKEN', readonly_token)
+
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
-        # Files to sync
+       
+
+        # Azure setup
+        self.azure_enabled = bool(sas_url)
+        if self.azure_enabled:
+            self.blob_service = BlobServiceClient(account_url=sas_url, credential=credential)
+            self.container = self.blob_service.get_container_client(container_name)
+            bt.logging.info(f"Azure blob storage configured with container: {container_name}")
+        else:
+            bt.logging.error("Azure blob storage not configured - state sync will be disabled")
+
         self.state_files = [
             "validator.db",
-            "state.pt",
-            "entropy_system_state.json"
+            "state.pt", 
+            "entropy_system_state.json",
+            "state_hashes.txt"
         ]
 
-        # Files to track with Git LFS
-        self.lfs_files = [
-            "*.pt",      # PyTorch state files
-            "*.db",      # Database files
-            "*.json"     # Large JSON files
-        ]
-
-        # Add hash file to state files
-        self.state_files.append("state_hashes.txt")
         self.hash_file = self.state_dir / "state_hashes.txt"
-
-        # Add metadata tracking
         self.metadata_file = self.state_dir / "state_metadata.json"
 
-        bt.logging.debug(f"Initialized StateSync with repo URL: {self.repo_url}")
-
-    def _ensure_git_lfs(self, env):
-        """Ensure Git LFS is installed and configured"""
-        try:
-            # Check if git-lfs is installed
-            result = subprocess.run(
-                ["git", "lfs", "version"],
-                capture_output=True,
-                env=env
-            )
-            if result.returncode != 0:
-                bt.logging.error("Git LFS not installed. Please install git-lfs")
-                return False
-            
-            # Initialize LFS in the repository
-            subprocess.run(
-                ["git", "lfs", "install"],
-                cwd=self.state_dir,
-                check=True,
-                env=env
-            )
-            
-            # Track files with LFS
-            for pattern in self.lfs_files:
-                subprocess.run(
-                    ["git", "lfs", "track", pattern],
-                    cwd=self.state_dir,
-                    check=True,
-                    env=env
-                )
-            
-            # Add .gitattributes to git
-            subprocess.run(
-                ["git", "add", ".gitattributes"],
-                cwd=self.state_dir,
-                check=True,
-                env=env
-            )
-            
-            return True
-        except subprocess.CalledProcessError as e:
-            bt.logging.error(f"Git LFS setup failed: {e}")
-            return False
 
     def _compute_fuzzy_hash(self, filepath: Path) -> str:
         """Compute fuzzy hash of a file using ssdeep"""
@@ -267,21 +216,22 @@ class StateSync:
         Returns: True if state should be pulled, False otherwise
         """
         try:
-            # Pull latest metadata from remote
-            subprocess.run(
-                ["git", "fetch", "origin", self.repo_branch],
-                cwd=self.state_dir,
-                check=True
+            # Get remote metadata via HTTP endpoint
+            headers = {}
+            if self.api_token:
+                headers['Authorization'] = f'Bearer {self.api_token}'
+                
+            response = requests.get(
+                f"{self.download_endpoint}/metadata",
+                headers=headers,
+                timeout=60
             )
             
-            # Get remote metadata
-            result = subprocess.run(
-                ["git", "show", f"origin/{self.repo_branch}:state_metadata.json"],
-                cwd=self.state_dir,
-                capture_output=True,
-                text=True
-            )
-            remote_metadata = json.loads(result.stdout)
+            if not response.ok:
+                bt.logging.error("Failed to fetch remote metadata")
+                return False
+                
+            remote_metadata = response.json()
             
             # Load local metadata
             if not self.metadata_file.exists():
@@ -333,188 +283,164 @@ class StateSync:
             return False
 
     def push_state(self):
-        """Push state using SSH (only for primary node)"""
-        # Update metadata before pushing
-        if not self._update_metadata_file():
+        """Push state files to Azure blob storage (primary node only)"""
+        if not self.azure_enabled:
+            bt.logging.error("Azure blob storage not configured")
             return False
-            
-        # Update hash file before pushing
-        if not self._update_hash_file():
+
+        if not self._update_metadata_file() or not self._update_hash_file():
             return False
-            
+
         try:
-            env = os.environ.copy()
-            
-            # Force use of deploy key
-            ssh_command = f'ssh -v -i {self.ssh_key_path} -o IdentitiesOnly=yes -o UserKnownHostsFile=/root/.ssh/known_hosts'
-            env['GIT_SSH_COMMAND'] = ssh_command
-            
-            # Initialize repository if needed
-            if not (self.state_dir / ".git").exists():
-                bt.logging.debug("Initializing new git repository")
-                subprocess.run(["git", "init"], cwd=self.state_dir, check=True, env=env)
+            # Upload each file to Azure
+            for filename in self.state_files:
+                filepath = self.state_dir / filename
+                if not filepath.exists():
+                    continue
+
+                # Get blob client for this file
+                blob_client = self.container.get_blob_client(filename)
                 
-                subprocess.run(
-                    ["git", "remote", "add", "origin", self.ssh_url],
-                    cwd=self.state_dir,
-                    check=True,
-                    env=env
-                )
-                
-                # Set up Git LFS
-                if not self._ensure_git_lfs(env):
-                    return False
-            else:
-                # Update remote URL to SSH
-                subprocess.run(
-                    ["git", "remote", "set-url", "origin", self.ssh_url],
-                    cwd=self.state_dir,
-                    check=True,
-                    env=env
-                )
-            
-            # Create or switch to branch
-            try:
-                subprocess.run(
-                    ["git", "checkout", self.repo_branch],
-                    cwd=self.state_dir,
-                    check=True,
-                    env=env
-                )
-            except subprocess.CalledProcessError:
-                # Branch doesn't exist locally, create it
-                subprocess.run(
-                    ["git", "checkout", "-b", self.repo_branch],
-                    cwd=self.state_dir,
-                    check=True,
-                    env=env
-                )
-            
-            # Add and commit changes
-            subprocess.run(
-                ["git", "add", "-f"] + self.state_files,
-                cwd=self.state_dir,
-                check=True,
-                env=env
-            )
-            
-            try:
-                subprocess.run(
-                    ["git", "commit", "-m", f"State update {datetime.now().isoformat()}"],
-                    cwd=self.state_dir,
-                    check=True,
-                    env=env
-                )
-            except subprocess.CalledProcessError:
-                bt.logging.info("No changes to commit")
-                return True
-            
-            # Push changes
-            bt.logging.debug("Pushing changes using SSH")
-            try:
-                # Push LFS objects first
-                subprocess.run(
-                    ["git", "lfs", "push", "origin", self.repo_branch],
-                    cwd=self.state_dir,
-                    check=True,
-                    env=env
-                )
-                
-                # Then push git changes (force push to ensure our state is preserved)
-                subprocess.run(
-                    ["git", "push", "-f", "origin", self.repo_branch],
-                    cwd=self.state_dir,
-                    check=True,
-                    env=env
-                )
-                
-                bt.logging.info(f"Successfully pushed state files to branch: {self.repo_branch}")
-                return True
-                
-            except subprocess.CalledProcessError as e:
-                bt.logging.error(f"Push failed: {e.stderr.decode() if e.stderr else str(e)}")
-                return False
-            
-        except subprocess.CalledProcessError as e:
-            bt.logging.error(f"Git command failed: {e.cmd} with return code {e.returncode}")
-            bt.logging.error(f"Output: {e.stderr.decode() if hasattr(e, 'stderr') else 'No output'}")
+                # Upload with automatic chunking
+                with open(filepath, 'rb') as f:
+                    bt.logging.debug(f"Uploading {filename} to Azure blob storage")
+                    blob_client.upload_blob(
+                        f,
+                        overwrite=True,
+                        max_concurrency=4
+                    )
+
+            bt.logging.info("Successfully pushed state files to Azure")
+            return True
+
+        except AzureError as e:
+            bt.logging.error(f"Azure storage error during push: {e}")
+            return False
+        except Exception as e:
+            bt.logging.error(f"Error pushing state: {e}")
             return False
 
     def pull_state(self):
-        """Pull latest state from GitHub for non-primary nodes using HTTPS"""
+        """
+        Pull latest state from Azure blob storage if needed.
+        Returns: True if state was updated, False otherwise
+        """
+        if not self.azure_enabled:
+            bt.logging.error("Azure blob storage not configured")
+            return False
+
         try:
-            bt.logging.debug(f"Pulling latest state from branch: {self.repo_branch}")
+            # First pull and check metadata
+            metadata_client = self.container.get_blob_client("state_metadata.json")
+            temp_metadata = self.metadata_file.with_suffix('.tmp')
             
-            # Initialize repository if needed
-            if not (self.state_dir / ".git").exists():
-                bt.logging.debug("Initializing new git repository")
-                subprocess.run(["git", "init"], cwd=self.state_dir, check=True)
-                subprocess.run(
-                    ["git", "remote", "add", "origin", self.https_url],
-                    cwd=self.state_dir,
-                    check=True
-                )
-                
-                # Set up Git LFS
-                if not self._ensure_git_lfs({}):  # Empty env dict since we don't need SSH
-                    return False
-            else:
-                # Update remote URL to HTTPS
-                subprocess.run(
-                    ["git", "remote", "set-url", "origin", self.https_url],
-                    cwd=self.state_dir,
-                    check=True
-                )
-            
-            # Fetch all branches
-            bt.logging.debug("Fetching all branches")
-            subprocess.run(
-                ["git", "fetch", "origin"],
-                cwd=self.state_dir,
-                check=True
-            )
-            
-            # Reset local branch to match remote
             try:
-                bt.logging.debug(f"Resetting to origin/{self.repo_branch}")
-                subprocess.run(
-                    ["git", "reset", "--hard", f"origin/{self.repo_branch}"],
-                    cwd=self.state_dir,
-                    check=True
-                )
-            except subprocess.CalledProcessError:
-                # If branch doesn't exist locally, create it
-                bt.logging.debug(f"Creating new branch: {self.repo_branch}")
-                subprocess.run(
-                    ["git", "checkout", "-b", self.repo_branch],
-                    cwd=self.state_dir,
-                    check=True
-                )
-                subprocess.run(
-                    ["git", "reset", "--hard", f"origin/{self.repo_branch}"],
-                    cwd=self.state_dir,
-                    check=True
-                )
+                # Download metadata file
+                with open(temp_metadata, 'wb') as f:
+                    stream = metadata_client.download_blob()
+                    for chunk in stream.chunks():
+                        f.write(chunk)
+                
+                # Load remote metadata
+                with open(temp_metadata) as f:
+                    remote_metadata = json.load(f)
+                    
+                # Check if we should pull
+                should_update = self._should_pull_state(remote_metadata)
+                
+                if not should_update:
+                    bt.logging.info("Local state is up to date")
+                    temp_metadata.unlink()
+                    return False
+                    
+                # If we should update, download all files
+                for filename in self.state_files:
+                    blob_client = self.container.get_blob_client(filename)
+                    filepath = self.state_dir / filename
+                    temp_file = filepath.with_suffix('.tmp')
+                    
+                    try:
+                        with open(temp_file, 'wb') as f:
+                            stream = blob_client.download_blob()
+                            for chunk in stream.chunks():
+                                f.write(chunk)
+                        
+                        # Atomic rename
+                        temp_file.rename(filepath)
+                        
+                    except Exception as e:
+                        temp_file.unlink(missing_ok=True)
+                        raise e
+                
+                # If all files downloaded successfully, move metadata file into place
+                temp_metadata.rename(self.metadata_file)
+                
+                bt.logging.info("Successfully pulled and updated state from Azure")
+                return True
+                
+            finally:
+                # Clean up temp metadata file if it exists
+                temp_metadata.unlink(missing_ok=True)
+
+        except AzureError as e:
+            bt.logging.error(f"Azure storage error during pull: {e}")
+            return False
+        except Exception as e:
+            bt.logging.error(f"Error pulling state: {e}")
+            return False
+
+    def _should_pull_state(self, remote_metadata: dict) -> bool:
+        """
+        Determine if state should be pulled based on remote metadata
+        """
+        try:
+            # Load local metadata
+            if not self.metadata_file.exists():
+                return True
+                
+            with open(self.metadata_file) as f:
+                local_metadata = json.load(f)
             
-            # Pull LFS files
-            bt.logging.debug("Pulling LFS files")
-            subprocess.run(
-                ["git", "lfs", "pull"],
-                cwd=self.state_dir,
-                check=True
-            )
+            remote_update = datetime.fromisoformat(remote_metadata["last_update"])
+            local_update = datetime.fromisoformat(local_metadata["last_update"])
             
-            bt.logging.info(f"Successfully pulled latest state from branch: {self.repo_branch}")
+            # If remote is older than local, don't pull
+            if remote_update < local_update:
+                return False
+                
+            # If remote is more than 20 minutes newer than local, pull
+            if (remote_update - local_update) > timedelta(minutes=20):
+                return True
             
-            # After successful pull, check similarity
-            if not self.check_state_similarity():
-                bt.logging.warning("State files have diverged significantly. Consider re-syncing.")
+            # Special handling for validator.db
+            if "validator.db" in remote_metadata["files"]:
+                remote_db_meta = remote_metadata["files"]["validator.db"]
+                local_db_meta = local_metadata["files"].get("validator.db", {})
+                
+                if self._compare_db_states(local_db_meta, remote_db_meta):
+                    return True
             
-            return True
+            # Compare other files using fuzzy hashing
+            similarities = []
+            for file, remote_data in remote_metadata["files"].items():
+                if file in local_metadata["files"]:
+                    local_data = local_metadata["files"][file]
+                    
+                    # Compare other files using fuzzy hashing
+                    similarity = self._compare_fuzzy_hashes(
+                        remote_data["hash"],
+                        local_data["hash"]
+                    )
+                    similarities.append(similarity)
             
-        except subprocess.CalledProcessError as e:
-            bt.logging.error(f"Git command failed: {e.cmd} with return code {e.returncode}")
-            bt.logging.error(f"Output: {e.stderr.decode() if hasattr(e, 'stderr') else 'No output'}")
+            # If average similarity is less than 80%, pull state
+            if similarities and (sum(similarities) / len(similarities)) < 80:
+                return True
+                
+            return False
+            
+        except Exception as e:
+            bt.logging.error(f"Error checking state status: {e}")
             return False
 
     def _update_metadata_file(self):

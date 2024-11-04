@@ -55,3 +55,4 @@ setuptools==65.5.0
 torch==2.2.0
 Werkzeug==3.0.4
 safetensors==0.4.0
+ssdeep==3.4

@@ -356,6 +356,9 @@ class DatabaseManager(metaclass=SingletonMeta):
 
     def transaction(self):
         return DatabaseTransaction(self)
+    
+    def get_connection(self):
+        return self._get_connection()
 
 class DatabaseTransaction:
     def __init__(self, db_manager):
