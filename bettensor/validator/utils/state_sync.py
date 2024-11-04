@@ -361,48 +361,64 @@ class StateSync:
         Determine if state should be pulled based on remote metadata
         """
         try:
+            # Validate remote metadata structure
+            required_fields = ["last_update", "files"]
+            if not all(field in remote_metadata for field in required_fields):
+                bt.logging.warning("Remote metadata missing required fields")
+                return False
+                
             # Load local metadata
             if not self.metadata_file.exists():
+                bt.logging.info("No local metadata file - should pull state")
                 return True
                 
-            with open(self.metadata_file) as f:
-                local_metadata = json.load(f)
+            try:
+                with open(self.metadata_file) as f:
+                    local_metadata = json.load(f)
+            except json.JSONDecodeError:
+                bt.logging.warning("Invalid local metadata file")
+                return True
+                
+            # Validate local metadata structure
+            if not all(field in local_metadata for field in required_fields):
+                bt.logging.warning("Local metadata missing required fields")
+                return True
             
             remote_update = datetime.fromisoformat(remote_metadata["last_update"])
             local_update = datetime.fromisoformat(local_metadata["last_update"])
             
             # If remote is older than local, don't pull
             if remote_update < local_update:
+                bt.logging.debug("Remote state is older than local state")
                 return False
                 
             # If remote is more than 20 minutes newer than local, pull
             if (remote_update - local_update) > timedelta(minutes=20):
+                bt.logging.info("Remote state is significantly newer")
                 return True
             
-            # Special handling for validator.db
-            if "validator.db" in remote_metadata["files"]:
-                remote_db_meta = remote_metadata["files"]["validator.db"]
-                local_db_meta = local_metadata["files"].get("validator.db", {})
-                
-                if self._compare_db_states(local_db_meta, remote_db_meta):
-                    return True
-            
-            # Compare other files using fuzzy hashing
-            similarities = []
+            # Compare files
             for file, remote_data in remote_metadata["files"].items():
-                if file in local_metadata["files"]:
-                    local_data = local_metadata["files"][file]
-                    
-                    # Compare other files using fuzzy hashing
-                    similarity = self._compare_fuzzy_hashes(
-                        remote_data["hash"],
-                        local_data["hash"]
-                    )
-                    similarities.append(similarity)
-            
-            # If average similarity is less than 80%, pull state
-            if similarities and (sum(similarities) / len(similarities)) < 80:
-                return True
+                if file not in local_metadata["files"]:
+                    bt.logging.info(f"New file found in remote: {file}")
+                    return True
+                
+                local_data = local_metadata["files"][file]
+                
+                # Validate hash exists in both metadata
+                if "hash" not in remote_data or "hash" not in local_data:
+                    bt.logging.debug(f"Missing hash for file {file}")
+                    continue
+                
+                # Compare using fuzzy hashing
+                similarity = self._compare_fuzzy_hashes(
+                    remote_data["hash"],
+                    local_data["hash"]
+                )
+                
+                if similarity < 80:
+                    bt.logging.info(f"File {file} has low similarity: {similarity}%")
+                    return True
                 
             return False
             
