@@ -5,6 +5,7 @@ from queue import Queue, Empty
 from bettensor.validator.utils.database.database_init import initialize_database
 import logging
 import time
+import os
 
 class SingletonMeta(type):
     """
@@ -61,6 +62,13 @@ class DatabaseManager(metaclass=SingletonMeta):
         self.worker_thread = None
         self.running = True
         self._start_worker()
+        
+        # Create database directory if it doesn't exist
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        
+        # Execute all initialization statements
+        for statement in initialize_database():
+            self.execute_query(statement)
 
     def _get_connection(self):
         """Get a thread-local database connection."""
