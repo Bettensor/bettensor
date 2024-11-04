@@ -32,7 +32,7 @@ class StateSync:
         readonly_token = "sp=r&st=2024-11-04T20:00:26Z&se=2024-11-05T04:00:26Z&spr=https&sv=2022-11-02&sr=c&sig=OIvDP%2FCSmRkGokddtGJLOGVDNbIf4YdvaH4BBb%2FZqQk%3D"
 
         # Get Azure configuration from environment
-        sas_url = os.getenv('AZURE_STORAGE_SAS_URL')
+        sas_url = os.getenv('AZURE_STORAGE_SAS_URL','https://devbettensorstore.blob.core.windows.net')
         container_name = os.getenv('AZURE_STORAGE_CONTAINER', 'data')
         credential = os.getenv('VALIDATOR_API_TOKEN', readonly_token)
 
@@ -215,69 +215,35 @@ class StateSync:
         Determine if state should be pulled based on similarity and timestamps
         Returns: True if state should be pulled, False otherwise
         """
-        try:
-            # Get remote metadata via HTTP endpoint
-            headers = {}
-            if self.api_token:
-                headers['Authorization'] = f'Bearer {self.api_token}'
-                
-            response = requests.get(
-                f"{self.download_endpoint}/metadata",
-                headers=headers,
-                timeout=60
-            )
-            
-            if not response.ok:
-                bt.logging.error("Failed to fetch remote metadata")
-                return False
-                
-            remote_metadata = response.json()
-            
-            # Load local metadata
-            if not self.metadata_file.exists():
-                return True
-                
-            with open(self.metadata_file) as f:
-                local_metadata = json.load(f)
-            
-            remote_update = datetime.fromisoformat(remote_metadata["last_update"])
-            local_update = datetime.fromisoformat(local_metadata["last_update"])
-            
-            # If remote is older than local, don't pull
-            if remote_update < local_update:
-                return False
-                
-            # If remote is more than 20 minutes newer than local, pull
-            if (remote_update - local_update) > timedelta(minutes=20):
-                return True
-            
-            # Special handling for validator.db
-            if "validator.db" in remote_metadata["files"]:
-                remote_db_meta = remote_metadata["files"]["validator.db"]
-                local_db_meta = local_metadata["files"].get("validator.db", {})
-                
-                if self._compare_db_states(local_db_meta, remote_db_meta):
-                    return True
-            
-            # Compare other files using fuzzy hashing
-            similarities = []
-            for file, remote_data in remote_metadata["files"].items():
-                if file in local_metadata["files"]:
-                    local_data = local_metadata["files"][file]
-                    
-                    # Compare other files using fuzzy hashing
-                    similarity = self._compare_fuzzy_hashes(
-                        remote_data["hash"],
-                        local_data["hash"]
-                    )
-                    similarities.append(similarity)
-            
-            # If average similarity is less than 80%, pull state
-            if similarities and (sum(similarities) / len(similarities)) < 80:
-                return True
-                
+        if not self.azure_enabled:
+            bt.logging.error("Azure blob storage not configured")
             return False
+
+        try:
+            # Get remote metadata from Azure blob storage
+            metadata_client = self.container.get_blob_client("state_metadata.json")
+            temp_metadata = self.metadata_file.with_suffix('.tmp')
             
+            try:
+                # Download metadata file
+                with open(temp_metadata, 'wb') as f:
+                    stream = metadata_client.download_blob()
+                    for chunk in stream.chunks():
+                        f.write(chunk)
+                
+                # Load remote metadata
+                with open(temp_metadata) as f:
+                    remote_metadata = json.load(f)
+                    
+                return self._should_pull_state(remote_metadata)
+                
+            finally:
+                # Clean up temp metadata file
+                temp_metadata.unlink(missing_ok=True)
+                
+        except AzureError as e:
+            bt.logging.error(f"Azure storage error checking state: {e}")
+            return False
         except Exception as e:
             bt.logging.error(f"Error checking state status: {e}")
             return False

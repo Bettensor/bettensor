@@ -235,80 +235,67 @@ class ScoringData:
             raise
 
     def update_miner_stats(self, current_day):
-        with self.db_manager.transaction() as transaction:
-            try:
-                bt.logging.info(f"Updating miner stats for day {current_day}...")
+        try:
+            bt.logging.info(f"Updating miner stats for day {current_day}...")
+            
+            # First, get all existing hotkeys and their UIDs
+            existing_hotkeys = {row['miner_hotkey']: row['miner_uid'] 
+                              for row in self.db_manager.fetch_all(
+                                  "SELECT miner_uid, miner_hotkey FROM miner_stats WHERE miner_hotkey IS NOT NULL", 
+                                  ())}
 
-                # First, get all existing hotkeys and their UIDs
-                existing_hotkeys = {row['miner_hotkey']: row['miner_uid'] 
-                                  for row in self.db_manager.fetch_all(
-                                      "SELECT miner_uid, miner_hotkey FROM miner_stats WHERE miner_hotkey IS NOT NULL", 
-                                      ())}
+            # Update miner_hotkey and miner_coldkey from metagraph
+            for miner_uid in range(len(self.validator.metagraph.hotkeys)):
+                hotkey = self.validator.metagraph.hotkeys[miner_uid]
+                coldkey = self.validator.metagraph.coldkeys[miner_uid]
 
-                # Update miner_hotkey and miner_coldkey from metagraph
-                for miner_uid in range(len(self.validator.metagraph.hotkeys)):
-                    hotkey = self.validator.metagraph.hotkeys[miner_uid]
-                    coldkey = self.validator.metagraph.coldkeys[miner_uid]
-
-                    # If hotkey exists but with different UID
-                    if hotkey in existing_hotkeys and existing_hotkeys[hotkey] != miner_uid:
-                        old_uid = existing_hotkeys[hotkey]
-                        
-                        # First, clear the hotkey from the old record
-                        self.db_manager.execute_query(
-                            """UPDATE miner_stats 
-                               SET miner_hotkey = NULL, miner_coldkey = NULL
-                               WHERE miner_uid = ?""",
-                            (old_uid,)
-                        )
-                        
-                        # Delete old predictions
-                        one_day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-                        self.db_manager.execute_query(
-                            """DELETE FROM predictions 
-                               WHERE miner_uid IN (?, ?) 
-                               AND DATE(prediction_date) < DATE(?)""",
-                            (old_uid, miner_uid, one_day_ago)
-                        )
-                        
-                        # Reset both UIDs
-                        for uid in [old_uid, miner_uid]:
-                            self.scoring_system.reset_miner(uid)
-
-                    # Update or insert the record for current UID
+                # If hotkey exists but with different UID
+                if hotkey in existing_hotkeys and existing_hotkeys[hotkey] != miner_uid:
+                    old_uid = existing_hotkeys[hotkey]
+                    
+                    # First, clear the hotkey from the old record
                     self.db_manager.execute_query(
-                        """INSERT INTO miner_stats (miner_uid, miner_hotkey, miner_coldkey)
-                           VALUES (?, ?, ?)
-                           ON CONFLICT(miner_uid) DO UPDATE SET
-                           miner_hotkey = excluded.miner_hotkey,
-                           miner_coldkey = excluded.miner_coldkey""",
-                        (miner_uid, hotkey, coldkey)
+                        """UPDATE miner_stats 
+                           SET miner_hotkey = NULL, miner_coldkey = NULL
+                           WHERE miner_uid = ?""",
+                        (old_uid,)
                     )
+                    
+                    # Reset both UIDs
+                    for uid in [old_uid, miner_uid]:
+                        self.scoring_system.reset_miner(uid)
 
-                # Continue with rest of the updates...
-                self._update_lifetime_statistics()
-                tiers_dict = self.get_current_tiers()
-                
-                # Update current tiers
-                update_tier_query = """
-                    UPDATE miner_stats
-                    SET miner_current_tier = ?
-                    WHERE miner_uid = ?
-                """
-                tier_records = [(int(current_tier), miner_uid) 
-                               for miner_uid, current_tier in tiers_dict.items()]
-                self.db_manager.executemany(update_tier_query, tier_records)
-                
-                self._update_current_daily_scores(current_day, tiers_dict)
-                self._update_additional_fields()
-                
-                self.db_manager.commit_transaction()
-                bt.logging.info("Miner stats update transaction committed successfully.")
+                # Update or insert the record for current UID
+                self.db_manager.execute_query(
+                    """INSERT INTO miner_stats (miner_uid, miner_hotkey, miner_coldkey)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(miner_uid) DO UPDATE SET
+                       miner_hotkey = EXCLUDED.miner_hotkey,
+                       miner_coldkey = EXCLUDED.miner_coldkey""",
+                    (miner_uid, hotkey, coldkey)
+                )
 
-            except Exception as e:
-                self.db_manager.rollback_transaction()
-                bt.logging.error(f"Error updating miner stats: {e}")
-                raise
+            # Continue with rest of the updates...
+            self._update_lifetime_statistics()
+            tiers_dict = self.get_current_tiers()
+            
+            # Update current tiers
+            for miner_uid, current_tier in tiers_dict.items():
+                self.db_manager.execute_query(
+                    """UPDATE miner_stats
+                       SET miner_current_tier = ?
+                       WHERE miner_uid = ?""",
+                    (int(current_tier), miner_uid)
+                )
+            
+            self._update_current_daily_scores(current_day, tiers_dict)
+            self._update_additional_fields()
+            
+            bt.logging.info("Miner stats update completed successfully.")
+
+        except Exception as e:
+            bt.logging.error(f"Error updating miner stats: {e}")
+            raise
     
     def safe_format(self, value, decimal_places=4):
         return f"{value:.{decimal_places}f}" if value is not None else 'None'

@@ -66,9 +66,15 @@ class DatabaseManager(metaclass=SingletonMeta):
         # Create database directory if it doesn't exist
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
-        # Execute all initialization statements
-        for statement in initialize_database():
-            self.execute_query(statement)
+        # Execute all initialization statements individually
+        statements = initialize_database()
+        for statement in statements:
+            try:
+                self.execute_query(statement.strip())
+            except Exception as e:
+                bt.logging.error(f"Error executing statement: {e}")
+                bt.logging.error(f"Failed statement: {statement}")
+                raise
 
     def _get_connection(self):
         """Get a thread-local database connection."""
