@@ -33,20 +33,29 @@ class SportsData:
     def fetch_and_update_game_data(self, last_api_call):
         try:
             all_games = self.api_client.fetch_all_game_data(last_api_call)
-            inserted_ids = self.insert_or_update_games(all_games)
-            self.update_predictions_with_payouts(inserted_ids)
-            self.all_games = all_games
-            return inserted_ids
+            
+            # Start a single transaction for the entire operation
+            self.db_manager.begin_transaction()
+            try:
+                inserted_ids = self.insert_or_update_games(all_games)
+                self.update_predictions_with_payouts(inserted_ids)
+                self.all_games = all_games
+                self.db_manager.commit_transaction()
+                return inserted_ids
+            except Exception as e:
+                self.db_manager.rollback_transaction()
+                raise
+            
         except Exception as e:
             bt.logging.error(f"Error fetching game data: {str(e)}")
-            raise  # Re-raise the exception
+            raise
 
     def insert_or_update_games(self, games):
         if not games:
             bt.logging.info("No games to insert or update")
             return []
 
-        self.db_manager.begin_transaction()
+        # Remove begin_transaction here since it's handled in fetch_and_update_game_data
         external_ids = []
         try:
             for game in games:
@@ -129,12 +138,12 @@ class SportsData:
                 self.entropy_system.add_new_game(external_id, outcomes, [team_a_odds, team_b_odds, tie_odds])
                 self.entropy_system.save_state()
 
-            self.db_manager.commit_transaction()
+            # Remove commit here since it's handled in fetch_and_update_game_data
             bt.logging.info(f"Inserted or updated {len(games)} games in the database")
             return external_ids
 
         except Exception as e:
-            self.db_manager.rollback_transaction()
+            # Remove rollback here since it's handled in fetch_and_update_game_data
             bt.logging.error(f"Error inserting or updating games: {e}")
             raise
 

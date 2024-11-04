@@ -27,6 +27,7 @@ from typing import Optional, Any
 import async_timeout
 from bettensor.validator.utils.state_sync import StateSync
 import math
+from bettensor.validator.utils.database.database_manager import DatabaseManager
 
 # Constants for timeouts (in seconds)
 UPDATE_TIMEOUT = 300  # 5 minutes
@@ -131,6 +132,8 @@ async def run(validator: BettensorValidator):
     """Main async run loop for the validator"""
     # Load environment variables
     load_dotenv()
+    
+
     
     initialize(validator)
     watchdog = Watchdog(timeout=900)  # 15 minutes timeout
@@ -592,8 +595,43 @@ async def set_weights(validator, weights_to_set):
         bt.logging.error(traceback.format_exc())
         return False
 
+def cleanup_pycache():
+    """Remove all __pycache__ directories and .pyc files"""
+    bt.logging.info("Cleaning up __pycache__ directories and .pyc files")
+    try:
+        # Get the root directory (where the script is running)
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        # Walk through all directories
+        for dirpath, dirnames, filenames in os.walk(root_dir):
+            # Remove __pycache__ directories
+            if '__pycache__' in dirnames:
+                cache_path = os.path.join(dirpath, '__pycache__')
+                try:
+                    bt.logging.debug(f"Removing {cache_path}")
+                    import shutil
+                    shutil.rmtree(cache_path)
+                except Exception as e:
+                    bt.logging.warning(f"Failed to remove {cache_path}: {str(e)}")
+            
+            # Remove .pyc files
+            for filename in filenames:
+                if filename.endswith('.pyc'):
+                    pyc_path = os.path.join(dirpath, filename)
+                    try:
+                        bt.logging.debug(f"Removing {pyc_path}")
+                        os.remove(pyc_path)
+                    except Exception as e:
+                        bt.logging.warning(f"Failed to remove {pyc_path}: {str(e)}")
+                        
+    except Exception as e:
+        bt.logging.error(f"Error during pycache cleanup: {str(e)}")
+
 # The main function parses the configuration and runs the validator.
 def main():
+    # Add cleanup at the start of main
+    cleanup_pycache()
+    
     parser = ArgumentParser()
 
     parser.add_argument(
