@@ -10,11 +10,12 @@ from scipy.spatial.distance import euclidean
 
 
 class EntropySystem:
+    state_file_path: str = "./bettensor/validator/state/entropy_system_state.json"
     def __init__(
         self,
         num_miners: int,
         max_days: int,
-        state_file_path: str = "./entropy_system_state.json",
+        
     ):
         """
         Initialize the EntropySystem object.
@@ -39,7 +40,7 @@ class EntropySystem:
         self.game_close_times = {}
 
         # Attempt to load existing state
-        self.load_state(state_file_path)
+        self.load_state()
 
     def _get_array_for_day(self, array: np.ndarray, day: int) -> np.ndarray:
         return array[:, day % self.max_days]
@@ -134,6 +135,7 @@ class EntropySystem:
         bt.logging.debug(
             f"Added prediction for game {game_id}, outcome {predicted_outcome} by miner {miner_uid}"
         )
+        self.save_state()
 
     def calculate_prediction_similarity(
         self, game_id, predicted_outcome, miner_uid, predicted_odds, wager, prediction_date
@@ -351,7 +353,7 @@ class EntropySystem:
 
         return ebdr_scores
 
-    def save_state(self, file_path):
+    def save_state(self):
         """
         Save the current state of the EntropySystem to a JSON file.
 
@@ -396,12 +398,12 @@ class EntropySystem:
             },
         }
 
-        with open(file_path, "w") as f:
+        with open(self.state_file_path, "w") as f:
             json.dump(state, f)
 
-        bt.logging.info(f"EntropySystem state saved to {file_path}")
+        bt.logging.info(f"EntropySystem state saved to {self.state_file_path}")
 
-    def load_state(self, file_path):
+    def load_state(self):
         """
         Load the state of the EntropySystem from a JSON file.
 
@@ -409,7 +411,7 @@ class EntropySystem:
             file_path (str): The path to load the JSON file from.
         """
         try:
-            with open(file_path, "r") as f:
+            with open(self.state_file_path, "r") as f:
                 state = json.load(f)
 
             self.current_day = int(state["current_day"])
@@ -452,16 +454,16 @@ class EntropySystem:
                     "game_close_times", {}
                 ).items()
             }
-            bt.logging.info(f"EntropySystem state loaded from {file_path}")
+            bt.logging.info(f"EntropySystem state loaded from {self.state_file_path}")
 
         except FileNotFoundError:
             bt.logging.warning(
-                f"No state file found at {file_path}. Starting with fresh state."
+                f"No state file found at {self.state_file_path}. Starting with fresh state."
             )
 
         except json.JSONDecodeError:
             bt.logging.error(
-                f"Error decoding JSON from {file_path}. Starting with fresh state."
+                f"Error decoding JSON from {self.state_file_path}. Starting with fresh state."
             )
             bt.logging.error(traceback.format_exc())
         except KeyError as e:

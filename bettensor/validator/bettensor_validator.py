@@ -30,7 +30,7 @@ from bettensor.validator.utils.io.miner_data import MinerDataMixin
 from bettensor.validator.utils.io.bettensor_api_client import BettensorAPIClient
 from bettensor.validator.utils.io.base_api_client import BaseAPIClient
 
-DEFAULT_DB_PATH = "data/validator.db"
+DEFAULT_DB_PATH = "./bettensor/validator/state/validator.db"
 
 
 class BettensorValidator(BaseNeuron, MinerDataMixin):
@@ -107,7 +107,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.last_api_call = datetime.now(timezone.utc) - timedelta(
             days=15
         )  # set to 15 days ago to ensure all games are fetched
-
+        self.is_primary = None
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.determine_max_workers())
 
         self.last_queried_block = 0
@@ -326,6 +326,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
     def check_hotkeys(self):
         """checks if some hotkeys have been replaced in the metagraph"""
+        bt.logging.info("Checking metagraph hotkeys for changes")
         if self.scores is None:
             if self.metagraph is not None:
                 self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
@@ -333,7 +334,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 bt.logging.warning("Metagraph is None, unable to initialize scores")
                 return
         if self.hotkeys:
-            # check if known state len matches with current metagraph hotkey lengt
+            # check if known state len matches with current metagraph hotkey length
             if len(self.hotkeys) == len(self.metagraph.hotkeys):
                 current_hotkeys = self.metagraph.hotkeys
                 for i, hotkey in enumerate(current_hotkeys):
@@ -645,8 +646,8 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         try:
             bt.logging.info("Resetting scoring system(deleting state files)...")
                         
-            # delete state files (./bettensor/validator/state/state.pt, ./bettensor/validator/data/validator.db, ./bettensor/validator/entropy_system_state.json)
-            for file in ["./bettensor/validator/state/state.pt", "./data/validator.db", "./entropy_system_state.json"]:
+            # delete state files (./bettensor/validator/state/state.pt, ./bettensor/validator/state/validator.db, ./bettensor/validator/state/entropy_system_state.json)
+            for file in ["./bettensor/validator/state/state.pt", "./bettensor/validator/state/validator.db", "./bettensor/validator/state/entropy_system_state.json"]:
                 if os.path.exists(file):
                     os.remove(file)
             

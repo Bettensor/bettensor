@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import time
 import copy
@@ -21,12 +22,17 @@ from bettensor.validator.utils.scoring.watchdog import Watchdog
 from bettensor.validator.utils.io.auto_updater import perform_update
 import threading
 import asyncio
+from functools import partial
+from typing import Optional, Any
+import async_timeout
+from bettensor.validator.utils.state_sync import StateSync
+import math
 
 # Constants for timeouts (in seconds)
 UPDATE_TIMEOUT = 300  # 5 minutes
 GAME_DATA_TIMEOUT = 180  # 3 minutes
 METAGRAPH_TIMEOUT = 120  # 2 minutes
-QUERY_TIMEOUT = 180  # 3 minutes
+QUERY_TIMEOUT = 600  # 10 minutes
 WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
@@ -36,15 +42,22 @@ WEIGHTS_TIMEOUT = 180  # 3 minutes
 def time_task(task_name):
     """
     Decorator that times the execution of validator tasks and logs the duration.
-    
-    Args:
-        task_name (str): Name of the task being timed
-        
-    Returns:
-        decorator: Wrapped function that times execution
+    Handles both sync and async functions.
     """
     def decorator(func):
-        def wrapper(*args, **kwargs):
+        async def async_wrapper(*args, **kwargs):
+            start_time = time.time()
+            try:
+                result = await func(*args, **kwargs)
+                duration = time.time() - start_time
+                bt.logging.info(f"{task_name} completed in {duration:.2f} seconds")
+                return result
+            except Exception as e:
+                duration = time.time() - start_time
+                bt.logging.error(f"{task_name} failed after {duration:.2f} seconds with error: {str(e)}")
+                raise
+
+        def sync_wrapper(*args, **kwargs):
             start_time = time.time()
             try:
                 result = func(*args, **kwargs)
@@ -55,7 +68,8 @@ def time_task(task_name):
                 duration = time.time() - start_time
                 bt.logging.error(f"{task_name} failed after {duration:.2f} seconds with error: {str(e)}")
                 raise
-        return wrapper
+
+        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
     return decorator
 
 def log_status(validator):
@@ -94,62 +108,158 @@ def log_status(validator):
         #bt.logging.debug(debug_message)
         time.sleep(30)
 
+def game_data_update_loop(validator):
+    """Background thread function for updating game data"""
+    while True:
+        try:
+            current_time = datetime.now(timezone.utc)
+            bt.logging.debug("Running periodic game data update")
+            
+            # Call the update function directly since we're in a separate thread
+            update_game_data(validator, current_time)
+            
+            # Sleep for 30 seconds
+            time.sleep(30)
+            
+        except Exception as e:
+            bt.logging.error(f"Error in game data update loop: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+            # Sleep briefly before retrying after an error
+            time.sleep(5)
 
-
-
-
-def run(validator: BettensorValidator):
+async def run(validator: BettensorValidator):
+    """Main async run loop for the validator"""
+    # Load environment variables
+    load_dotenv()
+    
     initialize(validator)
     watchdog = Watchdog(timeout=900)  # 15 minutes timeout
 
-
-    # Create a thread for periodic status logging
+    # Create threads for periodic tasks
     status_log_thread = threading.Thread(target=log_status, args=(validator,), daemon=True)
+    game_data_thread = threading.Thread(target=game_data_update_loop, args=(validator,), daemon=True)
+    
+    # Start the threads
     status_log_thread.start()
+    game_data_thread.start()
 
+    # Add state sync task
+    state_sync_task = asyncio.create_task(push_state_periodic(validator))
+    
+    
     try:
         while True:
             current_time = datetime.now(timezone.utc)
             current_block = validator.subtensor.block
             bt.logging.info(f"Current block: {current_block}")
 
-            # Perform update (if needed)
-            bt.logging.info("Perform_update called")
-            perform_update(validator)
+            # Sync metagraph
+            await run_with_timeout(sync_metagraph_with_retry, METAGRAPH_TIMEOUT, validator)
 
-            # Update game data
-            if (current_block - validator.last_updated_block) > validator.update_game_data_interval:
-                update_game_data(validator, current_time)
+            # Check hotkeys
+            await run_with_timeout(validator.check_hotkeys, METAGRAPH_TIMEOUT)
+
+            # Perform update (if needed)
+            await run_with_timeout(perform_update, UPDATE_TIMEOUT, validator)
 
             # Query and process axons
             if (current_block - validator.last_queried_block) > validator.query_axons_interval:
-                query_and_process_axons_with_game_data(validator)
+                await run_with_timeout(query_and_process_axons_with_game_data, QUERY_TIMEOUT, validator)
 
             # Send data to website
             if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval:
-                threading.Thread(target=send_data_to_website_server, args=(validator,), daemon=True).start()
+                await run_with_timeout(send_data_to_website_server, WEBSITE_TIMEOUT, validator)
 
             # Recalculate scores
             if (current_block - validator.last_scoring_block) > validator.scoring_interval:
-                scoring_run(validator, current_time)
+                await run_with_timeout(scoring_run, SCORING_TIMEOUT, validator, current_time)
 
             # Set weights
             if (current_block - validator.last_set_weights_block) > validator.set_weights_interval:
-                set_weights(validator, validator.scores)
+                success = await run_with_timeout(
+                    set_weights,
+                    WEIGHTS_TIMEOUT,
+                    validator,
+                    validator.scores
+                )
+                if success:
+                    validator.last_set_weights_block = current_block
+                    bt.logging.info("Weights set successfully")
+                else:
+                    validator.last_set_weights_block = current_block - 250 #reset the block number so we don't try to set weights too early, slowing down retries
+                    bt.logging.warning("Failed to set weights")
 
-            time.sleep(12)  # Control the loop iteration rate
+            await asyncio.sleep(30) 
 
     except Exception as e:
         bt.logging.error(f"Error in main: {str(e)}")
         bt.logging.error(traceback.format_exc())
     except KeyboardInterrupt:
         bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
-
     finally:
-        # Ensure the status log thread is terminated
-        status_log_thread.join()
+        state_sync_task.cancel()
+        # Wait for threads to finish
+        status_log_thread.join(timeout=1)
+        game_data_thread.join(timeout=1)
+
+async def run_with_timeout(func, timeout: int, *args, **kwargs) -> Optional[Any]:
+    """
+    Run an async function with a timeout.
+    
+    Args:
+        func: The function to run (can be sync or async)
+        timeout: Timeout in seconds
+        *args: Positional arguments for the function
+        **kwargs: Keyword arguments for the function
+        
+    Returns:
+        The function result or None if timeout/error occurs
+    """
+    try:
+        # Convert sync function to async if needed
+        if not asyncio.iscoroutinefunction(func):
+            func = partial(asyncio.to_thread, func)
+        
+        async with async_timeout.timeout(timeout):
+            return await func(*args, **kwargs)
+    except asyncio.TimeoutError:
+        bt.logging.error(f"{func.__name__} timed out after {timeout} seconds")
+        return None
+    except Exception as e:
+        bt.logging.error(f"Error in {func.__name__}: {str(e)}")
+        bt.logging.error(traceback.format_exc())
+        return None
 
 def initialize(validator):
+    validator.is_primary = os.environ.get("VALIDATOR_IS_PRIMARY") == "True"
+    should_pull_state = os.environ.get("VALIDATOR_PULL_STATE", "True").lower() == "true"
+
+    # Add state sync initialization
+    branch = subprocess.check_output(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"]
+    ).decode().strip()
+    
+    #set branch to main if it is none or not main or test
+    if branch is None or branch not in ["main", "test"]:
+        bt.logging.warning(f"Invalid branch. Setting to main by default for data sync")
+        branch = "main"
+
+    validator.state_sync = StateSync(
+        repo_url="https://github.com/Bettensor/data-sync",
+        repo_branch=branch,
+        state_dir="./bettensor/validator/state",
+    )
+    
+    # Pull latest state before starting if configured to do so
+    if should_pull_state:
+        bt.logging.info("Pulling latest state from GitHub...")
+        if validator.state_sync.pull_state():
+            bt.logging.info("Successfully pulled latest state")
+        else:
+            bt.logging.warning("Failed to pull latest state, continuing with local state")
+    else:
+        bt.logging.info("Skipping state pull due to VALIDATOR_PULL_STATE configuration")
+    
     validator.serve_axon()
     validator.initialize_connection()
 
@@ -190,7 +300,22 @@ def initialize(validator):
     if not hasattr(validator, 'last_set_weights_block'):
         validator.last_set_weights_block = validator.subtensor.block - 300
 
+# Add periodic state pushing for primary node
+async def push_state_periodic(validator):
+    """Periodically push state files to GitHub if primary node"""
+    bt.logging.info("--------------------------------Pushing state files to GitHub--------------------------------")
+    while True:
+        if validator.is_primary:
+            bt.logging.debug("Primary node, pushing state files to GitHub")
+            if validator.state_sync.push_state():
+                bt.logging.info("Successfully pushed state files")
+            else:
+                bt.logging.error("Failed to push state files")
+        else:
+            bt.logging.info("Not primary node, skipping state push")
+        await asyncio.sleep(3600)  # Push every hour
 
+@time_task("update_game_data")
 def update_game_data(validator, current_time):
     """
     Calls SportsData to update game data in the database - Async in separate thread
@@ -222,7 +347,7 @@ def update_game_data(validator, current_time):
     validator.last_updated_block = validator.subtensor.block
 
 @time_task("sync_metagraph")
-def sync_metagraph_with_retry(validator):
+async def sync_metagraph_with_retry(validator):
     max_retries = 3
     retry_delay = 60
     for attempt in range(max_retries):
@@ -233,17 +358,16 @@ def sync_metagraph_with_retry(validator):
         except websocket.WebSocketConnectionClosedException:
             if attempt < max_retries - 1:
                 bt.logging.warning(f"WebSocket connection closed. Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
+                await asyncio.sleep(retry_delay)
             else:
                 raise
         except Exception as e:
             bt.logging.error(f"Error syncing metagraph: {str(e)}")
             bt.logging.error(f"Traceback: {traceback.format_exc()}")
             raise
-        max_retries -= 1
 
 @time_task("filter_and_update_axons")
-def filter_and_update_axons(validator):
+async def filter_and_update_axons(validator):
     all_axons = validator.metagraph.axons
     bt.logging.trace(f"All axons: {all_axons}")
 
@@ -271,27 +395,27 @@ def filter_and_update_axons(validator):
         )
         bt.logging.info(f"Updated scores, new scores: {validator.scores}")
 
-    (
-        uids_to_query,
-        list_of_uids,
-        blacklisted_uids,
-        uids_not_to_query,
-    ) = validator.get_uids_to_query(all_axons=all_axons)
-
-    if not uids_to_query:
-        bt.logging.warning(f"UIDs to query is empty: {uids_to_query}")
-
-    return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
+    # Run get_uids_to_query in a thread since it might be CPU-bound
+    result = await asyncio.to_thread(
+        validator.get_uids_to_query,
+        all_axons=all_axons
+    )
+    
+    # Make sure we're returning a tuple of values, not a coroutine
+    return result
 
 @time_task("query_and_process_axons")
-def query_and_process_axons_with_game_data(validator):
-    """
-    Queries axons with game data and processes the responses
-    """
+async def query_and_process_axons_with_game_data(validator):
+    """Queries axons with game data and processes the responses"""
     bt.logging.info("--------------------------------Querying and processing axons with game data--------------------------------")
     validator.last_queried_block = validator.subtensor.block
     current_time = datetime.now(timezone.utc).isoformat()
-    gamedata_dict = validator.fetch_local_game_data(current_timestamp=current_time)
+    
+    gamedata_dict = await asyncio.to_thread(
+        validator.fetch_local_game_data,
+        current_timestamp=current_time
+    )
+    
     if gamedata_dict is None:
         bt.logging.error("No game data found")
         return None
@@ -304,75 +428,72 @@ def query_and_process_axons_with_game_data(validator):
         synapse_type="game_data",
         gamedata_dict=gamedata_dict,
     )
+    
     if synapse is None:
         bt.logging.error("Synapse is None")
         return None
 
-    bt.logging.debug(
-        f"Synapse: {synapse.metadata.synapse_id} , {synapse.metadata.timestamp}, type: {synapse.metadata.synapse_type}, origin: {synapse.metadata.neuron_uid}"
-    )
-
-    responses = []
-    result = filter_and_update_axons(validator)
+    result = await filter_and_update_axons(validator)
     if result is None:
         bt.logging.error("Failed to filter and update axons")
         return None
 
     uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query = result
-
-    for i in range(0, len(uids_to_query), 20):
-        responses += validator.dendrite.query(
-            axons=uids_to_query[i : i + 20],
-            synapse=synapse,
-            timeout=validator.timeout,
-            deserialize=False,
-        )
-
-
-    bt.logging.info("Finished querying axons..")
-
-    if not responses:
-        bt.logging.info("No responses received. Sleeping for 18 seconds.")
-        time.sleep(18)
-
-    bt.logging.info(f"Received {len(responses)} responses")
-
-    valid_responses = []
-    invalid_responses = []
-
-    bt.logging.info("Starting response processing...")
     
-    for idx, response in enumerate(responses):
-        try:
-            bt.logging.info(f"Processing response: {idx}")
-            if response.metadata.synapse_type == "prediction":
-                valid_responses.append(response)
-                #bt.logging.info(f"Received valid response: {response.metadata.synapse_type}")
-                #bt.logging.trace(f"Response: {response}")
-            else:
-                invalid_responses.append(response)
-                bt.logging.warning(f"Received invalid response: {response.metadata.synapse_type}")
-        except Exception as e:
-            bt.logging.error(f"Error processing response: {e}")
-            bt.logging.error(traceback.format_exc())
-            bt.logging.warning(f"Response: {response}")
-            continue
+    # Define batch size
+    BATCH_SIZE = 10  # Adjust based on testing
+    responses = []
     
-    bt.logging.warning(f"Received {len(invalid_responses)} invalid responses: {[response.metadata.synapse_type for response in invalid_responses]}")
-    bt.logging.warning(f"Affected Miners: {[response.metadata.neuron_uid for response in invalid_responses]}")
-
-    bt.logging.info(f"Received {len(valid_responses)} valid responses - processing...")
-    if valid_responses and any(valid_responses):
-        try:
-            validator.process_prediction(
-                processed_uids=list_of_uids, synapses=valid_responses
+    try:
+        # Process axons in batches
+        for i in range(0, len(uids_to_query), BATCH_SIZE):
+            batch = uids_to_query[i:i + BATCH_SIZE]
+            bt.logging.debug(f"Processing batch {i//BATCH_SIZE + 1} of {math.ceil(len(uids_to_query)/BATCH_SIZE)}")
+            
+            # Query batch of axons
+            batch_responses = await validator.dendrite.forward(
+                axons=batch,
+                synapse=synapse,
+                timeout=validator.timeout,
+                deserialize=False,
             )
-        except Exception as e:
-            bt.logging.error(f"Error processing predictions: {e}")
-            bt.logging.error(traceback.format_exc())
+            
+            # Process valid responses from this batch
+            if batch_responses and hasattr(batch_responses, '__iter__'):
+                for response in batch_responses:
+                    if isinstance(response, tuple) and len(response) > 2:
+                        prediction_dict = response[2]
+                        metadata = response[0].metadata if hasattr(response[0], 'metadata') else None
+                        
+                        if (metadata and 
+                            hasattr(metadata, 'synapse_type') and 
+                            metadata.synapse_type == 'prediction' and 
+                            prediction_dict and 
+                            len(prediction_dict) > 0):
+                            responses.append(response[0])
+            
+            # Optional: Add a small delay between batches
+            await asyncio.sleep(0.1)
+            
+        bt.logging.debug(f"Collected {len(responses)} valid responses from {len(uids_to_query)} axons")
+        
+        # Process all collected responses
+        if responses:
+            try:
+                validator.process_prediction(processed_uids=uids_to_query, synapses=responses)
+            except Exception as e:
+                bt.logging.error(f"Error processing predictions: {str(e)}")
+                bt.logging.error(traceback.format_exc())
+
+        return len(responses)
+
+    except Exception as e:
+        bt.logging.error(f"Error processing responses: {str(e)}")
+        bt.logging.error(traceback.format_exc())
+        return None
 
 @time_task("send_data_to_website_server")
-def send_data_to_website_server(validator):
+async def send_data_to_website_server(validator):
     """
     Sends data to the website server
     """
@@ -391,7 +512,7 @@ def send_data_to_website_server(validator):
         bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
 
 @time_task("scoring_run")
-def scoring_run(validator, current_time):
+async def scoring_run(validator, current_time):
     """
     calls the scoring system to update miner scores before setting weights
     """
@@ -457,47 +578,19 @@ def scoring_run(validator, current_time):
 
 
 @time_task("set_weights")
-def set_weights(validator, scores):
-    """
-    Sets the weights for the validator
-    """
-    bt.logging.info("--------------------------------Setting weights--------------------------------")
-    
+async def set_weights(validator, weights_to_set):
+    """Wrapper for weight setting that handles the multiprocessing timeout gracefully"""
     try:
-        # bt.logging.info("Attempting to update weights")
-        # if validator.subtensor is None:
-        #     bt.logging.warning("Subtensor is None. Attempting to reinitialize...")
-        #     try:
-        #         validator.initialize_connection()
-        #     except Exception as e:
-        #         bt.logging.error(f"Error initializing connection: {str(e)}")
-
-        if validator.subtensor is not None:
-            success = validator.set_weights(scores)
-            bt.logging.info("Weight update attempt completed")
-        else:
-            bt.logging.error(
-                "Subtensor is not initialized. Skipping weight update."
-            )
-            success = False
-    except Exception as e:
-        bt.logging.error(f"Error during weight update process: {str(e)}")
-        success = False
-
-    if success:
-        bt.logging.success("Successfully updated weights")
-        validator.last_set_weights_block = validator.subtensor.block  # Moved inside success block
-    else:
-        bt.logging.warning(
-            "Failed to set weights or encountered an error, continuing with next iteration."
+        # Run the weight setter in a thread to not block the event loop
+        result = await asyncio.to_thread(
+            validator.weight_setter.set_weights,
+            weights_to_set
         )
-        validator.last_set_weights_block = validator.subtensor.block - 250 #reset the block number so we don't try to set weights too early, slowing down retries
-    
-    try:
-        validator.last_updated_block = validator.subtensor.block
-        bt.logging.info(f"Updated last_updated_block to {validator.last_updated_block}")
+        return result
     except Exception as e:
-        bt.logging.error(f"Error updating last_updated_block: {str(e)}")
+        bt.logging.error(f"Error in set_weights wrapper: {str(e)}")
+        bt.logging.error(traceback.format_exc())
+        return False
 
 # The main function parses the configuration and runs the validator.
 def main():
@@ -552,7 +645,8 @@ def main():
         bt.logging.error("Unable to initialize Validator. Exiting.")
         sys.exit()
 
-    run(validator)
+    # Run the async main loop
+    asyncio.run(run(validator))
 
 
 

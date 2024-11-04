@@ -243,24 +243,19 @@ class ScoringData:
                 "SELECT miner_uid, miner_hotkey, miner_coldkey FROM miner_stats", 
                 ()
             )
-            bt.logging.info("Existing hotkeys in database:")
-            for row in existing_hotkeys:
-                bt.logging.trace(f"UID: {row['miner_uid']}, Hotkey: {row['miner_hotkey']}, Coldkey: {row['miner_coldkey']}")
+            # bt.logging.info("Existing hotkeys in database:")
+            # for row in existing_hotkeys:
+            #     bt.logging.trace(f"UID: {row['miner_uid']}, Hotkey: {row['miner_hotkey']}, Coldkey: {row['miner_coldkey']}")
 
             # Log metagraph hotkeys
             bt.logging.info("Metagraph hotkeys:")
-            for idx, hotkey in enumerate(self.validator.metagraph.hotkeys):
-                bt.logging.trace(f"UID: {idx}, Hotkey: {hotkey}, Coldkey: {self.validator.metagraph.coldkeys[idx]}")
+            # for idx, hotkey in enumerate(self.validator.metagraph.hotkeys):
+            #     bt.logging.trace(f"UID: {idx}, Hotkey: {hotkey}, Coldkey: {self.validator.metagraph.coldkeys[idx]}")
 
             # Update miner_hotkey and miner_coldkey from metagraph
             for miner_uid in range(len(self.validator.metagraph.hotkeys)):
                 hotkey = self.validator.metagraph.hotkeys[miner_uid]
                 coldkey = self.validator.metagraph.coldkeys[miner_uid]
-
-                # Log current update attempt
-                bt.logging.info(f"Attempting update for miner_uid: {miner_uid}")
-                bt.logging.info(f"New hotkey: {hotkey}")
-                bt.logging.info(f"New coldkey: {coldkey}")
 
                 # Check if this hotkey exists anywhere in the database
                 existing_record = self.db_manager.fetch_one(
@@ -271,7 +266,7 @@ class ScoringData:
                 if existing_record:
                     existing_uid = existing_record['miner_uid']
                     if existing_uid != miner_uid:
-                        bt.logging.warning(f"Hotkey {hotkey} found at incorrect UID {existing_uid}, should be at {miner_uid}. Resetting both UIDs...")
+                        bt.logging.info(f"Updating hotkey {hotkey} from UID {existing_uid} to {miner_uid}")
                         
                         # Delete old predictions for both UIDs (older than 1 day)
                         one_day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
@@ -374,6 +369,7 @@ class ScoringData:
     def _update_current_daily_scores(self, current_day, tiers_dict):
         """
         Update the current daily scores for each miner.
+        Uses tier-specific composite scores based on miner's current tier.
         
         Args:
             current_day (int): The current day index.
@@ -416,22 +412,20 @@ class ScoringData:
         update_records = []
 
         for miner_uid, current_tier in tiers_dict.items():
-            # Retrieve the daily scores for the miner
+            # Get daily scores for component metrics
             daily_scores = miner_scores[miner_uid].get('daily', {})
             
-            # Extract component scores from daily_scores
+            # Get tier-specific scores
+            tier_scores = miner_scores[miner_uid].get(f'tier_{current_tier}', {})
+            
+            # Use component scores from daily calculation
             clv_avg = daily_scores.get('clv_score')
             roi = daily_scores.get('roi_score')
             sortino = daily_scores.get('sortino_score')
             entropy = daily_scores.get('entropy_score')
-            composite_score = daily_scores.get('composite_score')
-
-            bt.logging.debug(f"Miner {miner_uid} (Tier {current_tier}) scores: "
-                             f"CLV={self.safe_format(clv_avg)}, "
-                             f"ROI={self.safe_format(roi)}, "
-                             f"Sortino={self.safe_format(sortino)}, "
-                             f"Entropy={self.safe_format(entropy)}, "
-                             f"Composite={self.safe_format(composite_score)}")
+            
+            # Use composite score from tier-specific calculation
+            composite_score = tier_scores.get('composite_score')
 
             update_records.append((clv_avg, roi, sortino, entropy, composite_score, miner_uid))
 
@@ -442,9 +436,9 @@ class ScoringData:
         # Log some statistics
         composite_scores = [record[4] for record in update_records if record[4] is not None]
         if composite_scores:
-            bt.logging.info(f"Composite score stats - min: {min(composite_scores):.4f}, "
-                            f"max: {max(composite_scores):.4f}, "
-                            f"mean: {sum(composite_scores) / len(composite_scores):.4f}")
+            bt.logging.info(f"Tier-specific composite score stats - min: {min(composite_scores):.4f}, "
+                          f"max: {max(composite_scores):.4f}, "
+                          f"mean: {sum(composite_scores) / len(composite_scores):.4f}")
         else:
             bt.logging.warning("No valid composite scores found.")
 

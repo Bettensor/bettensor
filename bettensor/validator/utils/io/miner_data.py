@@ -271,7 +271,7 @@ class MinerDataMixin:
 
         bt.logging.info(f"Sending confirmation synapse to miner {miner_uid}, axon: {axon}")
         try:
-            self.dendrite.query(
+            self.dendrite.forward(
                 axons=axon,
                 synapse=synapse,
                 timeout=self.timeout,
@@ -284,21 +284,23 @@ class MinerDataMixin:
 
         bt.logging.info(f"Confirmation synapse sent to miner {miner_uid}")
 
-    def process_prediction(
-        self, processed_uids: torch.tensor, synapses: list
-    ) -> list:
+    def process_prediction(self, processed_uids: torch.tensor, synapses: list) -> list:
         """
         processes responses received by miners
 
         Args:
             processed_uids: list of uids that have been processed
-            predictions: list of deserialized synapses
+            synapses: list of deserialized synapses
         """
         bt.logging.trace(f"enter process_prediction")
         predictions = {}
         try:
             for synapse in synapses:
-                #bt.logging.trace(f"synapse: {synapse}")
+                bt.logging.trace(f"Processing synapse type: {type(synapse)}")
+                
+                if not hasattr(synapse, 'prediction_dict') or not hasattr(synapse, 'metadata'):
+                    bt.logging.warning(f"Invalid synapse object: {synapse}")
+                    continue
                 
                 prediction_dict = synapse.prediction_dict
                 metadata = synapse.metadata
