@@ -211,16 +211,20 @@ async def run(validator: BettensorValidator):
 
             # Wait for all tasks to complete
             if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
+                completed_tasks = []
+                for task in asyncio.as_completed(tasks):
+                    try:
+                        result = await task
+                        completed_tasks.append(result)
+                    except asyncio.CancelledError:
+                        bt.logging.warning(f"Task was cancelled")
+                        continue
+                    except Exception as e:
+                        bt.logging.error(f"Task failed with error: {str(e)}")
+                        continue
                 
-                # Process results and handle any exceptions
-                for i, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        bt.logging.error(f"Task {i} failed with error: {str(result)}")
-                    elif result is None:
-                        bt.logging.warning(f"Task {i} timed out or returned None")
-                    else:
-                        bt.logging.debug(f"Task {i} completed successfully")
+                # Log completion summary
+                bt.logging.info(f"Completed {len(completed_tasks)} out of {len(tasks)} tasks")
 
             await asyncio.sleep(30)
 
