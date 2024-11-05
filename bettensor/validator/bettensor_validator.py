@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import copy
@@ -114,6 +115,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.last_sent_data_to_website = 0
         self.last_scoring_block = 0
         self.last_set_weights_block = 0
+        self.operation_lock = asyncio.Lock()
 
 
     def determine_max_workers(self):

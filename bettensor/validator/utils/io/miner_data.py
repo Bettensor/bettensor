@@ -3,6 +3,7 @@ Class to handle and process all incoming miner data.
 """
 
 
+import asyncio
 import datetime
 from datetime import datetime, timezone, timedelta
 import traceback
@@ -22,211 +23,169 @@ Miner Data Methods, Extends the Bettensor Validator Class
 class MinerDataMixin:
     def insert_predictions(self, processed_uids, predictions):
         """
-        Inserts new predictions into the database
-
-        Args:
-        processed_uids: list of uids that have been processed
-        predictions: a dictionary with uids as keys and TeamGamePrediction objects as values
+        Inserts new predictions into the database in batches
         """
         try:
             current_time = datetime.now(timezone.utc).isoformat()
             bt.logging.trace(f"insert_predictions called with {len(predictions)} predictions")
 
             return_dict = {}
+            valid_predictions = []
 
-            for miner_uid, prediction_dict in predictions.items():
-                bt.logging.trace(f"insert_predictions processing uid: {miner_uid}, prediction_dict size: {len(prediction_dict)}")
+            # Begin single transaction for the batch
+            self.db_manager.begin_transaction()
 
-                for prediction_id, res in prediction_dict.items():
+            try:
+                for miner_uid, prediction_dict in predictions.items():
+                    bt.logging.trace(f"insert_predictions processing uid: {miner_uid}, prediction_dict size: {len(prediction_dict)}")
                     
+                    for prediction_id, res in prediction_dict.items():
+                        try:
+                            if int(miner_uid) not in processed_uids:
+                                bt.logging.trace(f"uid {miner_uid} not in processed_uids, skipping")
+                                return_dict[prediction_id] = (False, "UID not in processed_uids")
+                                continue
 
-                    if int(miner_uid) not in processed_uids:
-                        bt.logging.trace(f"uid {miner_uid} not in processed_uids, skipping")
-                        continue
-
-                    hotkey = self.metagraph.hotkeys[int(miner_uid)]
-                    prediction_id = res.prediction_id
-                    game_id = res.game_id
-                    miner_uid = miner_uid
-                    prediction_date = datetime.now(timezone.utc).isoformat()
-                    predicted_outcome = res.predicted_outcome
-                    wager = res.wager
-                    model_name = res.model_name
-                    confidence_score = res.confidence_score
-                    predicted_odds = res.predicted_odds
-                    ### PREDICTION VALIDATION ### 
-
-                    # Check if the wager is non-positive
-                    if wager <= 0:
-                        bt.logging.warning(
-                            f"Skipping prediction with non-positive wager: {wager} for UID {miner_uid}"
-                        )
-                        return_dict[prediction_id] = (False, "Prediction with non-positive wager - nice try")
-                        continue
-
-                    # Check if the predictionID already exists
-                    if (
-                        self.db_manager.fetch_one(
-                            "SELECT COUNT(*) FROM predictions WHERE prediction_id = ?",
-                            (prediction_id,),
-                        )["COUNT(*)"]
-                        > 0
-                    ):
-                        bt.logging.debug(
-                            f"Prediction {prediction_id} already exists, skipping."
-                        )
-                        return_dict[prediction_id] = (True, "Prediction already exists for this validator") # we return true because it already exists for this validator, so we want to make sure it's confirmed on the miner
-                        #bt.logging.info(f"Prediction {prediction_id} added to return_dict: {return_dict}")
-                        continue
-
-                    # Check if the game_id exists in the game_data table
-                    query = "SELECT sport, league, event_start_date, team_a, team_b, team_a_odds, team_b_odds, tie_odds, outcome FROM game_data WHERE external_id = ?"
-                    result = self.db_manager.fetch_one(query, (game_id,))
-                    bt.logging.debug(f"Result: {result}")
-
-                    if not result:
-                        bt.logging.debug(f"Game {game_id} not found in game_data for prediction {prediction_id} from uid {miner_uid}, skipping")
-                        return_dict[prediction_id] = (False, '''Game not found in validator game_data - check with dev team and provide this message:
-                        game_id: {game_id}
-                        sport: {sport}
-                        league: {league}
-                        event_start_date: {event_start_date}
-                        team_a: {team_a}
-                        team_b: {team_b}
-                        outcome: {outcome}
-                        '''
-                        )
-                        continue
-
-                    
-
-
-                    sport = result['sport']
-                    league = result['league']
-                    event_start_date = result['event_start_date']
-                    team_a = result['team_a']
-                    team_b = result['team_b']
-                    team_a_odds = result['team_a_odds']
-                    team_b_odds = result['team_b_odds']
-                    tie_odds = result['tie_odds']
-                    outcome = result['outcome']
-
-                    # Convert predictedOutcome to numeric value
-                    if predicted_outcome == team_a:
-                        predicted_outcome = 0
-                    elif predicted_outcome == team_b:
-                        predicted_outcome = 1
-                    elif predicted_outcome.lower() == "tie":
-                        predicted_outcome = 2
-                    else:
-                        bt.logging.debug(
-                            f'''Invalid predicted_outcome: {predicted_outcome}. Skipping this prediction.
-                            team_a: {team_a}
-                            team_b: {team_b}
-                            predicted_outcome: {predicted_outcome}
-                            '''
-                        )
-                        return_dict[prediction_id] = (False, '''Invalid predicted_outcome - check with dev team and provide this message:
-                            team_a: {team_a}
-                            team_b: {team_b}
-                            predicted_outcome: {predicted_outcome}
-                            '''
-                        )
-                        continue
-
-                    # Get the odds for the predicted outcome from game_data. Too vulnerable to manipulation otherwise.
-                    outcome_to_odds = {
-                        0: team_a_odds,
-                        1: team_b_odds,
-                        2: tie_odds
-                    }
-
-                    predicted_odds = outcome_to_odds.get(predicted_outcome, predicted_odds)
-
-                    # Check if the game has already started
-                    if current_time >= event_start_date:
-                        bt.logging.debug(
-                            f"Prediction not inserted: game {game_id} has already started."
-                        )
-                        return_dict[prediction_id] = (False, "Game has already started")
-                        continue
-
-                    self.db_manager.begin_transaction()
-                    try:
-                        # Calculate total wager for the date, excluding the current prediction
-                        current_total_wager = (
-                            self.db_manager.fetch_one(
-                                "SELECT SUM(wager) FROM predictions WHERE miner_uid = ? AND DATE(prediction_date) = DATE(?)",
-                                (miner_uid, prediction_date),
-                            )['SUM(wager)']
-                            or 0
-                        )
-                        new_total_wager = current_total_wager + wager
-
-                        if new_total_wager > 1000:
-                            bt.logging.debug(
-                                f"Prediction for miner {miner_uid} would exceed daily limit. Current total: ${current_total_wager}, Attempted wager: ${wager}"
+                            hotkey = self.metagraph.hotkeys[int(miner_uid)]
+                            
+                            # Check if prediction exists
+                            count_result = self.db_manager.fetch_one(
+                                "SELECT COUNT(*) FROM predictions WHERE prediction_id = ?",
+                                (prediction_id,),
                             )
-                            self.db_manager.rollback_transaction()
-                            return_dict[prediction_id] = (False, "Prediction would exceed daily limit, not inserted")
-                            continue  # Skip this prediction but continue processing others
+                            
+                            if count_result and count_result > 0:
+                                bt.logging.debug(f"Prediction {prediction_id} already exists, skipping.")
+                                return_dict[prediction_id] = (True, "Prediction already exists for this validator")
+                                continue
 
-                        # Insert new prediction
-                        self.db_manager.execute_query(
-                            """
-                            INSERT INTO predictions (prediction_id, game_id, miner_uid, prediction_date, predicted_outcome, predicted_odds, team_a, team_b, wager, team_a_odds, team_b_odds, tie_odds, outcome, model_name, confidence_score)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            # Check wager
+                            if res.wager <= 0:
+                                bt.logging.warning(f"Skipping prediction with non-positive wager: {res.wager} for UID {miner_uid}")
+                                return_dict[prediction_id] = (False, "Prediction with non-positive wager - nice try")
+                                continue
+
+                            # Validate game exists
+                            query = "SELECT sport, league, event_start_date, team_a, team_b, team_a_odds, team_b_odds, tie_odds, outcome FROM game_data WHERE external_id = ?"
+                            result = self.db_manager.fetch_one(query, (res.game_id,))
+                            bt.logging.debug(f"Result: {result}")
+
+                            if not result:
+                                bt.logging.debug(f"Game {res.game_id} not found in game_data for prediction {prediction_id} from uid {miner_uid}, skipping")
+                                return_dict[prediction_id] = (False, "Game not found in validator game_data")
+                                continue
+
+                            # Extract game data
+                            sport = result['sport']
+                            league = result['league']
+                            event_start_date = result['event_start_date']
+                            team_a = result['team_a']
+                            team_b = result['team_b']
+                            team_a_odds = result['team_a_odds']
+                            team_b_odds = result['team_b_odds']
+                            tie_odds = result['tie_odds']
+                            outcome = result['outcome']
+
+                            # Convert predicted outcome
+                            if res.predicted_outcome == team_a:
+                                predicted_outcome = 0
+                            elif res.predicted_outcome == team_b:
+                                predicted_outcome = 1
+                            elif res.predicted_outcome.lower() == "tie":
+                                predicted_outcome = 2
+                            else:
+                                bt.logging.debug(f"Invalid predicted_outcome: {res.predicted_outcome}. Skipping this prediction.")
+                                return_dict[prediction_id] = (False, "Invalid predicted_outcome")
+                                continue
+
+                            # Check if game started
+                            if current_time >= event_start_date:
+                                bt.logging.debug(f"Prediction not inserted: game {res.game_id} has already started.")
+                                return_dict[prediction_id] = (False, "Game has already started")
+                                continue
+
+                            # Check daily wager limit
+                            current_total_wager = self.db_manager.fetch_one(
+                                "SELECT SUM(wager) as total FROM predictions WHERE miner_uid = ? AND DATE(prediction_date) = DATE(?)",
+                                (miner_uid, current_time),
+                            )
+                            
+                            # Get the sum value from the result and handle None case
+                            current_total_wager = float(current_total_wager['total'] if current_total_wager and current_total_wager['total'] is not None else 0)
+                            
+                            if current_total_wager + res.wager > 1000:
+                                bt.logging.debug(f"Prediction would exceed daily limit. Current: ${current_total_wager}, Attempted: ${res.wager}")
+                                return_dict[prediction_id] = (False, "Prediction would exceed daily limit")
+                                continue
+
+                            # Get odds for predicted outcome
+                            outcome_to_odds = {0: team_a_odds, 1: team_b_odds, 2: tie_odds}
+                            predicted_odds = outcome_to_odds.get(predicted_outcome, res.predicted_odds)
+
+                            # Add to valid predictions for batch insert
+                            valid_predictions.append((
+                                prediction_id, res.game_id, miner_uid, current_time,
+                                predicted_outcome, predicted_odds, team_a, team_b,
+                                res.wager, team_a_odds, team_b_odds, tie_odds,
+                                outcome, res.model_name, res.confidence_score
+                            ))
+                            return_dict[prediction_id] = (True, "Prediction validated successfully")
+
+                        except Exception as e:
+                            bt.logging.error(f"Error processing prediction {prediction_id}: {str(e)}")
+                            bt.logging.error(f"Traceback: {traceback.format_exc()}")
+                            return_dict[prediction_id] = (False, f"Error processing prediction: {str(e)}")
+                            continue
+
+                # Batch insert all valid predictions
+                if valid_predictions:
+                    self.db_manager.executemany(
+                        """
+                        INSERT INTO predictions (
+                            prediction_id, game_id, miner_uid, prediction_date,
+                            predicted_outcome, predicted_odds, team_a, team_b,
+                            wager, team_a_odds, team_b_odds, tie_odds,
+                            outcome, model_name, confidence_score
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                            (
-                                prediction_id,
-                                game_id,
-                                miner_uid,
-                                prediction_date,
-                                predicted_outcome,
-                                predicted_odds,
-                                team_a,
-                                team_b,
-                                wager,
-                                team_a_odds,
-                                team_b_odds,
-                                tie_odds,
-                                outcome,
-                                model_name,
-                                confidence_score,
-                            ),
-                        )
-                        self.db_manager.commit_transaction()
-                        return_dict[prediction_id] = (True, "Prediction inserted successfully")
-                        bt.logging.info(f"Prediction inserted successfully: {prediction_id}")
-                        bt.logging.info(f"Adding prediction to entropy system")
-                        self.scoring_system.entropy_system.add_prediction(prediction_id, miner_uid, game_id, predicted_outcome, wager, predicted_odds, prediction_date)
+                        valid_predictions
+                    )
 
+                # Commit the transaction
+                self.db_manager.commit_transaction()
 
+                # Add to entropy system and update return dict for successful predictions
+                for pred_values in valid_predictions:
+                    prediction_id = pred_values[0]
+                    self.scoring_system.entropy_system.add_prediction(
+                        prediction_id, pred_values[2], pred_values[1],
+                        pred_values[4], pred_values[8], pred_values[5],
+                        pred_values[3]
+                    )
+                    return_dict[prediction_id] = (True, "Prediction inserted successfully")
+                    bt.logging.info(f"Prediction inserted successfully: {prediction_id}")
 
-                    except Exception as e:
-                        self.db_manager.rollback_transaction()
-                        bt.logging.error(f"miner_data.py | insert_predictions | An error occurred: {e}")
-                        bt.logging.error(f"miner_data.py | insert_predictions | Traceback: {traceback.format_exc()}")
-                        raise
-                
-                #bt.logging.info("Updating miner stats")
-                #self.scoring_system.scoring_data.update_miner_stats(self.scoring_system.current_day)
-                self.scoring_system.entropy_system.save_state("entropy_system_state.json")
-                #bt.logging.debug(f"Return dict: {return_dict}")
+            except Exception as e:
+                bt.logging.error(f"Error in batch processing: {str(e)}")
+                self.db_manager.rollback_transaction()
+                # Update return dict for failed batch
+                for pred_values in valid_predictions:
+                    return_dict[pred_values[0]] = (False, f"Batch insertion failed: {str(e)}")
+
+            # Send confirmations for each miner
+            for miner_uid, prediction_dict in predictions.items():
+                self.scoring_system.entropy_system.save_state()
                 bt.logging.info(f"Sending confirmation synapse to miner {miner_uid}")
                 self.send_confirmation_synapse_async(int(miner_uid), return_dict)
-                
+
         except Exception as e:
             bt.logging.error(f"miner_data.py | insert_predictions | An error occurred: {e}")
-            #print traceback
             bt.logging.error(f"miner_data.py | insert_predictions | Traceback: {traceback.format_exc()}")
-
-        # After inserting predictions, update entropy scores
-        # game_data = self.prepare_game_data_for_entropy(predictions)
-        # self.entropy_system.update_ebdr_scores(game_data)
+            if self.db_manager.is_transaction_active():
+                self.db_manager.rollback_transaction()
 
     def send_confirmation_synapse_async(self, miner_uid, predictions):
-        self.executor.submit(self.send_confirmation_synapse, miner_uid, predictions)
+        self.executor.submit(self.send_confirmation_synapse(miner_uid, predictions))
 
     def send_confirmation_synapse(self, miner_uid, predictions):
         """
@@ -271,18 +230,19 @@ class MinerDataMixin:
 
         bt.logging.info(f"Sending confirmation synapse to miner {miner_uid}, axon: {axon}")
         try:
-            self.dendrite.forward(
+            self.dendrite.query(
                 axons=axon,
                 synapse=synapse,
                 timeout=self.timeout,
                 deserialize=True,
             )
+            bt.logging.info(f"Confirmation synapse sent to miner {miner_uid}")
         except Exception as e:
             bt.logging.error(f"miner_data.py | send_confirmation_synapse | An error occurred: {e}")
             bt.logging.error(f"miner_data.py | send_confirmation_synapse | Traceback: {traceback.format_exc()}")
             raise
 
-        bt.logging.info(f"Confirmation synapse sent to miner {miner_uid}")
+        
 
     def process_prediction(self, processed_uids: torch.tensor, synapses: list) -> list:
         """
@@ -296,7 +256,7 @@ class MinerDataMixin:
         predictions = {}
         try:
             for synapse in synapses:
-                bt.logging.trace(f"Processing synapse type: {type(synapse)}")
+                #bt.logging.trace(f"Processing synapse type: {type(synapse)}")
                 
                 if not hasattr(synapse, 'prediction_dict') or not hasattr(synapse, 'metadata'):
                     bt.logging.warning(f"Invalid synapse object: {synapse}")
