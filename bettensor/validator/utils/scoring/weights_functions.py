@@ -30,6 +30,7 @@ class WeightSetter:
     def connect_db(self):
         return sqlite3.connect(self.db_path)
     
+    @staticmethod
     def timeout_with_multiprocess(seconds):
         # Thanks Omron (SN2) for the timeout decorator
         def decorator(func):
@@ -66,49 +67,48 @@ class WeightSetter:
 
         return decorator
 
-
     @timeout_with_multiprocess(60)
     def set_weights(self, weights: torch.Tensor):
-            # ensure weights and uids are the same length
-            if len(weights) != len(self.metagraph.uids):
-                bt.logging.error(f"Weights and uids are not the same length: {len(weights)} != {len(self.metagraph.uids)}")
-                bt.logging.error(f"Weights: {len(weights)}")
-                bt.logging.error(f"Uids: {len(self.metagraph.uids)}")
-                #trim weights to the length of uids
-                weights = weights[:len(self.metagraph.uids)]
-            
-            try:
-                bt.logging.info("Attempting to set weights")
-                result = self.subtensor.set_weights(
-                    netuid=self.neuron_config.netuid, 
-                    wallet=self.wallet, 
-                    uids=self.metagraph.uids, 
-                    weights=weights, 
-                    version_key=__spec_version__, 
-                    wait_for_inclusion=True, 
-                )
-            
-                bt.logging.trace(f"Set weights result: {result}")
+        # Ensure weights and uids are the same length
+        if len(weights) != len(self.metagraph.uids):
+            bt.logging.error(f"Weights and UIDs are not the same length: {len(weights)} != {len(self.metagraph.uids)}")
+            bt.logging.error(f"Weights: {len(weights)}")
+            bt.logging.error(f"UIDs: {len(self.metagraph.uids)}")
+            # Trim weights to the length of UIDs
+            weights = weights[:len(self.metagraph.uids)]
+        
+        try:
+            bt.logging.info("Attempting to set weights")
+            result = self.subtensor.set_weights(
+                netuid=self.neuron_config.netuid, 
+                wallet=self.wallet, 
+                uids=self.metagraph.uids, 
+                weights=weights, 
+                version_key=__spec_version__, 
+                wait_for_inclusion=True, 
+            )
+        
+            bt.logging.trace(f"Set weights result: {result}")
 
-                if isinstance(result, tuple) and len(result) >= 1:
-                    success = result[0]
-                    bt.logging.trace(f"Set weights message: {success}")
-                    if success:
-                        bt.logging.info("Successfully set weights.")
-                        return True
-                    
-                else:
-                    bt.logging.warning(
-                        f"Unexpected result format in setting weights: {result}"
+            if isinstance(result, tuple) and len(result) >= 1:
+                success = result[0]
+                bt.logging.trace(f"Set weights message: {success}")
+                if success:
+                    bt.logging.info("Successfully set weights.")
+                    return True
+                
+            else:
+                bt.logging.warning(
+                    f"Unexpected result format in setting weights: {result}"
                 )
-            except TimeoutError:
-                bt.logging.error("Timeout occurred while setting weights.")
-            except Exception as e:
-                bt.logging.error(f"Error setting weights: {str(e)}")
-                bt.logging.error(f"Error traceback: {traceback.format_exc()}")
+        except TimeoutError:
+            bt.logging.error("Timeout occurred while setting weights.")
+        except Exception as e:
+            bt.logging.error(f"Error setting weights: {str(e)}")
+            bt.logging.error(f"Error traceback: {traceback.format_exc()}")
 
-            bt.logging.error("Failed to set weights after all attempts.")
-            return False
+        bt.logging.error("Failed to set weights after all attempts.")
+        return False
 
 
     
