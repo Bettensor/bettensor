@@ -14,6 +14,7 @@ import sqlite3
 from azure.storage.blob import BlobServiceClient
 from azure.core.exceptions import AzureError
 from dotenv import load_dotenv
+import stat  # Make sure to import stat module
 
 class StateSync:
     def __init__(self, 
@@ -29,7 +30,7 @@ class StateSync:
         
         
         #hardcoded read-only token for easy distribution - will issue tokens via api in the futute
-        readonly_token = "sp=r&st=2024-11-04T20:00:26Z&se=2024-11-05T04:00:26Z&spr=https&sv=2022-11-02&sr=c&sig=OIvDP%2FCSmRkGokddtGJLOGVDNbIf4YdvaH4BBb%2FZqQk%3D"
+        readonly_token = "sp=r&st=2024-11-05T18:31:28Z&se=2039-11-06T02:31:28Z&spr=https&sv=2022-11-02&sr=c&sig=NJPxzJsi3zgVjHtJK5BNNYXUqxG5Hi0WfM4Fg3sgBB4%3D"
 
         # Get Azure configuration from environment
         sas_url = os.getenv('AZURE_STORAGE_SAS_URL','https://devbettensorstore.blob.core.windows.net')
@@ -63,10 +64,41 @@ class StateSync:
 
 
     def _compute_fuzzy_hash(self, filepath: Path) -> str:
-        """Compute fuzzy hash of a file using ssdeep"""
+        """Compute fuzzy hash of a file using ssdeep, with special handling for SQLite DB"""
         try:
-            with open(filepath, 'rb') as f:
-                return ssdeep.hash(f.read())
+            if filepath.name == "validator.db":
+                # For SQLite DB, hash the table structure and row counts instead
+                conn = sqlite3.connect(filepath)
+                cursor = conn.cursor()
+                
+                # Get table schema and row counts
+                hash_data = []
+                
+                # Get list of tables
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = cursor.fetchall()
+                
+                for table in tables:
+                    table_name = table[0]
+                    # Get table schema
+                    cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+                    schema = cursor.fetchone()[0]
+                    
+                    # Get row count
+                    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+                    count = cursor.fetchone()[0]
+                    
+                    hash_data.append(f"{schema}:{count}")
+                
+                conn.close()
+                
+                # Create a stable string representation to hash
+                db_state = "\n".join(sorted(hash_data))
+                return ssdeep.hash(db_state.encode())
+            else:
+                # Regular file hashing
+                with open(filepath, 'rb') as f:
+                    return ssdeep.hash(f.read())
         except Exception as e:
             bt.logging.error(f"Error computing hash for {filepath}: {e}")
             return ""
@@ -74,8 +106,11 @@ class StateSync:
     def _compare_fuzzy_hashes(self, hash1: str, hash2: str) -> int:
         """Compare two fuzzy hashes and return similarity percentage (0-100)"""
         try:
+            if not hash1 or not hash2:
+                return 0
             return ssdeep.compare(hash1, hash2)
-        except Exception:
+        except Exception as e:
+            bt.logging.error(f"Error comparing hashes: {e}")
             return 0
 
     def _update_hash_file(self):
@@ -297,64 +332,54 @@ class StateSync:
             return False
 
         try:
-            # First pull and check metadata
-            metadata_client = self.container.get_blob_client("state_metadata.json")
-            temp_metadata = self.metadata_file.with_suffix('.tmp')
-            
-            try:
-                # Download metadata file
-                with open(temp_metadata, 'wb') as f:
-                    stream = metadata_client.download_blob()
-                    for chunk in stream.chunks():
-                        f.write(chunk)
+            for filename in self.state_files:
+                blob_client = self.container.get_blob_client(filename)
+                filepath = self.state_dir / filename
+                temp_file = filepath.with_suffix('.tmp')
+                bt.logging.debug(f"Processing file: {filepath.absolute()} (temp: {temp_file.absolute()})")
                 
-                # Load remote metadata
-                with open(temp_metadata) as f:
-                    remote_metadata = json.load(f)
+                try:
+                    with open(temp_file, 'wb') as f:
+                        stream = blob_client.download_blob()
+                        for chunk in stream.chunks():
+                            f.write(chunk)
                     
-                # Check if we should pull
-                should_update = self._should_pull_state(remote_metadata)
-                
-                if not should_update:
-                    bt.logging.info("Local state is up to date")
-                    temp_metadata.unlink()
-                    return False
+                    # Set write permissions on temp file before moving
+                    os.chmod(temp_file, 0o600)  # rw------- permissions
                     
-                # If we should update, download all files
-                for filename in self.state_files:
-                    blob_client = self.container.get_blob_client(filename)
-                    filepath = self.state_dir / filename
-                    temp_file = filepath.with_suffix('.tmp')
-                    
-                    try:
-                        with open(temp_file, 'wb') as f:
-                            stream = blob_client.download_blob()
-                            for chunk in stream.chunks():
-                                f.write(chunk)
+                    # For database files, ensure they're writable and not locked
+                    if filename == "validator.db":
+                        # Extra permissions for SQLite
+                        os.chmod(temp_file, 0o666)  # rw-rw-rw-
                         
-                        # Atomic rename
-                        temp_file.rename(filepath)
-                        
-                    except Exception as e:
-                        temp_file.unlink(missing_ok=True)
-                        raise e
-                
-                # If all files downloaded successfully, move metadata file into place
-                temp_metadata.rename(self.metadata_file)
-                
-                bt.logging.info("Successfully pulled and updated state from Azure")
-                return True
-                
-            finally:
-                # Clean up temp metadata file if it exists
-                temp_metadata.unlink(missing_ok=True)
+                        # If the target file exists, ensure it's closed
+                        if filepath.exists():
+                            try:
+                                conn = sqlite3.connect(filepath)
+                                conn.close()
+                            except Exception:
+                                pass
+                    
+                    # Atomic rename
+                    bt.logging.debug(f"Renaming {temp_file} to {filepath}")
+                    temp_file.rename(filepath)
+                    
+                    # Set permissions after move as well
+                    os.chmod(filepath, 0o600)
+                    if filename == "validator.db":
+                        os.chmod(filepath, 0o666)
+                    
+                except Exception as e:
+                    temp_file.unlink(missing_ok=True)
+                    raise e
 
-        except AzureError as e:
-            bt.logging.error(f"Azure storage error during pull: {e}")
-            return False
+            bt.logging.info("Successfully pulled and updated state from Azure")
+            return True
+                
         except Exception as e:
             bt.logging.error(f"Error pulling state: {e}")
             return False
+      
 
     def _should_pull_state(self, remote_metadata: dict) -> bool:
         """
