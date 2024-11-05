@@ -528,7 +528,7 @@ async def query_and_process_axons_with_game_data(validator):
             total_batches = math.ceil(len(uids_to_query)/BATCH_SIZE)
             for i in range(0, len(uids_to_query), BATCH_SIZE):
                 # Extend watchdog timeout for each batch
-                validator.watchdog.extend_timeout(60)  # Add 1 minute per batch
+                validator.watchdog.extend_timeout(120)  # Add 2 minutes per batch
                 
                 batch = uids_to_query[i:i + BATCH_SIZE]
                 batch_uids = list_of_uids[i:i + BATCH_SIZE]

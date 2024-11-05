@@ -5,6 +5,7 @@ import json
 import bittensor as bt
 import time
 import traceback
+import signal
 
 
 class Watchdog:
@@ -46,28 +47,80 @@ class Watchdog:
         self.restart_process()
 
     def restart_process(self):
+        """Restart the PM2 process with proper cleanup"""
         try:
-            bt.logging.info(f"Attempting to restart PM2 process: {self.pm2_process_name}")
-            subprocess.run(["pm2", "restart", self.pm2_process_name, "--update-env"], check=True)
-            bt.logging.info(f"PM2 process {self.pm2_process_name} restarted successfully")
-            bt.logging.info(f"PM2 process {self.pm2_process_name} restart initiated")
-
-            # Exit current process to prevent duplication
-            os._exit(0)
+            process_name = self.get_pm2_process_name()
+            if not process_name:
+                bt.logging.error("Could not determine PM2 process name, attempting default names...")
+                # Try common validator process names
+                for name in ["validator", "validator0", "validator1"]:
+                    try:
+                        subprocess.run(["pm2", "id", name], check=True, capture_output=True)
+                        process_name = name
+                        break
+                    except:
+                        continue
+            
+            if process_name:
+                bt.logging.info(f"Attempting to restart PM2 process: {process_name}")
+                
+                # First try graceful reload
+                try:
+                    subprocess.run(["pm2", "reload", process_name], 
+                                 check=True, timeout=30,
+                                 capture_output=True)
+                    bt.logging.info(f"PM2 process {process_name} reload initiated")
+                except:
+                    # If reload fails, try restart
+                    subprocess.run(["pm2", "restart", process_name, "--update-env"], 
+                                 check=True, timeout=30,
+                                 capture_output=True)
+                    bt.logging.info(f"PM2 process {process_name} restart initiated")
+                
+                # Give PM2 a moment to start the new process
+                time.sleep(5)
+                
+                # Verify new process started
+                result = subprocess.run(["pm2", "pid", process_name],
+                                      capture_output=True, text=True)
+                if result.stdout.strip():
+                    bt.logging.info("New process started successfully")
+                    os._exit(0)
+                else:
+                    bt.logging.error("New process failed to start")
+                
+            else:
+                bt.logging.error("Could not determine PM2 process name. Manual restart required.")
+                
         except Exception as e:
             bt.logging.error(f"Failed to restart PM2 process: {str(e)}")
-            os._exit(1)
+            bt.logging.error(traceback.format_exc())
+        
+        # If we get here, something went wrong with the restart
+        bt.logging.error("Process restart failed, attempting force kill...")
+        os.kill(os.getpid(), signal.SIGKILL)
 
     def get_pm2_process_name(self):
+        """Get the current PM2 process name by checking all validator processes"""
         try:
             result = subprocess.run(["pm2", "jlist"], capture_output=True, text=True, check=True)
             processes = json.loads(result.stdout)
+            
+            # Get current process ID
+            current_pid = os.getpid()
+            
             for proc in processes:
-                if proc.get("name") == "validator":
+                # Check if this is a validator process and matches our PID
+                if (proc.get("name", "").startswith("validator") and 
+                    str(proc.get("pid")) == str(current_pid)):
                     return proc.get("name")
+                    
+            bt.logging.error(f"Could not find matching PM2 process for PID {current_pid}")
             return None
+            
         except Exception as e:
             bt.logging.error(f"Error fetching PM2 process list: {e}")
+            bt.logging.error(traceback.format_exc())
             return None
 
     def _timeout_handler(self):
@@ -75,22 +128,26 @@ class Watchdog:
         bt.logging.error("Watchdog timer expired. Cleaning up resources...")
         
         try:
-            # Get validator instance (assuming it's passed during initialization)
+            # Get validator instance
             if hasattr(self, 'validator'):
-                # Cleanup database
-                if hasattr(self.validator, 'db_manager'):
-                    self.validator.db_manager.cleanup()
-                
-                # Cancel any pending async tasks
-                if hasattr(self.validator, 'operation_lock'):
-                    self.validator.operation_lock.release()
-                
-                # Reset any other resources
+                # Save scoring system state first
                 if hasattr(self.validator, 'scoring_system'):
                     self.validator.scoring_system.save_state()
+                
+                # Release any locks
+                if hasattr(self.validator, 'operation_lock'):
+                    try:
+                        self.validator.operation_lock.release()
+                    except:
+                        pass
+                    
+                # Cleanup database last
+                if hasattr(self.validator, 'db_manager'):
+                    self.validator.db_manager.cleanup()
                     
         except Exception as e:
             bt.logging.error(f"Error during watchdog cleanup: {e}")
             bt.logging.error(traceback.format_exc())
         finally:
+            # Force restart even if cleanup fails
             self.restart_process()
