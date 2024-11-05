@@ -6,6 +6,7 @@ from bettensor.validator.utils.database.database_init import initialize_database
 import logging
 import time
 import os
+import traceback
 
 class SingletonMeta(type):
     """
@@ -373,6 +374,30 @@ class DatabaseManager(metaclass=SingletonMeta):
     
     def get_connection(self):
         return self._get_connection()
+
+    def cleanup(self):
+        """Cleanup all database resources"""
+        with self.lock:
+            try:
+                # Rollback any active transactions
+                if self.transaction_active:
+                    self.rollback_transaction()
+                
+                # Stop the worker thread
+                self.running = False
+                if self.worker_thread and self.worker_thread.is_alive():
+                    self.worker_thread.join(timeout=5)
+                
+                # Close all thread-local connections
+                if hasattr(self, '_thread_local'):
+                    if hasattr(self._thread_local, 'conn') and self._thread_local.conn:
+                        self._thread_local.conn.close()
+                        
+                bt.logging.info("Database resources cleaned up successfully")
+                
+            except Exception as e:
+                bt.logging.error(f"Error during database cleanup: {e}")
+                bt.logging.error(traceback.format_exc())
 
 class DatabaseTransaction:
     def __init__(self, db_manager):

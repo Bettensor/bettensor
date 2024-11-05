@@ -30,6 +30,8 @@ from bettensor.validator.utils.database.database_manager import DatabaseManager
 from bettensor.validator.utils.io.miner_data import MinerDataMixin
 from bettensor.validator.utils.io.bettensor_api_client import BettensorAPIClient
 from bettensor.validator.utils.io.base_api_client import BaseAPIClient
+from bettensor.validator.utils.scoring.watchdog import Watchdog
+import signal
 
 DEFAULT_DB_PATH = "./bettensor/validator/state/validator.db"
 
@@ -116,7 +118,10 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.last_scoring_block = 0
         self.last_set_weights_block = 0
         self.operation_lock = asyncio.Lock()
-
+        self.watchdog = None
+        # Add signal handlers
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+        signal.signal(signal.SIGINT, self._handle_shutdown)
 
     def determine_max_workers(self):
         num_cores = os.cpu_count()
@@ -309,6 +314,8 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         )
 
         self.website_handler = WebsiteHandler(self)
+
+
 
         return True
 
@@ -658,3 +665,14 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             bt.logging.error(f"Error resetting scoring system: {e}")
             bt.logging.error(traceback.format_exc())
             raise
+
+    def _handle_shutdown(self, signum, frame):
+        """Handle shutdown signals gracefully"""
+        bt.logging.info("Received shutdown signal. Cleaning up...")
+        try:
+            if hasattr(self, 'db_manager'):
+                self.db_manager.cleanup()
+            sys.exit(0)
+        except Exception as e:
+            bt.logging.error(f"Error during shutdown: {e}")
+            sys.exit(1)

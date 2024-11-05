@@ -147,7 +147,7 @@ async def run(validator: BettensorValidator):
     
 
     initialize(validator)
-    watchdog = Watchdog(timeout=1200)  # 20 minutes timeout
+    validator.watchdog = Watchdog(validator=validator, timeout=1200)  # 20 minutes timeout
 
     # Create and start the game data task instead of thread
     game_data_task = asyncio.create_task(game_data_update_loop(validator))
@@ -366,8 +366,7 @@ def initialize(validator):
         validator.last_set_weights_block = validator.subtensor.block - 300
     validator.operation_lock = asyncio.Lock()
 
-    # Add watchdog with 20 minute timeout
-    validator.watchdog = Watchdog(timeout=1200)
+
     
 def log_status_with_watchdog(validator):
     while True:
@@ -526,10 +525,14 @@ async def query_and_process_axons_with_game_data(validator):
         
         try:
             # Process axons in batches
+            total_batches = math.ceil(len(uids_to_query)/BATCH_SIZE)
             for i in range(0, len(uids_to_query), BATCH_SIZE):
+                # Extend watchdog timeout for each batch
+                validator.watchdog.extend_timeout(60)  # Add 1 minute per batch
+                
                 batch = uids_to_query[i:i + BATCH_SIZE]
                 batch_uids = list_of_uids[i:i + BATCH_SIZE]
-                bt.logging.debug(f"Processing batch {i//BATCH_SIZE + 1} of {math.ceil(len(uids_to_query)/BATCH_SIZE)}")
+                bt.logging.debug(f"Processing batch {i//BATCH_SIZE + 1} of {total_batches}")
                 
                 # Query batch of axons
                 batch_responses = await asyncio.to_thread(
@@ -551,6 +554,9 @@ async def query_and_process_axons_with_game_data(validator):
                 # Process predictions for this batch immediately
                 bt.logging.debug(f"Processing {len(valid_batch_responses)} predictions for batch {i//BATCH_SIZE + 1}")
                 validator.process_prediction(batch_uids, valid_batch_responses)
+
+            # Reset watchdog after successful completion
+            validator.watchdog.reset()
 
         except Exception as e:
             bt.logging.error(f"Error querying and processing axons: {str(e)}")
