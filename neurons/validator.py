@@ -106,7 +106,7 @@ def log_status(validator):
         # bt.logging.debug(debug_message)
         time.sleep(30)
 
-def game_data_update_loop(validator):
+async def game_data_update_loop(validator):
     """Background thread function for updating game data"""
     while True:
         try:
@@ -116,18 +116,20 @@ def game_data_update_loop(validator):
             # Try to acquire the lock without blocking
             if validator.operation_lock.locked():
                 bt.logging.debug("Skipping game data update - another operation is running")
-                time.sleep(30)
+                await asyncio.sleep(30)
                 continue
                 
-            # Use asyncio.run to handle the async lock in a sync context
-            asyncio.run(update_game_data_with_lock(validator, current_time))
+            # Use the lock directly in async context
+            async with async_timeout.timeout(GAME_DATA_TIMEOUT):
+                async with validator.operation_lock:
+                    await asyncio.to_thread(update_game_data, validator, current_time)
             
-            time.sleep(30)
+            await asyncio.sleep(30)
             
         except Exception as e:
             bt.logging.error(f"Error in game data update loop: {str(e)}")
             bt.logging.error(traceback.format_exc())
-            time.sleep(5)
+            await asyncio.sleep(5)
 
 async def update_game_data_with_lock(validator, current_time):
     """Wrapper to handle the async lock for update_game_data"""
@@ -147,13 +149,14 @@ async def run(validator: BettensorValidator):
     initialize(validator)
     watchdog = Watchdog(timeout=1200)  # 20 minutes timeout
 
+    # Create and start the game data task instead of thread
+    game_data_task = asyncio.create_task(game_data_update_loop(validator))
+
     # Create threads for periodic tasks
     status_log_thread = threading.Thread(target=log_status_with_watchdog, args=(validator,), daemon=True)
-    game_data_thread = threading.Thread(target=game_data_update_loop, args=(validator,), daemon=True)
     
-    # Start the threads
+    # Start only the status log thread
     status_log_thread.start()
-    game_data_thread.start()
 
     # Add state sync tasks
     state_sync_task = asyncio.create_task(push_state_periodic(validator))  # Primary node, pushes state to GitHub
@@ -253,9 +256,9 @@ async def run(validator: BettensorValidator):
     finally:
         state_sync_task.cancel()
         state_check_task.cancel()
-        # Wait for threads to finish
+        game_data_task.cancel()
+        # Wait for thread to finish
         status_log_thread.join(timeout=1)
-        game_data_thread.join(timeout=1)
 
 async def run_with_timeout(func, timeout: int, *args, **kwargs) -> Optional[Any]:
     """
@@ -547,7 +550,7 @@ async def query_and_process_axons_with_game_data(validator):
                 
                 # Process predictions for this batch immediately
                 bt.logging.debug(f"Processing {len(valid_batch_responses)} predictions for batch {i//BATCH_SIZE + 1}")
-                # Continue processing as needed
+                validator.process_prediction(batch_uids, valid_batch_responses)
 
         except Exception as e:
             bt.logging.error(f"Error querying and processing axons: {str(e)}")
@@ -648,8 +651,10 @@ async def set_weights(validator, weights_to_set):
             validator.weight_setter.set_weights,
             weights_to_set
         )
+        validator.last_set_weights_block = validator.subtensor.block
         return result
     except Exception as e:
+        validator.last_set_weights_block = validator.subtensor.block - 50 # Set weights block to 50 blocks ago, to prevent spamming the network with failed weight sets
         bt.logging.error(f"Error in set_weights wrapper: {str(e)}")
         bt.logging.error(traceback.format_exc())
         return False

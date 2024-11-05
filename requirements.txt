@@ -56,3 +56,4 @@ torch==2.2.0
 Werkzeug==3.0.4
 safetensors==0.4.0
 ssdeep==3.4
+azure-storage-blob==12.23.1
