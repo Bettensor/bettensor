@@ -1,3 +1,4 @@
+from pathlib import Path
 import sqlite3
 import threading
 import bittensor as bt
@@ -47,6 +48,7 @@ class DatabaseManager(metaclass=SingletonMeta):
         self.db_path = db_path
         self.transaction_active = False
         self.logger = None
+        self.reset_database_pragmas()
 
         # Setup logging
         bt.logging.info("Setting up logging...")
@@ -399,6 +401,97 @@ class DatabaseManager(metaclass=SingletonMeta):
                 bt.logging.error(f"Error during database cleanup: {e}")
                 bt.logging.error(traceback.format_exc())
 
+    def reset_database_pragmas(self):
+        """Reset database PRAGMAs to default values."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Reset common PRAGMAs to defaults
+            cursor.execute("PRAGMA query_only = 0")
+            cursor.execute("PRAGMA journal_mode = DELETE")
+            cursor.execute("PRAGMA synchronous = FULL")
+            cursor.execute("PRAGMA foreign_keys = ON")
+            cursor.execute("PRAGMA auto_vacuum = NONE")
+            cursor.execute("PRAGMA cache_size = -2000")
+            cursor.execute("PRAGMA case_sensitive_like = FALSE")
+            cursor.execute("PRAGMA temp_store = DEFAULT")
+            cursor.execute("PRAGMA mmap_size = 0")
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+        except Exception as e:
+            bt.logging.error(f"Error resetting database PRAGMAs: {e}")
+            raise
+
+    def reset_connections(self):
+        """Close and reopen all database connections with proper permissions"""
+        with self.lock:
+            try:
+                # Close existing connections
+                if hasattr(self, '_thread_local'):
+                    if hasattr(self._thread_local, 'conn') and self._thread_local.conn:
+                        self._thread_local.conn.close()
+                        self._thread_local.conn = None
+                        self._thread_local.cursor = None
+                
+                # Force proper permissions on database file
+                if os.path.exists(self.db_path):
+                    os.chmod(self.db_path, 0o666)
+                
+                # Test new connection
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA journal_mode=DELETE")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                conn.commit()
+                cursor.close()
+                conn.close()
+                
+                bt.logging.info("Database connections reset successfully")
+                
+            except Exception as e:
+                bt.logging.error(f"Error resetting database connections: {e}")
+                raise
+
+    def reinitialize_after_sync(self):
+        """Reinitialize database connections after state sync"""
+        with self.lock:
+            try:
+                # Stop existing worker thread
+                self.running = False
+                if self.worker_thread and self.worker_thread.is_alive():
+                    self.worker_thread.join(timeout=5)
+                
+                # Clear thread local storage
+                if hasattr(self, '_thread_local'):
+                    if hasattr(self._thread_local, 'conn') and self._thread_local.conn:
+                        self._thread_local.conn.close()
+                    self._thread_local = threading.local()
+                
+                # Reset database pragmas
+                self.reset_database_pragmas()
+                
+                # Restart worker thread
+                self.running = True
+                self._start_worker()
+                
+                # Test connection
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                conn.close()
+                
+                bt.logging.info("Database manager reinitialized successfully after sync")
+                
+            except Exception as e:
+                bt.logging.error(f"Error reinitializing database manager: {e}")
+                raise
+
+
 class DatabaseTransaction:
     def __init__(self, db_manager):
         self.db_manager = db_manager
@@ -414,3 +507,4 @@ class DatabaseTransaction:
         else:
             self.conn.rollback()
         self.conn.close()
+

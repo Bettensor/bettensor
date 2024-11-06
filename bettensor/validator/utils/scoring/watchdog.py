@@ -6,6 +6,7 @@ import bittensor as bt
 import time
 import traceback
 import signal
+from threading import Lock
 
 
 class Watchdog:
@@ -17,30 +18,43 @@ class Watchdog:
         self.validator = validator
         self.timeout = timeout
         self.last_reset = time.time()
+        self.lock = Lock()
         self.timer = threading.Timer(timeout, self._timeout_handler)
         self.timer.daemon = True
         self.timer.start()
         self.pm2_process_name = self.get_pm2_process_name()
+        self.is_running = True
+
+    def reset(self):
+        """Reset the watchdog timer with thread safety"""
+        with self.lock:
+            if not self.is_running:
+                return
+            self.timer.cancel()
+            self.last_reset = time.time()
+            self.timer = threading.Timer(self.timeout, self._timeout_handler)
+            self.timer.daemon = True
+            self.timer.start()
+            bt.logging.debug("Watchdog timer reset")
 
     def extend_timeout(self, additional_seconds):
         """Extends the current timeout by the specified number of seconds"""
-        current_time = time.time()
-        time_elapsed = current_time - self.last_reset
-        remaining_time = self.timeout - time_elapsed
-        
-        # Only extend if we have less than 5 minutes remaining
-        if remaining_time < 300:
-            self.timer.cancel()
-            new_timeout = remaining_time + additional_seconds
-            self.timer = threading.Timer(new_timeout, self._timeout_handler)
-            self.timer.daemon = True
-            self.timer.start()
-            bt.logging.debug(f"Extended watchdog timeout by {additional_seconds} seconds")
-
-    def reset(self):
-        self.timer.cancel()
-        self.timer = threading.Timer(self.timeout, self.handle_timeout)
-        self.timer.start()
+        with self.lock:
+            if not self.is_running:
+                return
+            current_time = time.time()
+            time_elapsed = current_time - self.last_reset
+            remaining_time = self.timeout - time_elapsed
+            
+            # Only extend if we have less than 5 minutes remaining
+            if remaining_time < 300:
+                self.timer.cancel()
+                new_timeout = remaining_time + additional_seconds
+                self.last_reset = current_time
+                self.timer = threading.Timer(new_timeout, self._timeout_handler)
+                self.timer.daemon = True
+                self.timer.start()
+                bt.logging.debug(f"Extended watchdog timeout by {additional_seconds} seconds")
 
     def handle_timeout(self):
         bt.logging.error("Watchdog timer expired. Restarting process...")
@@ -124,30 +138,18 @@ class Watchdog:
             return None
 
     def _timeout_handler(self):
-        """Handle watchdog timeout by cleaning up and restarting"""
-        bt.logging.error("Watchdog timer expired. Cleaning up resources...")
-        
-        try:
-            # Get validator instance
-            if hasattr(self, 'validator'):
-                # Save scoring system state first
-                if hasattr(self.validator, 'scoring_system'):
-                    self.validator.scoring_system.save_state()
-                
-                # Release any locks
-                if hasattr(self.validator, 'operation_lock'):
-                    try:
-                        self.validator.operation_lock.release()
-                    except:
-                        pass
-                    
-                # Cleanup database last
-                if hasattr(self.validator, 'db_manager'):
-                    self.validator.db_manager.cleanup()
-                    
-        except Exception as e:
-            bt.logging.error(f"Error during watchdog cleanup: {e}")
-            bt.logging.error(traceback.format_exc())
-        finally:
-            # Force restart even if cleanup fails
+        """Internal timeout handler that checks running state"""
+        with self.lock:
+            if not self.is_running:
+                return
+            bt.logging.error("Watchdog timer expired. Cleaning up resources...")
             self.restart_process()
+
+    def cleanup(self):
+        """Cleanup method for proper shutdown"""
+        with self.lock:
+            self.is_running = False
+            if self.timer:
+                self.timer.cancel()
+                self.timer = None
+            bt.logging.debug("Watchdog cleaned up")

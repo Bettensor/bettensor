@@ -19,6 +19,7 @@ import bittensor as bt
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict
 import time
+import traceback
 
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 from .scoring_data import ScoringData
@@ -962,74 +963,66 @@ class ScoringSystem:
             raise
 
     def load_state(self):
-        """
-        Load the state of the ScoringSystem from the database, including the amount_wagered and tiers arrays.
-        """
+        """Load state from database"""
         try:
-            # Fetch the latest state from score_state table
+            # First, check for the most recent state with current_day > 0
             fetch_state_query = """
-                SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, last_update_date, amount_wagered, tiers
+                SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, 
+                    last_update_date, amount_wagered, tiers, state_id
                 FROM score_state
+                WHERE current_day > 0
                 ORDER BY state_id DESC
                 LIMIT 1
             """
+            
             state = self.db_manager.fetch_one(fetch_state_query, None)
+            
+            # If no state with current_day > 0, fall back to most recent state
+            if not state:
+                fetch_state_query = """
+                    SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, 
+                        last_update_date, amount_wagered, tiers, state_id
+                    FROM score_state
+                    ORDER BY state_id DESC
+                    LIMIT 1
+                """
+                state = self.db_manager.fetch_one(fetch_state_query, None)
+            
+            #bt.logging.debug(f"Selected state for loading: {state}")
+            
             if state:
+                bt.logging.info(f"Found existing state in database with state_id={state['state_id']}")
                 self.current_day = state["current_day"]
-                self.current_date = datetime.fromisoformat(state["current_date"]).replace(tzinfo=timezone.utc) if state["current_date"] else datetime.now(timezone.utc)
-                self.reference_date = datetime.fromisoformat(state["reference_date"]).replace(tzinfo=timezone.utc) if state["reference_date"] else datetime.now(timezone.utc)
-                self.invalid_uids = set(json.loads(state["invalid_uids"])) if state["invalid_uids"] else set()
-                self.valid_uids = set(json.loads(state["valid_uids"])) if state["valid_uids"] else set()
-                self.last_update_date = datetime.fromisoformat(state["last_update_date"]).date() if state["last_update_date"] else None  # Retrieve as date object
+                bt.logging.info(f"Setting current_day to {self.current_day}")
                 
-                # Deserialize amount_wagered
-                if state["amount_wagered"]:
-                    amount_wagered_list = json.loads(state["amount_wagered"])
-                    self.amount_wagered = np.array(amount_wagered_list)
-                    bt.logging.info("amount_wagered loaded successfully from database.")
-                else:
-                    bt.logging.warning("'amount_wagered' is NULL. Initializing to zeros.")
-                    self.amount_wagered = np.zeros((self.num_miners, self.max_days))
-    
-                # Deserialize tiers
-                if state["tiers"]:
-                    tiers_list = json.loads(state["tiers"])
-                    self.tiers = np.array(tiers_list)
-                    bt.logging.info("tiers array loaded successfully from database.")
-                else:
-                    bt.logging.warning("'tiers' is NULL. Initializing to default tier 1.")
-                    self.tiers = np.ones((self.num_miners, self.max_days), dtype=int)
-    
-            else:
-                bt.logging.warning("No state found in database. Starting with default state.")
-                # Initialize default state
-                self.current_day = 0
-                self.current_date = datetime.now(timezone.utc)
-                self.reference_date = datetime.now(timezone.utc)
-                self.invalid_uids = set()
-                self.valid_uids = set()
-                self.last_update_date = None
+                # Add validation check
+                if self.current_day == 0:
+                    bt.logging.warning("Loading state with current_day=0, checking for more recent states...")
+                    check_query = """
+                    SELECT MAX(current_day) as max_day
+                    FROM score_state
+                    WHERE current_day > 0
+                    """
+                    max_day = self.db_manager.fetch_one(check_query, None)
+                    if max_day and max_day['max_day'] is not None:
+                        bt.logging.warning(f"Found more recent state with day {max_day['max_day']}, but loading day 0 state")
+                        # Load the state with the highest current_day
+                        fetch_state_query = """
+                            SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, 
+                                last_update_date, amount_wagered, tiers, state_id
+                            FROM score_state
+                            WHERE current_day = ?
+                            ORDER BY state_id DESC
+                            LIMIT 1
+                        """
+                        state = self.db_manager.fetch_one(fetch_state_query, (max_day['max_day'],))
+                        if state:
+                            self.current_day = state["current_day"]
+                            bt.logging.info(f"Updated to load state with current_day={self.current_day}")
                 
-                self.amount_wagered = np.zeros((self.num_miners, self.max_days))
-                self.tiers = np.ones((self.num_miners, self.max_days), dtype=int)
-    
-            bt.logging.debug(f"Loaded state: current_day={self.current_day}, current_date={self.current_date}, last_update_date={self.last_update_date}")
-            #bt.logging.debug(f"amount_wagered array summary - min: %.2f, max: %.2f, mean: %.2f",
-            #                 self.amount_wagered.min(), self.amount_wagered.max(), self.amount_wagered.mean())
-            #bt.logging.debug(f"tiers array summary - unique tiers: {np.unique(self.tiers)}")
-
-            # Load scores
-            bt.logging.info("Loading scores from database, this might take a while...")
-            self.load_scores()
-
-            # Populate amount_wagered if needed
-            if not state or not state["amount_wagered"]:
-                self.populate_amount_wagered()
-
-            return False
-
         except Exception as e:
             bt.logging.error(f"Error loading state from database: {e}")
+            bt.logging.error(f"Traceback: {traceback.format_exc()}")
             raise
 
     def save_scores(self):

@@ -323,63 +323,69 @@ class StateSync:
             return False
 
     def pull_state(self):
-        """
-        Pull latest state from Azure blob storage if needed.
-        Returns: True if state was updated, False otherwise
-        """
+        """Pull latest state from Azure blob storage if needed."""
         if not self.azure_enabled:
-            bt.logging.error("Azure blob storage not configured")
             return False
 
         try:
-            for filename in self.state_files:
-                blob_client = self.container.get_blob_client(filename)
-                filepath = self.state_dir / filename
-                temp_file = filepath.with_suffix('.tmp')
-                bt.logging.debug(f"Processing file: {filepath.absolute()} (temp: {temp_file.absolute()})")
-                
-                try:
+            # Get database manager instance
+            from bettensor.validator.utils.database.database_manager import DatabaseManager
+            db_manager = DatabaseManager(self.state_dir / "validator.db")
+            
+            # Debug: Check state before sync
+            bt.logging.debug("Checking score_state before sync:")
+            state_before = db_manager.fetch_all("SELECT state_id, current_day FROM score_state ORDER BY state_id DESC LIMIT 1", None)
+            bt.logging.debug(f"State before sync: {state_before}")
+            
+            # Cleanup existing connections
+            db_manager.shutdown()
+            
+            success = False
+            try:
+                # Pull files from Azure
+                for filename in self.state_files:
+                    blob_client = self.container.get_blob_client(filename)
+                    filepath = self.state_dir / filename
+                    temp_file = filepath.with_suffix('.tmp')
+                    
                     with open(temp_file, 'wb') as f:
                         stream = blob_client.download_blob()
                         for chunk in stream.chunks():
                             f.write(chunk)
                     
-                    # Set write permissions on temp file before moving
-                    os.chmod(temp_file, 0o600)  # rw------- permissions
-                    
-                    # For database files, ensure they're writable and not locked
-                    if filename == "validator.db":
-                        # Extra permissions for SQLite
-                        os.chmod(temp_file, 0o666)  # rw-rw-rw-
-                        
-                        # If the target file exists, ensure it's closed
-                        if filepath.exists():
-                            try:
-                                conn = sqlite3.connect(filepath)
-                                conn.close()
-                            except Exception:
-                                pass
+                    # Set initial permissions
+                    os.chmod(temp_file, 0o666)
                     
                     # Atomic rename
-                    bt.logging.debug(f"Renaming {temp_file} to {filepath}")
                     temp_file.rename(filepath)
-                    
-                    # Set permissions after move as well
-                    os.chmod(filepath, 0o600)
-                    if filename == "validator.db":
-                        os.chmod(filepath, 0o666)
-                    
-                except Exception as e:
-                    temp_file.unlink(missing_ok=True)
-                    raise e
-
-            bt.logging.info("Successfully pulled and updated state from Azure")
-            return True
+                    os.chmod(filepath, 0o666)
+                
+                success = True
+                
+            except Exception as e:
+                bt.logging.error(f"Error syncing files: {e}")
+                raise
+                
+            if success:
+                # Reinitialize database manager using existing method
+                db_manager.reinitialize_after_sync()
+                
+                # Debug: Check state after sync
+                bt.logging.debug("Checking score_state after sync:")
+                state_after = db_manager.fetch_all("SELECT state_id, current_day FROM score_state ORDER BY state_id DESC LIMIT 1", None)
+                bt.logging.debug(f"State after sync: {state_after}")
+                
+                # Reinitialize scoring system with new state
+                if hasattr(self, 'validator') and hasattr(self.validator, 'scoring_system'):
+                    bt.logging.info("Reloading scoring system state...")
+                    self.validator.scoring_system.init = self.validator.scoring_system.load_state()
+                    bt.logging.info(f"Scoring system reinitialized. Current day: {self.validator.scoring_system.current_day}")
+                
+            return success
                 
         except Exception as e:
             bt.logging.error(f"Error pulling state: {e}")
             return False
-      
 
     def _should_pull_state(self, remote_metadata: dict) -> bool:
         """
