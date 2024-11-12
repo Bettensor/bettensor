@@ -10,6 +10,14 @@ def initialize_database():
     # 1. Disable foreign key constraints (optional but recommended)
     statements.append("PRAGMA foreign_keys = OFF;")
     
+    # Add db_version table creation
+    statements.append("""
+        CREATE TABLE IF NOT EXISTS db_version (
+            version INTEGER PRIMARY KEY,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     # 2. Create main miner_stats table first
     statements.append("""
         CREATE TABLE IF NOT EXISTS miner_stats (
