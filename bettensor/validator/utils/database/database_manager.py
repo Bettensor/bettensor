@@ -142,16 +142,17 @@ class DatabaseManager:
                 raise
 
     async def fetch_all(self, query, params=None):
-        """Fetch all records from the database asynchronously."""
-        async with self._lock:
-            try:
-                async with self.conn.execute(query, params or ()) as cursor:
-                    rows = await cursor.fetchall()
-                    columns = [column[0] for column in cursor.description]
-                    return [dict(zip(columns, row)) for row in rows]
-            except Exception as e:
-                bt.logging.error(f"Database error in fetch_all: {e}")
-                raise
+        """Execute a SELECT query and return all results"""
+        if not await self.ensure_connection():
+            return None
+            
+        try:
+            async with self._lock:
+                cursor = await self.conn.execute(query, params if params else ())
+                return await cursor.fetchall()
+        except Exception as e:
+            bt.logging.error(f"Error executing query: {str(e)}")
+            return None
 
     async def fetch_one(self, query, params=None):
         """Fetch a single record from the database asynchronously."""
@@ -290,28 +291,20 @@ class DatabaseManager:
             self._operations_paused = False
 
     async def pause_operations(self):
-        """Pause other database operations but maintain connection"""
-        bt.logging.info("Pausing database operations...")
-        async with self._pause_lock:
-            # First ensure we have a valid connection
-            if not await self.ensure_connection():
-                raise ConnectionError("Cannot pause - no active connection")
-                
-            # Wait for any current transaction to complete
-            if self._transaction_in_progress:
-                async with self._lock:
-                    await self.conn.commit()
-                    self._transaction_in_progress = False
-                    
+        """Pause database operations"""
+        async with self._lock:
             self._operations_paused = True
-            bt.logging.debug("Database operations paused with active connection")
-
+            bt.logging.info("Database operations paused")
+            
+            # Wait for any in-progress operations to complete
+            await asyncio.sleep(1)
+    
     async def resume_operations(self):
         """Resume database operations"""
-        bt.logging.info("Resuming database operations...")
-        async with self._pause_lock:
+        async with self._lock:
             self._operations_paused = False
-
+            bt.logging.info("Database operations resumed")
+    
     async def reconnect(self):
         """Force a reconnection to the database"""
         async with self._connection_lock:

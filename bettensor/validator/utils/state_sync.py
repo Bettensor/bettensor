@@ -296,16 +296,17 @@ class StateSync:
 
         try:
             # Get database manager instance
-            from bettensor.validator.utils.database.database_manager import DatabaseManager
-            db_manager = DatabaseManager(self.state_dir / "validator.db")
+            db_manager = self.db_manager
             
             # Debug: Check state before sync
             bt.logging.debug("Checking score_state before sync:")
-            state_before = db_manager.fetch_all("SELECT state_id, current_day FROM score_state ORDER BY state_id DESC LIMIT 1", None)
+            state_before = await db_manager.fetch_all(
+                "SELECT state_id, current_day FROM score_state ORDER BY state_id DESC LIMIT 1"
+            )
             bt.logging.debug(f"State before sync: {state_before}")
             
-            # Cleanup existing connections
-            db_manager.shutdown()
+            # Instead of shutdown, use pause_operations
+            await db_manager.pause_operations()
             
             success = False
             try:
@@ -332,26 +333,17 @@ class StateSync:
             except Exception as e:
                 bt.logging.error(f"Error syncing files: {e}")
                 raise
-                
-            if success:
-                # Reinitialize database manager using existing method
-                await db_manager.reinitialize_after_sync()
-                
-                # Debug: Check state after sync
-                bt.logging.debug("Checking score_state after sync:")
-                state_after = await db_manager.fetch_all("SELECT state_id, current_day FROM score_state ORDER BY state_id DESC LIMIT 1", None)
-                bt.logging.debug(f"State after sync: {state_after}")
-                
-                # Reinitialize scoring system with new state
-                if hasattr(self, 'validator') and hasattr(self.validator, 'scoring_system'):
-                    bt.logging.info("Reloading scoring system state...")
-                    self.validator.scoring_system.init = await self.validator.scoring_system.load_state()
-                    bt.logging.info(f"Scoring system reinitialized. Current day: {self.validator.scoring_system.current_day}")
+            finally:
+                # Resume operations instead of reconnecting
+                await db_manager.resume_operations()
                 
             return success
-                
+            
         except Exception as e:
-            bt.logging.error(f"Error pulling state: {e}")
+            bt.logging.error(f"Error pulling state: {str(e)}")
+            # Ensure operations are resumed even if there's an error
+            if 'db_manager' in locals():
+                await db_manager.resume_operations()
             return False
 
     def _should_pull_state(self, remote_metadata: dict) -> bool:
