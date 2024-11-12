@@ -142,14 +142,18 @@ class DatabaseManager:
                 raise
 
     async def fetch_all(self, query, params=None):
-        """Execute a SELECT query and return all results"""
+        """Execute a SELECT query and return all results as dictionaries"""
         if not await self.ensure_connection():
             return None
             
         try:
             async with self._lock:
-                cursor = await self.conn.execute(query, params if params else ())
-                return await cursor.fetchall()
+                async with self.conn.execute(query, params if params else ()) as cursor:
+                    # Get column names
+                    columns = [description[0] for description in cursor.description]
+                    # Fetch all rows and convert to dictionaries
+                    rows = await cursor.fetchall()
+                    return [dict(zip(columns, row)) for row in rows]
         except Exception as e:
             bt.logging.error(f"Error executing query: {str(e)}")
             return None
