@@ -7,12 +7,8 @@ This file contains the code for initializing the database for the validator.
 def initialize_database():
     statements = []
     
-    # 1. Version tracking table first
-    statements.append("""
-        CREATE TABLE IF NOT EXISTS db_version (
-            version INTEGER PRIMARY KEY
-        )
-    """)
+    # 1. Disable foreign key constraints (optional but recommended)
+    statements.append("PRAGMA foreign_keys = OFF;")
     
     # 2. Create main miner_stats table first
     statements.append("""
@@ -234,8 +230,11 @@ def initialize_database():
             WHERE last_update_date < date('now', '-7 days');
         END""",
     ])
+
+    # 8. Re-enable foreign key constraints
+    statements.append("PRAGMA foreign_keys = ON;")
     
-    # 8. Initialize version
+    # 9. Initialize version
     statements.append(
         """INSERT OR IGNORE INTO db_version (version) VALUES (1)"""
     )

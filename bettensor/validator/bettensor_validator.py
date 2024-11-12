@@ -31,7 +31,6 @@ from bettensor.validator.utils.io.miner_data import MinerDataMixin
 from bettensor.validator.utils.io.bettensor_api_client import BettensorAPIClient
 from bettensor.validator.utils.io.base_api_client import BaseAPIClient
 from bettensor.validator.utils.scoring.watchdog import Watchdog
-import signal
 
 DEFAULT_DB_PATH = "./bettensor/validator/state/validator.db"
 
@@ -88,7 +87,11 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         args = parser.parse_args()
 
-        self.timeout = 12 
+        self.timeout = 20
+        self.parser = parser  # Save parser for later use
+        self.args = args
+
+        # Initialize other synchronous attributes
         self.neuron_config = None
         self.wallet = None
         self.dendrite = None
@@ -107,9 +110,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.miner_responses = None
         self.db_path = DEFAULT_DB_PATH
         self.last_stats_update = datetime.now(timezone.utc).date() - timedelta(days=1)
-        self.last_api_call = datetime.now(timezone.utc) - timedelta(
-            days=15
-        )  # set to 15 days ago to ensure all games are fetched
+        self.last_api_call = datetime.now(timezone.utc) - timedelta(days=15)
         self.is_primary = None
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.determine_max_workers())
 
@@ -119,26 +120,35 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.last_set_weights_block = 0
         self.operation_lock = asyncio.Lock()
         self.watchdog = None
-        # Add signal handlers
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-        signal.signal(signal.SIGINT, self._handle_shutdown)
+
+        self.is_initialized = False
+
+
+    @classmethod
+    async def create(cls, parser: ArgumentParser):
+        self = cls(parser)
+        self.apply_config(bt_classes=[bt.subtensor, bt.wallet, bt.logging])
+
+        # Initialize asynchronous components
+        await self.initialize_neuron()
+        return self
 
     def determine_max_workers(self):
         num_cores = os.cpu_count()
         if num_cores <= 4:
-            return num_cores - 1
+            return max(1, num_cores - 1)
         else:
-            return num_cores - 2
+            return max(1, num_cores - 2)
 
     def apply_config(self, bt_classes) -> bool:
-        """applies the configuration to specified bittensor classes"""
+        """Applies the configuration to specified bittensor classes"""
         try:
             self.neuron_config = self.config(bt_classes=bt_classes)
         except AttributeError as e:
-            bt.logging.error(f"unable to apply validator configuration: {e}")
+            bt.logging.error(f"Unable to apply validator configuration: {e}")
             raise AttributeError from e
         except OSError as e:
-            bt.logging.error(f"unable to create logging directory: {e}")
+            bt.logging.error(f"Unable to create logging directory: {e}")
             raise OSError from e
 
         return True
@@ -212,82 +222,58 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         self.axon.serve(netuid=self.neuron_config.netuid, subtensor=self.subtensor)
 
-    def initialize_neuron(self) -> bool:
-        """initializes the neuron
-
-        Args:
-            none
-
-        Returns:
-            bool:
-                a boolean value indicating success/failure of the initialization
-        Raises:
-            AttributeError:
-                AttributeError is raised if the neuron initialization failed
-            IndexError:
-                IndexError is raised if the hotkey cannot be found from the metagraph
-        """
+    async def initialize_neuron(self):
         bt.logging(config=self.neuron_config, logging_dir=self.neuron_config.full_path)
         bt.logging.info(
-            f"initializing validator for subnet: {self.neuron_config.netuid} on network: {self.neuron_config.subtensor.chain_endpoint} with config: {self.neuron_config}"
+            f"Initializing validator for subnet: {self.neuron_config.netuid} on network: {self.neuron_config.subtensor.chain_endpoint} with config: {self.neuron_config}"
         )
 
-        # setup the bittensor objects
-        wallet, subtensor, dendrite, metagraph = self.setup_bittensor_objects(
+        # Setup the bittensor objects
+        self.wallet, self.subtensor, self.dendrite, self.metagraph = self.setup_bittensor_objects(
             self.neuron_config
         )
 
         bt.logging.info(
-            f"bittensor objects initialized:\nmetagraph: {metagraph}\nsubtensor: {subtensor}\nwallet: {wallet}"
+            f"Bittensor objects initialized:\nmetagraph: {self.metagraph}\nsubtensor: {self.subtensor}\nwallet: {self.wallet}"
         )
 
-        # validate that the validator has registered to the metagraph correctly
-        if not self.validator_validation(metagraph, wallet, subtensor):
-            raise IndexError("unable to find validator key from metagraph")
+        # Validate that the validator has registered to the metagraph correctly
+        if not self.validator_validation(self.metagraph, self.wallet, self.subtensor):
+            raise IndexError("Unable to find validator key from metagraph")
 
-        # get the unique identity (uid) from the network
-        validator_uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)
+        # Get the unique identity (uid) from the network
+        validator_uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
 
         self.uid = validator_uid
-        bt.logging.info(f"validator is running with uid: {validator_uid}")
-
-        self.wallet = wallet
-        self.subtensor = subtensor
-        self.dendrite = dendrite
-        self.metagraph = metagraph
+        bt.logging.info(f"Validator is running with uid: {validator_uid}")
 
         if self.metagraph is not None:
             self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
 
-        #
-        args = self._parse_args(parser=self.parser)
+        # Parse arguments
+        args = self.args
 
         if args:
-            if args.load_state == "False":
-                self.load_validator_state = False
-            else:
-                self.load_validator_state = True
+            self.load_validator_state = args.load_state.lower() != "false"
 
             if self.load_validator_state:
-                self.load_state()
+                await self.load_state()
             else:
                 self.init_default_scores()
 
-            if args.max_targets:
-                self.max_targets = args.max_targets
-            else:
-                self.max_targets = 256
-
+            self.max_targets = args.max_targets or 256
         else:
-            # setup initial scoring weights
+            # Setup initial scoring weights
             self.init_default_scores()
             self.max_targets = 256
 
-        self.db_path = args.db
         self.target_group = 0
 
+        # Initialize the database manager
         self.db_manager = DatabaseManager(self.db_path)
+        await self.db_manager.initialize()
 
+        # Initialize the scoring system
         self.scoring_system = ScoringSystem(
             self.db_manager,
             num_miners=256,
@@ -295,8 +281,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             reference_date=datetime.now(timezone.utc).date(),
             validator=self,
         )
+        await self.scoring_system.initialize()
 
-        ############## Setup Validator Components ##############
+        # Setup Validator Components
         self.api_client = BettensorAPIClient(self.db_manager)
 
         self.sports_data = SportsData(
@@ -315,61 +302,66 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         self.website_handler = WebsiteHandler(self)
 
-
-
+        self.is_initialized = True
         return True
 
+
     def _parse_args(self, parser):
-        """parses the command line arguments"""
+        """Parses the command line arguments"""
         return parser.parse_args()
 
     def validator_validation(self, metagraph, wallet, subtensor) -> bool:
-        """this method validates the validator has registered correctly"""
+        """This method validates the validator has registered correctly"""
         if wallet.hotkey.ss58_address not in metagraph.hotkeys:
             bt.logging.error(
-                f"your validator: {wallet} is not registered to chain connection: {subtensor}. run btcli register and try again"
+                f"Your validator: {wallet} is not registered to chain connection: {subtensor}. Run btcli register and try again"
             )
             return False
 
         return True
 
-    def check_hotkeys(self):
-        """checks if some hotkeys have been replaced in the metagraph"""
+    async def check_hotkeys(self):
+        """Checks if some hotkeys have been replaced in the metagraph"""
         bt.logging.info("Checking metagraph hotkeys for changes")
-        if self.scores is None:
-            if self.metagraph is not None:
-                self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
-            else:
-                bt.logging.warning("Metagraph is None, unable to initialize scores")
-                return
-        if self.hotkeys:
-            # check if known state len matches with current metagraph hotkey length
-            if len(self.hotkeys) == len(self.metagraph.hotkeys):
-                current_hotkeys = self.metagraph.hotkeys
-                for i, hotkey in enumerate(current_hotkeys):
-                    if self.hotkeys[i] != hotkey:
-                        bt.logging.debug(
-                            f"index '{i}' has mismatching hotkey. old hotkey: '{self.hotkeys[i]}', new hotkey: '{hotkey}. resetting score to 0.0"
-                        )
-                        self.scores[i] = 0.0
-                        self.scoring_system.reset_miner(i)
-                        self.save_state()
-                        
-            else:
-                bt.logging.info(
-                    f"init default scores because of state and metagraph hotkey length mismatch. expected: {len(self.metagraph.hotkeys)} had: {len(self.hotkeys)}"
-                )
-                self.init_default_scores()
+        try:
+            if self.scores is None:
+                if self.metagraph is not None:
+                    self.scores = torch.zeros(len(self.metagraph.uids), dtype=torch.float32)
+                else:
+                    bt.logging.warning("Metagraph is None, unable to initialize scores")
+                    return
+                    
+            if self.hotkeys:
+                # Check if known state len matches with current metagraph hotkey length
+                if len(self.hotkeys) == len(self.metagraph.hotkeys):
+                    current_hotkeys = self.metagraph.hotkeys
+                    for i, hotkey in enumerate(current_hotkeys):
+                        if self.hotkeys[i] != hotkey:
+                            bt.logging.debug(
+                                f"Index '{i}' has mismatching hotkey. Old hotkey: '{self.hotkeys[i]}', New hotkey: '{hotkey}'. Resetting score to 0.0"
+                            )
+                            self.scores[i] = 0.0
+                            await self.scoring_system.reset_miner(i)
+                            self.save_state()
+                else:
+                    bt.logging.info(
+                        f"Init default scores because of state and metagraph hotkey length mismatch. Expected: {len(self.metagraph.hotkeys)} Had: {len(self.hotkeys)}"
+                    )
+                    self.init_default_scores()
 
-            self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
-        else:
-            self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+                self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+            else:
+                self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+                
+        except Exception as e:
+            bt.logging.error(f"Error in check_hotkeys: {e}")
+            bt.logging.error(traceback.format_exc())
 
     def init_default_scores(self):
         """Initialize default scores for all miners in the network. This method is
         used to reset the scores in case of an internal error"""
 
-        bt.logging.info("initiating validator with default scores for all miners")
+        bt.logging.info("Initiating validator with default scores for all miners")
 
         if self.metagraph is None or self.metagraph.S is None:
             bt.logging.error("Metagraph or metagraph.S is not initialized")
@@ -389,10 +381,10 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 )
                 self.scores = torch.zeros_like(metagraph_S_tensor, dtype=torch.float32)
 
-        bt.logging.info(f"validation weights have been initialized: {self.scores}")
+        bt.logging.info(f"Validation weights have been initialized: {self.scores}")
 
-    def save_state(self):
-        """saves the state of the validator to a file"""
+    async def save_state(self):
+        """Saves the state of the validator to a file"""
         bt.logging.info("Saving validator state")
 
         bt.logging.info(f"Last api call, save_state: {self.last_api_call}")
@@ -403,7 +395,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         bt.logging.info(f"Last api call, save_state: {self.last_api_call}")
         timestamp = self.last_api_call.timestamp()
 
-        # save the state of the validator to file
+        # Save the state of the validator to file
         torch.save(
             {
                 "step": self.step,
@@ -416,17 +408,17 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             self.base_path + "state/state.pt",
         )
 
-        bt.logging.debug(
-            f"Saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, "
-            f"last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, "
-            f"last_api_call: {timestamp}"
-        )
+        # bt.logging.debug(
+        #     f"Saved the following state to a file: step: {self.step}, scores: {self.scores}, hotkeys: {self.hotkeys}, "
+        #     f"last_updated_block: {self.last_updated_block}, blacklisted_miner_hotkeys: {self.blacklisted_miner_hotkeys}, "
+        #     f"last_api_call: {timestamp}"
+        # )
 
-    def reset_validator_state(self, state_path):
-        """inits the default validator state. should be invoked only
+    async def reset_validator_state(self, state_path):
+        """Inits the default validator state. Should be invoked only
         when an exception occurs and the state needs to reset"""
 
-        # rename current state file in case manual recovery is needed
+        # Rename current state file in case manual recovery is needed
         rename(
             state_path,
             f"{state_path}-{int(datetime.now().timestamp())}.autorecovery",
@@ -438,7 +430,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         self.hotkeys = None
         self.blacklisted_miner_hotkeys = None
 
-    def load_state(self):
+    async def load_state(self):
         state_path = self.base_path + "state/state.pt"
         if path.exists(state_path):
             try:
@@ -472,70 +464,70 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
             except Exception as e:
                 bt.logging.error(
-                    f"validator state reset because an exception occurred: {e}"
+                    f"Validator state reset because an exception occurred: {e}"
                 )
                 self.reset_validator_state(state_path=state_path)
         else:
             self.init_default_scores()
 
-    def _get_local_miner_blacklist(self) -> list:
-        """returns the blacklisted miners hotkeys from the local file"""
+    async def _get_local_miner_blacklist(self) -> list:
+        """Returns the blacklisted miners hotkeys from the local file"""
 
-        # check if local blacklist exists
+        # Check if local blacklist exists
         blacklist_file = f"{self.base_path}state/miner_blacklist.json"
         if Path(blacklist_file).is_file():
-            # load the contents of the local blacklist
-            bt.logging.trace(f"reading local blacklist file: {blacklist_file}")
+            # Load the contents of the local blacklist
+            bt.logging.trace(f"Reading local blacklist file: {blacklist_file}")
             try:
                 with open(blacklist_file, "r", encoding="utf-8") as file:
                     file_content = file.read()
 
                 miner_blacklist = json.loads(file_content)
                 if self.validate_miner_blacklist(miner_blacklist):
-                    bt.logging.trace(f"loaded miner blacklist: {miner_blacklist}")
+                    bt.logging.trace(f"Loaded miner blacklist: {miner_blacklist}")
                     return miner_blacklist
 
                 bt.logging.trace(
-                    f"loaded miner blacklist was formatted incorrectly or was empty: {miner_blacklist}"
+                    f"Loaded miner blacklist was formatted incorrectly or was empty: {miner_blacklist}"
                 )
             except OSError as e:
-                bt.logging.error(f"unable to read blacklist file: {e}")
+                bt.logging.error(f"Unable to read blacklist file: {e}")
             except json.JSONDecodeError as e:
                 bt.logging.error(
-                    f"unable to parse json from path: {blacklist_file} with error: {e}"
+                    f"Unable to parse json from path: {blacklist_file} with error: {e}"
                 )
         else:
-            bt.logging.trace(f"no local miner blacklist file in path: {blacklist_file}")
+            bt.logging.trace(f"No local miner blacklist file in path: {blacklist_file}")
 
         return []
 
     def validate_miner_blacklist(self, miner_blacklist) -> bool:
-        """validates the miner blacklist. checks if the list is not empty and if all the hotkeys are in the metagraph"""
+        """Validates the miner blacklist. Checks if the list is not empty and if all the hotkeys are in the metagraph"""
         blacklist_file = f"{self.base_path}/miner_blacklist.json"
         if not miner_blacklist:
             return False
         if not all(hotkey in self.metagraph.hotkeys for hotkey in miner_blacklist):
-            # update the blacklist with the valid hotkeys
+            # Update the blacklist with the valid hotkeys
             valid_hotkeys = [
                 hotkey for hotkey in miner_blacklist if hotkey in self.metagraph.hotkeys
             ]
             self.blacklisted_miner_hotkeys = valid_hotkeys
-            # overwrite the old blacklist with the new blacklist
+            # Overwrite the old blacklist with the new blacklist
             with open(blacklist_file, "w", encoding="utf-8") as file:
                 json.dump(valid_hotkeys, file)
         return True
 
     def get_uids_to_query(self, all_axons) -> list:
-        """returns the list of uids to query"""
+        """Returns the list of uids to query"""
 
         # Define all_uids at the beginning
         all_uids = set(range(len(self.metagraph.hotkeys)))
 
-        # get uids with a positive stake
+        # Get uids with a positive stake
         uids_with_stake = self.metagraph.total_stake >= 0.0
-        bt.logging.trace(f"uids with a positive stake: {uids_with_stake}")
+        #bt.logging.trace(f"Uids with a positive stake: {uids_with_stake}")
 
-        # get uids with an ip address of 0.0.0.0
+        # Get uids with an ip address of 0.0.0.0
         invalid_uids = torch.tensor(
             [
                 bool(value)
@@ -553,11 +545,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         # Append the validator's axon to invalid_uids
         invalid_uids[self.uid] = True
 
-        bt.logging.trace(f"uids with 0.0.0.0 as an ip address or validator's axon: {invalid_uids}")
+        #bt.logging.trace(f"Uids with 0.0.0.0 as an ip address or validator's axon: {invalid_uids}")
 
-       
-
-        # get uids that have their hotkey blacklisted
+        # Get uids that have their hotkey blacklisted
         blacklisted_uids = []
         if self.blacklisted_miner_hotkeys:
             for hotkey in self.blacklisted_miner_hotkeys:
@@ -565,34 +555,34 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                     blacklisted_uids.append(self.metagraph.hotkeys.index(hotkey))
                 else:
                     bt.logging.trace(
-                        f"blacklisted hotkey {hotkey} was not found from metagraph"
+                        f"Blacklisted hotkey {hotkey} was not found from metagraph"
                     )
 
-            bt.logging.debug(f"blacklisted the following uids: {blacklisted_uids}")
+            bt.logging.debug(f"Blacklisted the following uids: {blacklisted_uids}")
 
-        # convert blacklisted uids to tensor
+        # Convert blacklisted uids to tensor
         blacklisted_uids_tensor = torch.tensor(
             [uid not in blacklisted_uids for uid in self.metagraph.uids.tolist()],
             dtype=torch.bool,
         )
 
-        bt.logging.trace(f"blacklisted uids: {blacklisted_uids_tensor}")
+        #bt.logging.trace(f"Blacklisted uids: {blacklisted_uids_tensor}")
 
-        # determine the uids to filter
+        # Determine the uids to filter
         uids_to_filter = torch.logical_not(
             ~blacklisted_uids_tensor | ~invalid_uids | ~uids_with_stake
         )
 
-        bt.logging.trace(f"uids to filter: {uids_to_filter}")
+        #bt.logging.trace(f"Uids to filter: {uids_to_filter}")
 
-        # define uids to query
+        # Define uids to query
         uids_to_query = [
             axon
             for axon, keep_flag in zip(all_axons, uids_to_filter)
             if keep_flag.item()
         ]
 
-        # define uids to filter
+        # Define uids to filter
         final_axons_to_filter = [
             axon
             for axon, keep_flag in zip(all_axons, uids_to_filter)
@@ -603,10 +593,10 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             self.metagraph.hotkeys.index(axon.hotkey) for axon in final_axons_to_filter
         ]
 
-        bt.logging.trace(f"final axons to filter: {final_axons_to_filter}")
-        bt.logging.debug(f"filtered uids: {uids_not_to_query}")
+        #bt.logging.trace(f"Final axons to filter: {final_axons_to_filter}")
+        #bt.logging.debug(f"Filtered uids: {uids_not_to_query}")
 
-        # reduce the number of simultaneous uids to query
+        # Reduce the number of simultaneous uids to query
         if self.max_targets < 256:
             start_idx = self.max_targets * self.target_group
             end_idx = min(
@@ -616,7 +606,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 return [], []
             if start_idx >= len(uids_to_query):
                 raise IndexError(
-                    "starting index for querying the miners is out-of-bounds"
+                    "Starting index for querying the miners is out-of-bounds"
                 )
 
             if end_idx >= len(uids_to_query):
@@ -626,7 +616,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 self.target_group += 1
 
             bt.logging.debug(
-                f"list indices for uids to query starting from: '{start_idx}' ending with: '{end_idx}'"
+                f"List indices for uids to query starting from: '{start_idx}' ending with: '{end_idx}'"
             )
             uids_to_query = uids_to_query[start_idx:end_idx]
 
@@ -636,7 +626,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
         list_of_hotkeys = [axon.hotkey for axon in uids_to_query]
 
-        bt.logging.trace(f"sending query to the following hotkeys: {list_of_hotkeys}")
+        #bt.logging.trace(f"Sending query to the following hotkeys: {list_of_hotkeys}")
 
         return uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query
 
@@ -648,6 +638,12 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 "StopIteration encountered in set_weights. Handling gracefully."
             )
             return None
+        except Exception as e:
+            bt.logging.warning(f"Set weights failed: {str(e)}")
+            if "WeightVecLengthIsLow" in str(e):
+                # Handle this specific error gracefully
+                return None
+            raise  # Re-raise other exceptions
 
     def reset_scoring_system(self):
         """
@@ -656,7 +652,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         try:
             bt.logging.info("Resetting scoring system(deleting state files)...")
                         
-            # delete state files (./bettensor/validator/state/state.pt, ./bettensor/validator/state/validator.db, ./bettensor/validator/state/entropy_system_state.json)
+            # Delete state files (./bettensor/validator/state/state.pt, ./bettensor/validator/state/validator.db, ./bettensor/validator/state/entropy_system_state.json)
             for file in ["./bettensor/validator/state/state.pt", "./bettensor/validator/state/validator.db", "./bettensor/validator/state/entropy_system_state.json"]:
                 if os.path.exists(file):
                     os.remove(file)
@@ -666,13 +662,83 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
             bt.logging.error(traceback.format_exc())
             raise
 
-    def _handle_shutdown(self, signum, frame):
+    async def _handle_shutdown(self, signum, frame):
         """Handle shutdown signals gracefully"""
-        bt.logging.info("Received shutdown signal. Cleaning up...")
+        signal_names = {
+            2: "SIGINT",
+            15: "SIGTERM",
+            1: "SIGHUP"
+        }
+        signal_name = signal_names.get(signum, f"Signal {signum}")
+        
+        bt.logging.info(f"Received {signal_name}. Starting graceful shutdown...")
+        
         try:
+            # Set shutdown flag to prevent new operations
+            self.is_shutting_down = True
+            
+            # Cancel any pending tasks
+            if hasattr(self, 'watchdog'):
+                self.watchdog.cleanup()
+                
+            # Wait briefly for tasks to complete
+            await asyncio.sleep(1)
+            
+            # Cleanup database connections
             if hasattr(self, 'db_manager'):
-                self.db_manager.cleanup()
+                bt.logging.info("Cleaning up database connections...")
+                await self.db_manager.cleanup()
+                
+            # Save state before exit
+            if hasattr(self, 'save_state'):
+                bt.logging.info("Saving validator state...")
+                await self.save_state()
+                
+            bt.logging.info("Shutdown completed successfully")
             sys.exit(0)
+            
         except Exception as e:
-            bt.logging.error(f"Error during shutdown: {e}")
+            bt.logging.error(f"Error during {signal_name} shutdown: {e}")
+            bt.logging.error(traceback.format_exc())
             sys.exit(1)
+
+    async def query_and_process_axons(self):
+        async def db_operation():
+            # Wrap database operations
+            return await self.db_manager.execute_query(...)
+        
+        result = await self.db_queue.execute(db_operation)
+
+    async def cleanup(self):
+        """Cleanup validator resources"""
+        bt.logging.info("Cleaning up validator resources...")
+        try:
+            # Cancel any pending tasks first
+            if hasattr(self, 'watchdog'):
+                self.watchdog.cleanup()
+                
+            # Wait briefly for tasks to cancel
+            await asyncio.sleep(1)
+            
+            # Then cleanup database
+            if hasattr(self, 'db_manager'):
+                await self.db_manager.cleanup()
+                
+            # Finally shutdown executor
+            if hasattr(self, 'executor'):
+                self.executor.shutdown(wait=True)
+                
+        except Exception as e:
+            bt.logging.error(f"Error during cleanup: {str(e)}")
+
+    def __del__(self):
+        """Ensure cleanup runs during deletion"""
+        if hasattr(self, 'db_manager'):
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self.cleanup())
+                else:
+                    loop.run_until_complete(self.cleanup())
+            except Exception as e:
+                bt.logging.error(f"Error in cleanup during deletion: {str(e)}")

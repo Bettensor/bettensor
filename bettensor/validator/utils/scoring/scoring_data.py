@@ -22,7 +22,10 @@ class ScoringData:
             'composite_daily': 0.0,
             'tier_scores': {}
         })
-        self.init_miner_stats()
+
+    async def initialize(self):
+        """Async initialization method to be called after constructor"""
+        await self.init_miner_stats()
 
     @property
     def current_day(self):
@@ -36,11 +39,11 @@ class ScoringData:
     def tiers(self):
         return self.scoring_system.tiers
 
-    def preprocess_for_scoring(self, date_str):
+    async def preprocess_for_scoring(self, date_str):
         bt.logging.debug(f"Preprocessing for scoring on date: {date_str}")
 
         # Step 1: Get closed games for that day (Outcome != 3)
-        closed_games = self._fetch_closed_game_data(date_str)
+        closed_games = await self._fetch_closed_game_data(date_str)
 
         if not closed_games:
             bt.logging.warning("No closed games found for the given date.")
@@ -49,10 +52,10 @@ class ScoringData:
         game_ids = [game["external_id"] for game in closed_games]
 
         # Step 2: Get all predictions for each of those closed games
-        predictions = self._fetch_predictions(game_ids)
+        predictions = await self._fetch_predictions(game_ids)
  
         # Step 3: Ensure predictions have their payout calculated and outcome updated
-        predictions = self._update_predictions_with_payout(predictions, closed_games)
+        predictions = await self._update_predictions_with_payout(predictions, closed_games)
 
        
         # Step 4: Structure prediction data into the format necessary for scoring
@@ -107,10 +110,8 @@ class ScoringData:
 
         return structured_predictions, closing_line_odds, results
 
-    def _fetch_closed_game_data(self, date_str):
-        """
-        Fetch all closed games for the given date.
-        """
+    async def _fetch_closed_game_data(self, date_str):
+        """Fetch all closed games for the given date."""
         query = """
             SELECT 
                 game_id,
@@ -131,18 +132,18 @@ class ScoringData:
             FROM game_data
             WHERE DATE(event_start_date) = DATE(?) AND outcome != 3
         """
-        return self.db_manager.fetch_all(query, (date_str,))
+        return await self.db_manager.fetch_all(query, (date_str,))
 
-    def _fetch_predictions(self, game_ids):
+    async def _fetch_predictions(self, game_ids):
         query = """
         SELECT * FROM predictions
         WHERE game_id IN ({})
         """.format(
             ",".join(["?"] * len(game_ids))
         )
-        return self.db_manager.fetch_all(query, game_ids)
+        return await self.db_manager.fetch_all(query, game_ids)
 
-    def _update_predictions_with_payout(self, predictions, closed_games):
+    async def _update_predictions_with_payout(self, predictions, closed_games):
         
 
         game_outcomes = {game["external_id"]: game["outcome"] for game in closed_games}
@@ -159,7 +160,7 @@ class ScoringData:
                 else:
                     payout = 0.0
                     bt.logging.debug(f"Incorrect prediction for miner {miner_uid}: Payout set to 0.0")
-                self.db_manager.execute_query(
+                await self.db_manager.execute_query(
                     """
                     UPDATE predictions
                     SET payout = ?, outcome = ?
@@ -170,9 +171,9 @@ class ScoringData:
                 pred["payout"] = payout
                 pred["outcome"] = outcome
         return predictions
-    def validate_data_integrity(self):
+    async def validate_data_integrity(self):
         """Validate that all predictions reference closed games with valid outcomes."""
-        invalid_predictions = self.db_manager.fetch_all(
+        invalid_predictions = await self.db_manager.fetch_all(
             """
             SELECT p.prediction_id, p.game_id, g.outcome
             FROM predictions p
@@ -184,19 +185,15 @@ class ScoringData:
 
         if invalid_predictions:
             bt.logging.error(f"Invalid predictions found: {len(invalid_predictions)}")
-            bt.logging.error(
-                f"Sample of invalid predictions: {invalid_predictions[:5]}"
-            )
-            raise ValueError(
-                "Data integrity check failed: Some predictions reference invalid or open games."
-            )
+            bt.logging.error(f"Sample of invalid predictions: {invalid_predictions[:5]}")
+            raise ValueError("Data integrity check failed: Some predictions reference invalid or open games.")
         else:
             bt.logging.debug("All predictions reference valid closed games.")
 
-    def init_miner_stats(self):
+    async def init_miner_stats(self):
         bt.logging.trace("Initializing Miner Stats")
         try:
-            count = self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")
+            count = await self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")
             bt.logging.trace(f"Miner stats count: {count}")
             
             if count == 0:
@@ -223,10 +220,8 @@ class ScoringData:
                     for i in range(self.num_miners)
                 ]
                 
-                count = self.db_manager.executemany(insert_query, initial_values)
-                bt.logging.trace(f"Inserted {count} rows into miner_stats table.")
-                
-                bt.logging.info(f"Successfully initialized {count} miners in miner_stats table.")
+                await self.db_manager.executemany(insert_query, initial_values)
+                bt.logging.info(f"Successfully initialized {self.num_miners} miners in miner_stats table.")
             else:
                 bt.logging.info("miner_stats table is not empty. Skipping initialization.")
         
@@ -234,13 +229,13 @@ class ScoringData:
             bt.logging.error(f"Error initializing miner_stats: {str(e)}")
             raise
 
-    def update_miner_stats(self, current_day):
+    async def update_miner_stats(self, current_day):
         try:
             bt.logging.info(f"Updating miner stats for day {current_day}...")
             
             # First, get all existing hotkeys and their UIDs
             existing_hotkeys = {row['miner_hotkey']: row['miner_uid'] 
-                              for row in self.db_manager.fetch_all(
+                              for row in await self.db_manager.fetch_all(
                                   "SELECT miner_uid, miner_hotkey FROM miner_stats WHERE miner_hotkey IS NOT NULL", 
                                   ())}
 
@@ -254,7 +249,7 @@ class ScoringData:
                     old_uid = existing_hotkeys[hotkey]
                     
                     # First, clear the hotkey from the old record
-                    self.db_manager.execute_query(
+                    await self.db_manager.execute_query(
                         """UPDATE miner_stats 
                            SET miner_hotkey = NULL, miner_coldkey = NULL
                            WHERE miner_uid = ?""",
@@ -266,7 +261,7 @@ class ScoringData:
                         self.scoring_system.reset_miner(uid)
 
                 # Update or insert the record for current UID
-                self.db_manager.execute_query(
+                await self.db_manager.execute_query(
                     """INSERT INTO miner_stats (miner_uid, miner_hotkey, miner_coldkey)
                        VALUES (?, ?, ?)
                        ON CONFLICT(miner_uid) DO UPDATE SET
@@ -276,20 +271,20 @@ class ScoringData:
                 )
 
             # Continue with rest of the updates...
-            self._update_lifetime_statistics()
+            await self._update_lifetime_statistics()
             tiers_dict = self.get_current_tiers()
             
             # Update current tiers
             for miner_uid, current_tier in tiers_dict.items():
-                self.db_manager.execute_query(
+                await self.db_manager.execute_query(
                     """UPDATE miner_stats
                        SET miner_current_tier = ?
                        WHERE miner_uid = ?""",
                     (int(current_tier), miner_uid)
                 )
             
-            self._update_current_daily_scores(current_day, tiers_dict)
-            self._update_additional_fields()
+            await self._update_current_daily_scores(current_day, tiers_dict)
+            await self._update_additional_fields()
             
             bt.logging.info("Miner stats update completed successfully.")
 
@@ -300,7 +295,7 @@ class ScoringData:
     def safe_format(self, value, decimal_places=4):
         return f"{value:.{decimal_places}f}" if value is not None else 'None'
 
-    def _update_current_daily_scores(self, current_day, tiers_dict):
+    async def _update_current_daily_scores(self, current_day, tiers_dict):
         """
         Update the current daily scores for each miner.
         Uses tier-specific composite scores based on miner's current tier.
@@ -317,7 +312,7 @@ class ScoringData:
             FROM scores
             WHERE day_id = ?
         """
-        scores = self.db_manager.fetch_all(fetch_scores_query, (current_day,))
+        scores = await self.db_manager.fetch_all(fetch_scores_query, (current_day,))
 
         # Organize scores by miner_uid and score_type
         miner_scores = defaultdict(lambda: defaultdict(dict))
@@ -364,7 +359,7 @@ class ScoringData:
             update_records.append((clv_avg, roi, sortino, entropy, composite_score, miner_uid))
 
         # Execute batch update
-        self.db_manager.executemany(update_current_scores_query, update_records)
+        await self.db_manager.executemany(update_current_scores_query, update_records)
         bt.logging.debug("Current daily scores updated for all miners.")
 
         # Log some statistics
@@ -380,7 +375,7 @@ class ScoringData:
         non_zero_scores = sum(1 for record in update_records if any(record[:5]))
         bt.logging.info(f"Number of miners with non-zero scores: {non_zero_scores}")
 
-    def _update_lifetime_statistics(self):
+    async def _update_lifetime_statistics(self):
         """
         Update lifetime statistics for miners.
         """
@@ -445,10 +440,10 @@ class ScoringData:
                     WHERE p.miner_uid = miner_stats.miner_uid
                 )
         """
-        self.db_manager.execute_query(update_lifetime_query)
+        await self.db_manager.execute_query(update_lifetime_query)
         bt.logging.debug("Updated lifetime statistics for miners.")
 
-    def _update_additional_fields(self):
+    async def _update_additional_fields(self):
         """
         Update additional miner fields such as rank, status, and cash.
         """
@@ -468,11 +463,11 @@ class ScoringData:
         for miner_uid in range(len(self.validator.metagraph.hotkeys)-1):
             miner_rank = self.get_miner_rank(miner_uid)
             miner_status = self.get_miner_status(miner_uid)
-            miner_cash = self.calculate_miner_cash(miner_uid)
+            miner_cash = await self.calculate_miner_cash(miner_uid)
             miner_current_incentive = self.get_miner_current_incentive(miner_uid)
             additional_records.append((miner_rank, miner_status, miner_cash, miner_current_incentive, miner_uid))
         
-        self.db_manager.executemany(update_additional_fields_query, additional_records)
+        await self.db_manager.executemany(update_additional_fields_query, additional_records)
         bt.logging.debug("Additional miner fields updated.")
 
     def get_current_tiers(self):
@@ -516,7 +511,7 @@ class ScoringData:
         active = self.validator.metagraph.active[miner_uid]
         return "active" if active else "inactive"
 
-    def calculate_miner_cash(self, miner_uid: int) -> float:
+    async def calculate_miner_cash(self, miner_uid: int) -> float:
         """
         Calculate the current cash for a miner by subtracting
         the sum of their wagers made since 00:00 UTC from today.
@@ -538,7 +533,7 @@ class ScoringData:
             WHERE miner_uid = ?
               AND prediction_date >= ?
         """
-        result = self.db_manager.fetch_one(query, (miner_uid, start_of_today))
+        result = await self.db_manager.fetch_one(query, (miner_uid, start_of_today))
         total_wager = result['total_wager'] if result['total_wager'] is not None else 0.0
 
         return 1000 - float(total_wager)

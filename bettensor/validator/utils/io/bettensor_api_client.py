@@ -7,6 +7,7 @@ import json
 import os
 from ..database.database_manager import DatabaseManager
 from .base_api_client import BaseAPIClient
+import aiohttp
 
 
 class BettensorAPIClient(BaseAPIClient):
@@ -16,8 +17,14 @@ class BettensorAPIClient(BaseAPIClient):
         self.base_url = "https://dev-bettensor-api.azurewebsites.net/"
         self.db_manager = db_manager
         self.games = []
+        self.api_key = os.getenv("BETTENSOR_API_KEY", None)
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        self.session = aiohttp.ClientSession()  # Use aiohttp for async requests
 
-    def fetch_all_game_data(self, last_update_date):
+    async def fetch_all_game_data(self, last_update_date):
         """
         fetch and update game data from bettensor API. overridden from BaseAPIClient
 
@@ -27,14 +34,16 @@ class BettensorAPIClient(BaseAPIClient):
             last_update_date = datetime.now(timezone.utc) - timedelta(days=15)
 
         # Fetch the games from the API
-        games = self.get_games(last_update_date)
+        bt.logging.info(f"Fetching games from API with last update date: {last_update_date}")
+        games = await self.get_games(last_update_date)
         # print one game
-        if len(games) > 0:
-            bt.logging.trace(f"Games: {games[0]}")
+        # if len(games) > 0:
+        #     bt.logging.trace(f"Games: {games[0]}")
 
         return games
 
-    def get_games(self, last_update_date=None, items_per_page=100):
+    async def get_games(self, last_update_date=None, items_per_page=100):
+        """Get all games from the API with pagination."""
         all_games = []
         page_index = 0
         start_date = (
@@ -42,7 +51,8 @@ class BettensorAPIClient(BaseAPIClient):
         ).isoformat()  # 15 days ago
 
         while True:
-            games = self.get_games_page(
+            # Add await here
+            games = await self.get_games_page(
                 start_date, items_per_page, page_index, last_update_date
             )
             if not games:
@@ -51,18 +61,26 @@ class BettensorAPIClient(BaseAPIClient):
             page_index += 1
         return all_games
 
-    def get_games_page(self, start_date, items_per_page, page_index, last_update_date):
+    async def get_games_page(self, start_date, items_per_page, page_index, last_update_date):
+        """Get a single page of games from the API."""
         params = {
             "PageIndex": page_index,
             "ItemsPerPage": items_per_page,
             "SortOrder": "StartDate",
-            "LastUpdateDate": last_update_date.isoformat(),
+            "LastUpdateDate": last_update_date.isoformat() if last_update_date else None,
             "StartDate": start_date,
             "LeagueFilter": "true",
         }
 
         try:
-            data = self.get_data("Games/TeamGames/Search", params)
+            # Add await here
+            response = await self.session.get(
+                f"{self.base_url}/Games/TeamGames/Search",
+                params=params,
+                headers=self.headers
+            )
+            # Add await here
+            data = await response.json()
             return data
         except Exception as e:
             bt.logging.error(f"Error fetching games from API: {e}")
@@ -84,7 +102,7 @@ class BettensorAPIClient(BaseAPIClient):
             "league": game.get("league"),
         }
 
-    def get_data(self, endpoint, params):
+    async def get_data(self, endpoint, params):
         url = self.base_url + endpoint
-        response = requests.get(url, params=params)
+        response = await self.session.get(url, params=params)
         return response.json()

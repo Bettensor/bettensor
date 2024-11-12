@@ -1,3 +1,4 @@
+import functools
 import os
 import subprocess
 import sys
@@ -20,7 +21,7 @@ from bettensor.validator.bettensor_validator import BettensorValidator
 from bettensor.validator.utils.ensure_dependencies import ensure_dependencies
 from bettensor.validator.utils.io.sports_data import SportsData
 from bettensor.validator.utils.scoring.watchdog import Watchdog
-from bettensor.validator.utils.io.auto_updater import perform_update
+from bettensor.validator.utils.io.auto_updater import check_and_install_dependencies, perform_update
 import threading
 from functools import partial
 from typing import Optional, Any
@@ -28,6 +29,9 @@ import async_timeout
 from bettensor.validator.utils.state_sync import StateSync
 import math
 from bettensor.validator.utils.database.database_manager import DatabaseManager
+import json
+import numpy as np
+import signal
 
 # Constants for timeouts (in seconds)
 UPDATE_TIMEOUT = 300  # 5 minutes
@@ -38,40 +42,87 @@ WEBSITE_TIMEOUT = 60  # 1 minute
 SCORING_TIMEOUT = 300  # 5 minutes
 WEIGHTS_TIMEOUT = 180  # 3 minutes
 
+# At the top of the file, define the timeouts
+TASK_TIMEOUTS = {
+    'sync_metagraph': 300,  # 5 minutes
+    'query_and_process_axons': 600,  # 10 minutes
+    'send_data_to_website': 300,  # 5 minutes
+    'scoring_run': 600,  # 10 minutes
+    'set_weights': 300,  # 5 minutes
+    'perform_update': 300,  # 5 minutes
+    'check_hotkeys': 60,  # 1 minute
+}
+
+def cancellable_task(func):
+    """
+    Decorator that wraps a coroutine in a cancellable task.
+    Cancels the task if any error occurs.
+    """
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        task = asyncio.create_task(func(*args, **kwargs))
+        try:
+            return await task
+        except Exception as e:
+            if not task.done():
+                bt.logging.warning(f"Cancelling task {func.__name__} due to error")
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    bt.logging.debug(f"Task {func.__name__} cancelled successfully")
+                except Exception as cancel_error:
+                    bt.logging.error(f"Error while cancelling task {func.__name__}: {str(cancel_error)}")
+            bt.logging.error(f"Error in {func.__name__}: {str(e)}")
+            bt.logging.debug(traceback.format_exc())
+            raise  # Re-raise the exception to maintain error handling flow
+    return wrapper
+
+
+
 def time_task(task_name):
-    """
-    Decorator that times the execution of validator tasks and logs the duration.
-    Handles both sync and async functions.
-    """
+    """Decorator to time tasks and log their duration."""
     def decorator(func):
+        @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             start_time = time.time()
             try:
-                result = await func(*args, **kwargs)
-                duration = time.time() - start_time
-                bt.logging.info(f"{task_name} completed in {duration:.2f} seconds")
+                # Await the coroutine if it's async
+                if asyncio.iscoroutinefunction(func):
+                    result = await func(*args, **kwargs)
+                else:
+                    result = func(*args, **kwargs)
                 return result
             except Exception as e:
                 duration = time.time() - start_time
                 bt.logging.error(f"{task_name} failed after {duration:.2f} seconds with error: {str(e)}")
                 raise
-
+            finally:
+                duration = time.time() - start_time
+                bt.logging.debug(f"{task_name} completed in {duration:.2f} seconds")
+        
+        @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
             start_time = time.time()
             try:
                 result = func(*args, **kwargs)
-                duration = time.time() - start_time
-                bt.logging.info(f"{task_name} completed in {duration:.2f} seconds")
                 return result
             except Exception as e:
                 duration = time.time() - start_time
                 bt.logging.error(f"{task_name} failed after {duration:.2f} seconds with error: {str(e)}")
                 raise
-
-        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+            finally:
+                duration = time.time() - start_time
+                bt.logging.debug(f"{task_name} completed in {duration:.2f} seconds")
+        
+        # Return appropriate wrapper based on whether the function is async
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        return sync_wrapper
+    
     return decorator
 
-def log_status(validator):
+async def log_status(validator):
     while True:
         current_time = datetime.now(timezone.utc)
         current_block = validator.subtensor.block
@@ -104,14 +155,14 @@ def log_status(validator):
 
         bt.logging.info(status_message)
         # bt.logging.debug(debug_message)
-        time.sleep(30)
+        await asyncio.sleep(30)
 
 async def game_data_update_loop(validator):
     """Background thread function for updating game data"""
     while True:
         try:
             current_time = datetime.now(timezone.utc)
-            bt.logging.debug("Attempting to run game data update...")
+            #bt.logging.debug("Attempting to run game data update...")
             
             # Try to acquire the lock without blocking
             if validator.operation_lock.locked():
@@ -122,7 +173,7 @@ async def game_data_update_loop(validator):
             # Use the lock directly in async context
             async with async_timeout.timeout(GAME_DATA_TIMEOUT):
                 async with validator.operation_lock:
-                    await asyncio.to_thread(update_game_data, validator, current_time)
+                    await update_game_data(validator, current_time)
             
             await asyncio.sleep(30)
             
@@ -144,25 +195,25 @@ async def run(validator: BettensorValidator):
     """Main async run loop for the validator"""
     # Load environment variables
     load_dotenv()
-    
-
     initialize(validator)
     validator.watchdog = Watchdog(validator=validator, timeout=1200)  # 20 minutes timeout
 
     # Create and start the game data task instead of thread
+    
     game_data_task = asyncio.create_task(game_data_update_loop(validator))
 
     # Create threads for periodic tasks
-    status_log_thread = threading.Thread(target=log_status_with_watchdog, args=(validator,), daemon=True)
+    status_log_task = asyncio.create_task(log_status(validator))
     
-    # Start only the status log thread
-    status_log_thread.start()
-
     # Add state sync tasks
     state_sync_task = asyncio.create_task(push_state_periodic(validator))  # Primary node, pushes state to GitHub
     state_check_task = asyncio.create_task(check_state_sync(validator))  # Non-primary node, checks if state needs to be pulled from GitHub
     
     try:
+        # Ensure neuron is initialized
+        if not validator.is_initialized:
+            await validator.initialize_neuron()
+
         while True:
             current_time = datetime.now(timezone.utc)
             current_block = validator.subtensor.block
@@ -172,42 +223,61 @@ async def run(validator: BettensorValidator):
             tasks = []
             
             # Sync metagraph
-            tasks.append(asyncio.create_task(
-                run_with_timeout(sync_metagraph_with_retry, METAGRAPH_TIMEOUT, validator)
+            tasks.append((
+                sync_metagraph_with_retry(validator),
+                TASK_TIMEOUTS['sync_metagraph']
             ))
+            
+            await asyncio.sleep(2)
 
             # Check hotkeys
-            tasks.append(asyncio.create_task(
-                run_with_timeout(validator.check_hotkeys, METAGRAPH_TIMEOUT)
+            tasks.append((
+                validator.check_hotkeys(),
+                TASK_TIMEOUTS['check_hotkeys']
             ))
 
+            await asyncio.sleep(2)
+
             # Perform update (if needed)
-            tasks.append(asyncio.create_task(
-                run_with_timeout(perform_update, UPDATE_TIMEOUT, validator)
+            tasks.append((
+                perform_update(validator),
+                TASK_TIMEOUTS['perform_update']
             ))
+
+            await asyncio.sleep(2)
 
             # Query and process axons
             if (current_block - validator.last_queried_block) > validator.query_axons_interval:
-                tasks.append(asyncio.create_task(
-                    run_with_timeout(query_and_process_axons_with_game_data, QUERY_TIMEOUT, validator)
+                tasks.append((
+                    query_and_process_axons(validator),
+                    TASK_TIMEOUTS['query_and_process_axons']
                 ))
+
+            await asyncio.sleep(2)
 
             # Send data to website
             if (current_block - validator.last_sent_data_to_website) > validator.send_data_to_website_interval:
-                tasks.append(asyncio.create_task(
-                    run_with_timeout(send_data_to_website_server, WEBSITE_TIMEOUT, validator)
+                tasks.append((
+                    send_data_to_website_server(validator),
+                    TASK_TIMEOUTS['send_data_to_website']
                 ))
+
+            await asyncio.sleep(2)
 
             # Recalculate scores
             if (current_block - validator.last_scoring_block) > validator.scoring_interval:
-                tasks.append(asyncio.create_task(
-                    run_with_timeout(scoring_run, SCORING_TIMEOUT, validator, current_time)
+                tasks.append((
+                    scoring_run(validator, current_time),
+                    TASK_TIMEOUTS['scoring_run']
                 ))
+
+            await asyncio.sleep(2)
 
             # Set weights
             if (current_block - validator.last_set_weights_block) > validator.set_weights_interval:
-                tasks.append(asyncio.create_task(
-                    run_with_timeout(set_weights, WEIGHTS_TIMEOUT, validator, validator.scores)
+                tasks.append((
+                    set_weights(validator, validator.scores),
+                    TASK_TIMEOUTS['set_weights']
                 ))
 
             # Create a wrapper for each task that includes timeout and error handling
@@ -217,39 +287,33 @@ async def run(validator: BettensorValidator):
                         result = await task_coroutine
                         validator.watchdog.reset()  # Reset after successful task
                         return result
+                except asyncio.TimeoutError:
+                    bt.logging.error(f"Task {task_coroutine} timed out after {timeout_seconds} seconds")
+                    return None
                 except Exception as e:
-                    bt.logging.error(f"Task failed with error: {str(e)}")
+                    bt.logging.error(f"Task {task_coroutine} failed with error: {str(e)}")
                     return None
 
             # Add tasks with safe execution wrapper
             if tasks:
-                try:
-                    async with async_timeout.timeout(max(QUERY_TIMEOUT, WEBSITE_TIMEOUT, SCORING_TIMEOUT, WEIGHTS_TIMEOUT)):
-                        results = await asyncio.gather(*[
-                            execute_task_safely(task, QUERY_TIMEOUT) 
-                            for task in tasks
-                        ], return_exceptions=True)
-                        
-                        # Log completion and any errors
-                        completed = sum(1 for r in results if r is not None)
-                        bt.logging.info(f"Completed {completed} out of {len(tasks)} tasks")
-                        
-                        # Log any exceptions
-                        for i, result in enumerate(results):
-                            if isinstance(result, Exception):
-                                bt.logging.error(f"Task {i} failed with: {str(result)}")
-                                
-                except asyncio.TimeoutError:
-                    bt.logging.error("Main task gathering timed out")
-                    # Cancel any remaining tasks
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
-                            
+                results = await asyncio.gather(*[
+                    execute_task_safely(task_coroutine, timeout_seconds)
+                    for task_coroutine, timeout_seconds in tasks
+                ], return_exceptions=True)
+                
+                # Log completion and any errors
+                completed = sum(1 for r in results if r is not None)
+                #bt.logging.info(f"Completed {completed} out of {len(tasks)} tasks")
+                
+                # Log any exceptions
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        bt.logging.error(f"Task {i} failed with: {str(result)}")
+
             await asyncio.sleep(30)
 
     except Exception as e:
-        bt.logging.error(f"Error in main loop: {str(e)}")
+        bt.logging.error(f"Error in main loop: {e}")
         bt.logging.error(traceback.format_exc())
     except KeyboardInterrupt:
         bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
@@ -257,9 +321,12 @@ async def run(validator: BettensorValidator):
         state_sync_task.cancel()
         state_check_task.cancel()
         game_data_task.cancel()
-        # Wait for thread to finish
-        status_log_thread.join(timeout=1)
 
+        await asyncio.gather(state_sync_task, state_check_task, game_data_task,return_exceptions=True)
+        # Wait for thread to finish
+        await status_log_task
+        
+@cancellable_task
 async def run_with_timeout(func, timeout: int, *args, **kwargs) -> Optional[Any]:
     """
     Enhanced run_with_timeout that ensures proper task cleanup
@@ -313,6 +380,7 @@ def initialize(validator):
 
     validator.state_sync = StateSync(
         state_dir="./bettensor/validator/state",
+        db_manager=validator.db_manager
     )
     
     # Pull latest state before starting if configured to do so
@@ -367,63 +435,83 @@ def initialize(validator):
     validator.operation_lock = asyncio.Lock()
 
 
-    
-def log_status_with_watchdog(validator):
-    while True:
-        try:
-            log_status(validator)
-            validator.watchdog.reset()  # Reset timer after successful status log
-        except Exception as e:
-            bt.logging.error(f"Error in status log: {str(e)}")
-        time.sleep(30)
+@cancellable_task
+async def log_status_with_watchdog(validator):
+        while True:
+            try:
+                await log_status(validator)
+                validator.watchdog.reset()
+            except Exception as e:
+                bt.logging.error(f"Error in status log: {str(e)}")
+            await asyncio.sleep(30)
 
 # Add periodic state pushing for primary node
+@cancellable_task
 async def push_state_periodic(validator):
     """Periodically push state files to Azure blob storage if primary node"""
-    bt.logging.info("--------------------------------Pushing state files to Azure blob storage--------------------------------")
+    bt.logging.info("\n--------------------------------Pushing state files to Azure blob storage--------------------------------\n")
     while True:
-        if validator.is_primary:
-            bt.logging.debug("Primary node, pushing state files to Azure blob storage")
-            if validator.state_sync.push_state():
-                bt.logging.info("Successfully pushed state files")
+        try:
+            if validator.is_primary:
+                bt.logging.debug("Primary node, pushing state files to Azure blob storage")
+                
+                # Ensure database connection
+                if not await validator.db_manager.ensure_connection():
+                    bt.logging.error("Failed to establish database connection for periodic state push")
+                    await asyncio.sleep(300)  # Wait 5 minutes before retry
+                    continue
+                    
+                if await validator.state_sync.push_state():
+                    bt.logging.info("Successfully pushed state files")
+                else:
+                    bt.logging.error("Failed to push state files")
             else:
-                bt.logging.error("Failed to push state files")
-        else:
-            bt.logging.info("Not primary node, skipping state push")
-        await asyncio.sleep(3600)  # Push every hour
+                bt.logging.info("Not primary node, skipping state push")
+                
+            await asyncio.sleep(3600)  # Push every hour
+            
+        except Exception as e:
+            bt.logging.error(f"Error in periodic state push: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+            await asyncio.sleep(300)  # Wait 5 minutes before retry
 
 @time_task("update_game_data")
-def update_game_data(validator, current_time):
+@cancellable_task
+async def update_game_data(validator, current_time):
     """
-    Calls SportsData to update game data in the database - Async in separate thread
+    Calls SportsData to update game data in the database
     """
-    bt.logging.info("--------------------------------Updating game data--------------------------------")
+    bt.logging.info("\n--------------------------------Updating game data--------------------------------\n")
     
     try:
-        if validator.last_api_call is None:
-            validator.last_api_call = current_time - timedelta(days=15)
-
-        all_games = validator.sports_data.fetch_and_update_game_data(
-            validator.last_api_call
-        )
-        if all_games is None:
-            bt.logging.warning(
-                "Failed to fetch game data. Continuing with previous data."
+        async with async_timeout.timeout(GAME_DATA_TIMEOUT):
+            # Ensure database connection is valid
+            if not await validator.db_manager.ensure_connection():
+                bt.logging.error("Failed to establish database connection")
+                return
+            # Proceed with game data update
+            all_games = await validator.sports_data.fetch_and_update_game_data(
+                validator.last_api_call
             )
-
-        bt.logging.info(f"Current time: {current_time}")
-        validator.last_api_call = current_time
-
-        bt.logging.info(f"Last api call updated to: {validator.last_api_call}")
-        validator.save_state()
-
+            
+            if all_games:
+                validator.last_api_call = current_time 
+                await validator.save_state()
+                
+    except asyncio.TimeoutError:
+        bt.logging.error("Game data update timed out")
+        
+        raise
+    except ConnectionError as e:
+        bt.logging.error(f"Database connection error: {str(e)}")
+        raise
     except Exception as e:
-        bt.logging.error(f"Error fetching game data: {e}")
-        bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
-
-    validator.last_updated_block = validator.subtensor.block
+        bt.logging.error(f"Error in game data update: {str(e)}")
+        
+        raise
 
 @time_task("sync_metagraph")
+@cancellable_task
 async def sync_metagraph_with_retry(validator):
     max_retries = 3
     retry_delay = 60
@@ -444,6 +532,7 @@ async def sync_metagraph_with_retry(validator):
             raise
 
 @time_task("filter_and_update_axons")
+@cancellable_task
 async def filter_and_update_axons(validator):
     all_axons = validator.metagraph.axons
     bt.logging.trace(f"All axons: {all_axons}")
@@ -482,112 +571,158 @@ async def filter_and_update_axons(validator):
     return result
 
 @time_task("query_and_process_axons")
-async def query_and_process_axons_with_game_data(validator):
-    """Queries axons with game data and processes the responses"""
-    bt.logging.info("--------------------------------Querying and processing axons with game data--------------------------------")
-    
-    async with validator.operation_lock:  # Add lock here
-        validator.last_queried_block = validator.subtensor.block
-        current_time = datetime.now(timezone.utc).isoformat()
+@cancellable_task
+async def query_and_process_axons(validator):
+    """Queries axons and processes the responses in batches with non-blocking response handling"""
+    try:
+        bt.logging.info("\n--------------------------------Querying and processing axons--------------------------------\n")
         
-        gamedata_dict = await asyncio.to_thread(
-            validator.fetch_local_game_data,
-            current_timestamp=current_time
-        )
-        
-        if gamedata_dict is None:
-            bt.logging.error("No game data found")
-            return None
+        async with validator.operation_lock:
+            validator.last_queried_block = validator.subtensor.block
+            current_time = datetime.now(timezone.utc).isoformat()
+            
+            gamedata_dict = await validator.fetch_local_game_data(current_time)
+            
+            if gamedata_dict is None:
+                bt.logging.error("No game data found")
+                return None
 
-        synapse = GameData.create(
-            db_path=validator.db_path,
-            wallet=validator.wallet,
-            subnet_version=validator.subnet_version,
-            neuron_uid=validator.uid,
-            synapse_type="game_data",
-            gamedata_dict=gamedata_dict,
-        )
-        
-        if synapse is None:
-            bt.logging.error("Synapse is None")
-            return None
+            synapse = GameData.create(
+                db_path=validator.db_path,
+                wallet=validator.wallet,
+                subnet_version=validator.subnet_version,
+                neuron_uid=validator.uid,
+                synapse_type="game_data",
+                gamedata_dict=gamedata_dict,
+            )
+            
+            if synapse is None:
+                bt.logging.error("Synapse is None")
+                return None
 
-        result = await filter_and_update_axons(validator)
-        if result is None:
-            bt.logging.error("Failed to filter and update axons")
-            return None
+            # Get filtered axons
+            filtered_axons = await filter_and_update_axons(validator)
+            if filtered_axons is None:
+                bt.logging.error("Failed to filter and update axons")
+                return None
 
-        uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query = result
-        
-        # Define batch size
-        BATCH_SIZE = 10  # Adjust based on testing
-        responses = []
-        
-        try:
-            # Process axons in batches
-            total_batches = math.ceil(len(uids_to_query)/BATCH_SIZE)
-            for i in range(0, len(uids_to_query), BATCH_SIZE):
-                # Extend watchdog timeout for each batch
-                validator.watchdog.extend_timeout(120)  # Add 2 minutes per batch
+            uids_to_query, list_of_uids, blacklisted_uids, uids_not_to_query = filtered_axons
+            
+            # Batch size configuration
+            BATCH_SIZE = 16
+            MAX_CONCURRENT_REQUESTS = 3  # Limit concurrent outgoing requests
+            
+            # Split axons into batches
+            axon_batches = [uids_to_query[i:i + BATCH_SIZE] for i in range(0, len(uids_to_query), BATCH_SIZE)]
+            
+            # Semaphore to limit outgoing requests
+            request_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+            # Queue to store pending responses
+            response_queue = asyncio.Queue()
+            
+            async def process_batch(batch):
+                """Process a single batch with prioritized response handling"""
+                try:
+                    # Wait for semaphore before sending new requests
+                    async with request_semaphore:
+                        responses = await validator.dendrite.forward(
+                            axons=batch,
+                            synapse=synapse,
+                            timeout=validator.timeout,
+                            deserialize=False,
+                        )
+                        
+                        if isinstance(responses, list):
+                            # Filter valid responses
+                            valid_responses = [
+                                response for response in responses
+                                if isinstance(response, GameData) and 
+                                response.metadata.synapse_type == "prediction" and
+                                response.prediction_dict
+                            ]
+                            # Put responses in queue for processing
+                            if valid_responses:
+                                await response_queue.put(valid_responses)
+                            return len(valid_responses)
+                        return 0
+                        
+                except Exception as e:
+                    bt.logging.error(f"Error processing batch: {str(e)}")
+                    return 0
+
+            # Create tasks for all batches
+            batch_tasks = [
+                asyncio.create_task(process_batch(batch))
+                for batch in axon_batches
+            ]
+            
+            # Process responses as they come in
+            total_responses = []
+            processed_count = 0
+            
+            while batch_tasks or not response_queue.empty():
+                # Prioritize processing responses if available
+                try:
+                    responses = await asyncio.wait_for(
+                        response_queue.get(),
+                        timeout=1.0  # Short timeout to check batch_tasks
+                    )
+                    total_responses.extend(responses)
+                    response_queue.task_done()
+                    processed_count += len(responses)
+                except asyncio.TimeoutError:
+                    # No responses available, check if any batch tasks completed
+                    if batch_tasks:
+                        done, batch_tasks = await asyncio.wait(
+                            batch_tasks,
+                            timeout=1.0,
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+                        for task in done:
+                            try:
+                                processed_count += await task
+                            except Exception as e:
+                                bt.logging.error(f"Batch task error: {str(e)}")
                 
-                batch = uids_to_query[i:i + BATCH_SIZE]
-                batch_uids = list_of_uids[i:i + BATCH_SIZE]
-                bt.logging.debug(f"Processing batch {i//BATCH_SIZE + 1} of {total_batches}")
-                
-                # Query batch of axons
-                batch_responses = await asyncio.to_thread(
-                    validator.dendrite.query,
-                    axons=batch,
-                    synapse=synapse,
-                    timeout=validator.timeout,
-                    deserialize=False,
-                )
-                
-                # Process valid responses from this batch
-                valid_batch_responses = []
-                if batch_responses and hasattr(batch_responses, '__iter__'):
-                    for response in batch_responses:
-                        if isinstance(response, GameData):
-                            if response.metadata.synapse_type == "prediction":
-                                valid_batch_responses.append(response)
-                
-                # Process predictions for this batch immediately
-                bt.logging.debug(f"Processing {len(valid_batch_responses)} predictions for batch {i//BATCH_SIZE + 1}")
-                validator.process_prediction(batch_uids, valid_batch_responses)
+            # Process all collected responses
+            if total_responses:
+                await validator.process_prediction(list_of_uids, total_responses)
+            
+            bt.logging.info(f"Processed {processed_count} valid responses from {len(uids_to_query)} total axons")
+            return total_responses
 
-            # Reset watchdog after successful completion
-            validator.watchdog.reset()
-
-        except Exception as e:
-            bt.logging.error(f"Error querying and processing axons: {str(e)}")
-            bt.logging.error(traceback.format_exc())
-            return None
+    except Exception as e:
+        bt.logging.error(f"Error querying and processing axons: {str(e)}")
+        bt.logging.error(traceback.format_exc())
+        return None
 
 @time_task("send_data_to_website_server")
+@cancellable_task
 async def send_data_to_website_server(validator):
-    """
-    Sends data to the website server
-    """
-    bt.logging.info("--------------------------------Sending data to website server--------------------------------")
+    """Sends data to the website server"""
+    bt.logging.info("\n--------------------------------Sending data to website server--------------------------------\n")
     validator.last_sent_data_to_website = validator.subtensor.block
-    bt.logging.info(f"Last sent data to website: {validator.last_sent_data_to_website}")
+    #bt.logging.info(f"Last sent data to website: {validator.last_sent_data_to_website}")
 
     try:
-        result = validator.website_handler.fetch_and_send_predictions()
-        bt.logging.info(f"Result status: {result}")
-        if result:
+        result = await validator.website_handler.fetch_and_send_predictions()
+        if result is True:
             bt.logging.info("Predictions fetched and sent successfully")
+        elif result is False:
+            bt.logging.warning("Failed to send predictions")
         else:
-            bt.logging.warning("No new predictions were sent this round")
+            bt.logging.info("No new predictions were sent this round")
     except Exception as e:
-        bt.logging.error(f"Error in fetch_and_send_predictions: {str(e)}")
+        bt.logging.error(f"Error in send_data_to_website_server: {str(e)}")
+        bt.logging.error(traceback.format_exc())
 
 @time_task("scoring_run")
+@cancellable_task
 async def scoring_run(validator, current_time):
     """
     calls the scoring system to update miner scores before setting weights
     """
-    bt.logging.info("--------------------------------Scoring run--------------------------------")
+    bt.logging.info("\n--------------------------------Scoring run--------------------------------\n")
     validator.last_scoring_block = validator.subtensor.block
     
     try:
@@ -603,7 +738,7 @@ async def scoring_run(validator, current_time):
         # Combine blacklisted_uids and uids_not_to_query
         invalid_uids = set(blacklisted_uids + uids_not_to_query)
         bt.logging.info(f"Invalid UIDs: {invalid_uids}")
-        validator.scores = validator.scoring_system.scoring_run(
+        validator.scores = await validator.scoring_system.scoring_run(
             current_time, invalid_uids, valid_uids
         )
         bt.logging.info("Scores updated successfully")
@@ -647,8 +782,8 @@ async def scoring_run(validator, current_time):
         raise
 
 
-
 @time_task("set_weights")
+@cancellable_task
 async def set_weights(validator, weights_to_set):
     """Wrapper for weight setting that handles the multiprocessing timeout gracefully"""
     try:
@@ -667,6 +802,7 @@ async def set_weights(validator, weights_to_set):
 
 
 @time_task("check_state_sync")
+@cancellable_task
 async def check_state_sync(validator):
     """Periodically check and sync state if needed"""
     while True:
@@ -682,7 +818,7 @@ async def check_state_sync(validator):
         except Exception as e:
             bt.logging.error(f"Error in state sync check: {e}")
             await asyncio.sleep(300)  # On error, retry after 5 minutes
-
+            
 def cleanup_pycache():
     """Remove all __pycache__ directories and .pyc files"""
     bt.logging.info("Cleaning up __pycache__ directories and .pyc files")
@@ -716,7 +852,7 @@ def cleanup_pycache():
         bt.logging.error(f"Error during pycache cleanup: {str(e)}")
 
 # The main function parses the configuration and runs the validator.
-def main():
+async def main():
     # Add cleanup at the start of main
     cleanup_pycache()
     
@@ -762,22 +898,62 @@ def main():
     )
     args = parser.parse_args()
     print("Parsed arguments:", args)
-    validator = BettensorValidator(parser=parser)
+    validator = None
 
-    if (
-        not validator.apply_config(bt_classes=[bt.subtensor, bt.logging, bt.wallet])
-        or not validator.initialize_neuron()
-    ):
-        bt.logging.error("Unable to initialize Validator. Exiting.")
-        sys.exit()
+    def signal_handler(signum, frame):
+        bt.logging.info(f"Received signal {signum}. Shutting down gracefully...")
+        if validator:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            loop.run_until_complete(validator.cleanup())
+        sys.exit(0)
 
-    # Run the async main loop
-    asyncio.run(run(validator))
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
+    try:
+        validator = await BettensorValidator.create(parser)
+        
+        if not validator.apply_config(bt_classes=[bt.subtensor, bt.logging, bt.wallet]):
+            bt.logging.error("Unable to initialize Validator. Exiting.")
+            sys.exit(1)
 
-
-
+        # Run the validator
+        await run(validator)
+        
+    except Exception as e:
+        bt.logging.error(f"Error in validator: {str(e)}")
+        if validator:
+            await validator.cleanup()
+        raise
+    finally:
+        if validator:
+            await validator.cleanup()
 
 if __name__ == "__main__":
-    ensure_dependencies()
-    main()
+    try:
+        # Create a single event loop for both operations
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Run dependency check
+        loop.run_until_complete(check_and_install_dependencies())
+        
+        # Run main function using the same loop
+        loop.run_until_complete(main())
+        
+    except Exception as e:
+        bt.logging.error(f"Startup error: {e}")
+        bt.logging.error(traceback.format_exc())
+        sys.exit(1)
+    finally:
+        try:
+            # Clean up the loop
+            loop.close()
+        except Exception as e:
+            bt.logging.error(f"Error closing event loop: {e}")

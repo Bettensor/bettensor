@@ -61,7 +61,7 @@ class Watchdog:
         self.restart_process()
 
     def restart_process(self):
-        """Restart the PM2 process with proper cleanup"""
+        """Restart the PM2 process."""
         try:
             process_name = self.get_pm2_process_name()
             if not process_name:
@@ -69,47 +69,41 @@ class Watchdog:
                 # Try common validator process names
                 for name in ["validator", "validator0", "validator1"]:
                     try:
-                        subprocess.run(["pm2", "id", name], check=True, capture_output=True)
-                        process_name = name
-                        break
-                    except:
+                        result = subprocess.run(["pm2", "describe", name], check=True, capture_output=True, text=True)
+                        if result.returncode == 0:
+                            process_name = name
+                            break
+                    except subprocess.CalledProcessError:
                         continue
-            
+
             if process_name:
                 bt.logging.info(f"Attempting to restart PM2 process: {process_name}")
                 
-                # First try graceful reload
+                # Simply restart the process
                 try:
-                    subprocess.run(["pm2", "reload", process_name], 
-                                 check=True, timeout=30,
-                                 capture_output=True)
-                    bt.logging.info(f"PM2 process {process_name} reload initiated")
-                except:
-                    # If reload fails, try restart
-                    subprocess.run(["pm2", "restart", process_name, "--update-env"], 
-                                 check=True, timeout=30,
-                                 capture_output=True)
-                    bt.logging.info(f"PM2 process {process_name} restart initiated")
-                
-                # Give PM2 a moment to start the new process
-                time.sleep(5)
-                
-                # Verify new process started
-                result = subprocess.run(["pm2", "pid", process_name],
-                                      capture_output=True, text=True)
-                if result.stdout.strip():
-                    bt.logging.info("New process started successfully")
-                    os._exit(0)
-                else:
-                    bt.logging.error("New process failed to start")
-                
+                    subprocess.run(["pm2", "restart",process_name,"--update-env"], check=True, timeout=30, capture_output=True)
+                    bt.logging.info(f"PM2 process {process_name} restarted successfully.")
+                    
+                    # Give PM2 a moment to restart
+                    time.sleep(2)
+                    
+                    # Verify process restarted
+                    result = subprocess.run(["pm2", "pid", process_name], capture_output=True, text=True)
+                    if result.stdout.strip():
+                        bt.logging.info("Process restarted successfully.")
+                        os._exit(0)
+                    else:
+                        bt.logging.error("Process failed to restart.")
+                except subprocess.CalledProcessError as e:
+                    bt.logging.error(f"Failed to restart PM2 process {process_name}: {e}")
+                    raise e
             else:
                 bt.logging.error("Could not determine PM2 process name. Manual restart required.")
                 
         except Exception as e:
             bt.logging.error(f"Failed to restart PM2 process: {str(e)}")
             bt.logging.error(traceback.format_exc())
-        
+
         # If we get here, something went wrong with the restart
         bt.logging.error("Process restart failed, attempting force kill...")
         os.kill(os.getpid(), signal.SIGKILL)

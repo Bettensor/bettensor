@@ -1,510 +1,340 @@
+import asyncio
 from pathlib import Path
+from sqlite3 import OperationalError
 import sqlite3
-import threading
+import aiosqlite
 import bittensor as bt
-from queue import Queue, Empty
-from bettensor.validator.utils.database.database_init import initialize_database
-import logging
-import time
 import os
 import traceback
+from bettensor.validator.utils.database.database_init import initialize_database
+import async_timeout
 
-class SingletonMeta(type):
-    """
-    A thread-safe implementation of Singleton using a metaclass.
-    """
-    _instances = {}
-    _lock: threading.Lock = threading.Lock()
+class DatabaseManager:
+    _instance = None
+    _lock = asyncio.Lock()
 
-    def __call__(cls, *args, **kwargs):
-        # Double-checked locking to ensure thread-safe singleton
-        if cls not in cls._instances:
-            with cls._lock:
-                if cls not in cls._instances:
-                    instance = super().__call__(*args, **kwargs)
-                    cls._instances[cls] = instance
-        return cls._instances[cls]
-
-class DatabaseManager(metaclass=SingletonMeta):
-    """
-    Singleton DatabaseManager to handle database connections and migrations.
-    """
+    def __new__(cls, db_path):
+        if cls._instance is None:
+            cls._instance = super(DatabaseManager, cls).__new__(cls)
+            cls._instance._initialized = False
+            cls._instance._instance_lock = asyncio.Lock()
+        return cls._instance
 
     def __init__(self, db_path):
-        # Prevent re-initialization
-        if hasattr(self, '_initialized') and self._initialized:
-            bt.logging.info("DatabaseManager already initialized, skipping initialization.")
-            return
-
-        bt.logging.info("Starting DatabaseManager initialization...")
-        
-        # Initialize thread lock
-        bt.logging.info("Initializing thread lock...")
-        self.lock = threading.Lock()
-        
-        # Initialize other attributes
-        bt.logging.info("Initializing attributes...")
-        self.queue = Queue()
         self.db_path = db_path
-        self.transaction_active = False
-        self.logger = None
-        self.reset_database_pragmas()
+        self.conn = None
+        self._transaction_in_progress = False
+        self._lock = asyncio.Lock()
+        self._connection_lock = asyncio.Lock()
+        self._pause_lock = asyncio.Lock()
+        self._operations_paused = False
+        self._transaction_timeout = 120  # 30 second timeout
 
-        # Setup logging
-        bt.logging.info("Setting up logging...")
-        logging.basicConfig(level=logging.DEBUG)
-        self.logger = logging.getLogger(__name__)
-
-        # Initialize thread local storage
-        self._thread_local = threading.local()
-
-        # Mark as initialized
-        bt.logging.info("DatabaseManager initialization complete.")
-        self._initialized = True
-
-        self.worker_thread = None
-        self.running = True
-        self._start_worker()
-        
-        # Create database directory if it doesn't exist
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        
-        # Execute all initialization statements individually
-        statements = initialize_database()
-        for statement in statements:
-            try:
-                self.execute_query(statement.strip())
-            except Exception as e:
-                bt.logging.error(f"Error executing statement: {e}")
-                bt.logging.error(f"Failed statement: {statement}")
-                raise
-
-    def _get_connection(self):
-        """Get a thread-local database connection."""
-        if not hasattr(self._thread_local, 'conn') or self._thread_local.conn is None:
-            self._thread_local.conn = sqlite3.connect(self.db_path)
-            self._thread_local.cursor = self._thread_local.conn.cursor()
-            bt.logging.debug(f"Created new database connection for thread {threading.get_ident()}")
-        return self._thread_local.conn, self._thread_local.cursor
-
-    def execute_query(self, query, params=None, max_retries=3, initial_delay=0.1):
-        attempt = 0
-        while attempt < max_retries:
-            try:
-                with self.get_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(query, params)
-                        conn.commit()
-                        return cur.rowcount
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
-                    attempt += 1
-                    if attempt == max_retries:
-                        raise
-                    delay = initial_delay * (2 ** attempt)  # Exponential backoff
-                    bt.logging.warning(f"Database locked, retrying in {delay:.2f}s (attempt {attempt}/{max_retries})")
-                    time.sleep(delay)
-                else:
-                    raise
-
-    def begin_transaction(self):
-        """Begin a database transaction."""
-        with self.lock:
-            try:
-                conn, _ = self._get_connection()
-                if not self.transaction_active:
-                    conn.execute("BEGIN")
-                    self.transaction_active = True
-                    self.logger.debug("Transaction started.")
-                else:
-                    self.logger.debug("Transaction already active, continuing with existing transaction.")
-            except sqlite3.OperationalError as e:
-                if "within a transaction" in str(e):
-                    self.logger.debug("Transaction already active, continuing with existing transaction.")
-                else:
-                    raise
-
-    def commit_transaction(self):
-        """Commit the current database transaction."""
-        with self.lock:
-            try:
-                conn, _ = self._get_connection()
-                if self.transaction_active:
-                    conn.commit()
-                    self.transaction_active = False
-                    self.logger.debug("Transaction committed.")
-                else:
-                    self.logger.warning("No active transaction to commit.")
-            except sqlite3.Error as e:
-                self.logger.error(f"Error committing transaction: {e}")
-                raise
-
-    def rollback_transaction(self):
-        """Rollback the current database transaction."""
-        with self.lock:
-            try:
-                conn, _ = self._get_connection()
-                if self.transaction_active:
-                    conn.rollback()
-                    self.transaction_active = False
-                    self.logger.debug("Transaction rolled back.")
-                else:
-                    self.logger.warning("No active transaction to rollback.")
-            except sqlite3.Error as e:
-                self.logger.error(f"Error rolling back transaction: {e}")
-                raise
-
-    def _start_worker(self):
-        """Start the background worker thread for executing queued database operations."""
-        if self.worker_thread is None or not self.worker_thread.is_alive():
-            self.worker_thread = threading.Thread(target=self._worker, daemon=True)
-            self.worker_thread.start()
-
-    def _worker(self):
-        """Background worker thread that processes database operations from the queue."""
-        while self.running:
-            try:
-                # Shorter timeout to allow for graceful shutdown
-                func, args, kwargs, result_queue = self.queue.get(timeout=0.1)
-                
-                with self.lock:
-                    try:
-                        # Create a new connection for each operation
-                        conn = sqlite3.connect(self.db_path, timeout=30)
-                        cursor = conn.cursor()
-                        
-                        try:
-                            if isinstance(args[0], str):  # If it's a SQL query
-                                cursor.execute(*args)
-                                result = cursor.fetchall()
-                                conn.commit()
-                            else:
-                                result = func(*args, **kwargs)
-                            
-                            if result_queue is not None:
-                                result_queue.put(result)
-                                
-                        except Exception as e:
-                            bt.logging.error(f"Database operation error: {str(e)}")
-                            if result_queue is not None:
-                                result_queue.put(e)
-                            conn.rollback()
-                            
-                        finally:
-                            cursor.close()
-                            conn.close()
-                            
-                    except sqlite3.Error as e:
-                        bt.logging.error(f"SQLite error: {str(e)}")
-                        if result_queue is not None:
-                            result_queue.put(e)
-                            
-            except Empty:
-                continue
-            except Exception as e:
-                bt.logging.error(f"Worker thread error: {str(e)}")
-                time.sleep(0.1)  # Prevent tight loop on persistent errors
-
-    def execute(self, query, params=None):
-        """Execute a query asynchronously through the queue with improved timeout handling."""
-        if not self.worker_thread.is_alive():
-            bt.logging.warning("Database worker thread died, restarting...")
-            self._start_worker()
+    async def ensure_connection(self):
+        """Ensures database connection exists and is valid"""
+        if self._operations_paused:
+            return False
             
-        result_queue = Queue()
-        self.queue.put((self.execute_query, (query, params), {}, result_queue))
-        
-        try:
-            # Increased timeout and added retry logic
-            for attempt in range(3):  # Try up to 3 times
+        async with self._connection_lock:
+            try:
+                if self.conn is None:
+                    self.conn = await aiosqlite.connect(self.db_path)
+                    await self.conn.execute("PRAGMA journal_mode=WAL")
+                    await self.conn.execute("PRAGMA busy_timeout=5000")
+                    bt.logging.debug("Database connection established")
+                
+                # Test the connection
+                async with self.conn.execute("SELECT 1") as cursor:
+                    await cursor.fetchone()
+                return True
+                
+            except Exception as e:
+                bt.logging.error(f"Database connection error: {str(e)}")
+                if self.conn:
+                    await self.conn.close()
+                self.conn = None
+                return False
+
+    async def get_connection(self):
+        """Get database connection, creating it if needed."""
+        if self.conn is None:
+            self.conn = await aiosqlite.connect(self.db_path)
+        return self.conn
+
+    async def initialize(self):
+        async with self._instance_lock:
+            if self._initialized:
+                return
+            bt.logging.info("Initializing DatabaseManager...")
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            self.conn = await aiosqlite.connect(self.db_path)
+            await self.reset_database_pragmas()
+            # Initialize the database schema
+            statements = initialize_database()
+            for statement in statements:
                 try:
-                    result = result_queue.get(timeout=10)  # 10 second timeout per attempt
-                    if isinstance(result, Exception):
-                        raise result
-                    return result
-                except Empty:
-                    if attempt < 2:  # Don't sleep on last attempt
-                        time.sleep(1)  # Wait before retry
-                    continue
-                    
-            raise TimeoutError("Database operation timed out after 3 attempts")
-            
-        except Exception as e:
-            bt.logging.error(f"Database execution error: {str(e)}")
-            raise
+                    await self.conn.execute(statement.strip())
+                except Exception as e:
+                    bt.logging.error(f"Error executing statement: {e}")
+                    bt.logging.error(f"Failed statement: {statement}")
+                    raise
+            await self.conn.commit()
+            self._initialized = True
+            bt.logging.info("DatabaseManager initialization complete.")
 
-    def execute_query(self, query, params=None):
-        """Execute a single query with parameters."""
-        conn = None
+    async def reset_database_pragmas(self):
+        """Reset database PRAGMAs to default values asynchronously."""
         try:
-            conn = sqlite3.connect(self.db_path, timeout=30)
-            cursor = conn.cursor()
-            
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-                
-            result = cursor.fetchall()
-            conn.commit()
-            return result
-            
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            raise e
-            
-        finally:
-            if conn:
-                conn.close()
-
-    def shutdown(self):
-        """Gracefully shutdown the database manager."""
-        self.running = False
-        if self.worker_thread and self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=5)
-
-    def __del__(self):
-        """Cleanup thread-local connections on deletion."""
-        if hasattr(self, '_thread_local'):
-            if hasattr(self._thread_local, 'conn') and self._thread_local.conn:
-                self._thread_local.conn.close()
-
-    def is_transaction_active(self):
-        """
-        Check if a transaction is currently active.
-
-        Returns:
-            bool: True if a transaction is active, False otherwise.
-        """
-        return self.transaction_active
-
-    def executemany(self, query, params):
-        """
-        Execute a query with multiple parameter sets.
-        
-        Args:
-            query (str): The SQL query to execute
-            params (list): List of parameter tuples
-            
-        Returns:
-            int: Number of rows affected
-        """
-        with self.lock:
-            try:
-                conn, cursor = self._get_connection()
-                cursor.executemany(query, params)
-                conn.commit()
-                return cursor.rowcount
-            except sqlite3.Error as e:
-                self.logger.error(f"Database error in executemany: {e}")
-                conn.rollback()
-                raise
-
-    def fetch_all(self, query, params=None):
-        """
-        Fetch all records from the database.
-        
-        Args:
-            query (str): The SQL query to execute
-            params (tuple, optional): Parameters for the SQL query
-            
-        Returns:
-            list: List of dictionaries containing the query results
-        """
-        with self.lock:
-            try:
-                conn, cursor = self._get_connection()
-                if params:
-                    cursor.execute(query, params)
-                else:
-                    cursor.execute(query)
-                
-                results = cursor.fetchall()
-                
-                # If no results, return empty list
-                if not results:
-                    return []
-                    
-                # Convert results to list of dictionaries
-                columns = [col[0] for col in cursor.description]
-                return [dict(zip(columns, row)) for row in results]
-                
-            except sqlite3.Error as e:
-                self.logger.error(f"Database error in fetch_all: {e}")
-                raise
-
-    def fetch_one(self, query, params=None):
-        """
-        Fetch a single record from the database.
-        
-        Args:
-            query (str): The SQL query to execute
-            params (tuple, optional): Parameters for the SQL query
-            
-        Returns:
-            dict or int: Dictionary containing the query results, or integer for COUNT queries
-        """
-        with self.lock:
-            try:
-                conn, cursor = self._get_connection()
-                if params:
-                    cursor.execute(query, params)
-                else:
-                    cursor.execute(query)
-                
-                result = cursor.fetchone()
-                
-                # If result is None, return None
-                if result is None:
-                    return None
-                    
-                # If the query is a COUNT query, return just the count value
-                if query.strip().lower().startswith('select count'):
-                    return result[0]
-                    
-                # Convert result to dictionary
-                columns = [col[0] for col in cursor.description]
-                return dict(zip(columns, result))
-                
-            except sqlite3.Error as e:
-                self.logger.error(f"Database error in fetch_one: {e}")
-                raise
-
-    def transaction(self):
-        return DatabaseTransaction(self)
-    
-    def get_connection(self):
-        return self._get_connection()
-
-    def cleanup(self):
-        """Cleanup all database resources"""
-        with self.lock:
-            try:
-                # Rollback any active transactions
-                if self.transaction_active:
-                    self.rollback_transaction()
-                
-                # Stop the worker thread
-                self.running = False
-                if self.worker_thread and self.worker_thread.is_alive():
-                    self.worker_thread.join(timeout=5)
-                
-                # Close all thread-local connections
-                if hasattr(self, '_thread_local'):
-                    if hasattr(self._thread_local, 'conn') and self._thread_local.conn:
-                        self._thread_local.conn.close()
-                        
-                bt.logging.info("Database resources cleaned up successfully")
-                
-            except Exception as e:
-                bt.logging.error(f"Error during database cleanup: {e}")
-                bt.logging.error(traceback.format_exc())
-
-    def reset_database_pragmas(self):
-        """Reset database PRAGMAs to default values."""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Reset common PRAGMAs to defaults
-            cursor.execute("PRAGMA query_only = 0")
-            cursor.execute("PRAGMA journal_mode = DELETE")
-            cursor.execute("PRAGMA synchronous = FULL")
-            cursor.execute("PRAGMA foreign_keys = ON")
-            cursor.execute("PRAGMA auto_vacuum = NONE")
-            cursor.execute("PRAGMA cache_size = -2000")
-            cursor.execute("PRAGMA case_sensitive_like = FALSE")
-            cursor.execute("PRAGMA temp_store = DEFAULT")
-            cursor.execute("PRAGMA mmap_size = 0")
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
+            await self.conn.execute("PRAGMA journal_mode = WAL")
+            await self.conn.execute("PRAGMA synchronous = NORMAL")
+            await self.conn.execute("PRAGMA foreign_keys = ON")
+            await self.conn.execute("PRAGMA cache_size = -2000")
+            await self.conn.commit()
         except Exception as e:
             bt.logging.error(f"Error resetting database PRAGMAs: {e}")
             raise
 
-    def reset_connections(self):
-        """Close and reopen all database connections with proper permissions"""
-        with self.lock:
+    async def execute_query(self, query, params=None):
+        """Execute query with pause check and timeout"""
+        if self._operations_paused:
+            bt.logging.warning("Database operations are paused - query rejected")
+            raise OperationalError("Database operations are paused")
+            
+        if not await self.ensure_connection():
+            raise ConnectionError("No active database connection")
+            
+        try:
+            async with async_timeout.timeout(self._transaction_timeout):
+                async with self._lock:
+                    return await self.conn.execute(query, params if params else ())
+        except asyncio.TimeoutError:
+            bt.logging.error(f"Query execution timed out: {query[:100]}...")
+            if self._lock.locked():
+                self._lock.release()
+            raise
+        except Exception as e:
+            bt.logging.error(f"Query execution error: {str(e)}")
+            if self._lock.locked():
+                self._lock.release()
+            raise
+
+    async def execute_state_sync_query(self, query, params=None, max_retries=3, retry_delay=5):
+        """Special query execution for state sync operations with retry logic"""
+        if not self.conn:
+            if not await self.ensure_connection():
+                raise ConnectionError("No active database connection")
+                
+        for attempt in range(max_retries):
             try:
-                # Close existing connections
-                if hasattr(self, '_thread_local'):
-                    if hasattr(self._thread_local, 'conn') and self._thread_local.conn:
-                        self._thread_local.conn.close()
-                        self._thread_local.conn = None
-                        self._thread_local.cursor = None
-                
-                # Force proper permissions on database file
-                if os.path.exists(self.db_path):
-                    os.chmod(self.db_path, 0o666)
-                
-                # Test new connection
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("PRAGMA journal_mode=DELETE")
-                cursor.execute("PRAGMA synchronous=NORMAL")
-                conn.commit()
-                cursor.close()
-                conn.close()
-                
-                bt.logging.info("Database connections reset successfully")
-                
+                async with self._lock:
+                    cursor = await self.conn.execute(query, params if params else ())
+                    await self.conn.commit()
+                    return cursor
+            except sqlite3.OperationalError as e:
+                if "database table is locked" in str(e):
+                    if attempt < max_retries - 1:
+                        bt.logging.warning(f"Database locked, retrying in {retry_delay} seconds (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                raise
             except Exception as e:
-                bt.logging.error(f"Error resetting database connections: {e}")
+                bt.logging.error(f"State sync query execution error: {str(e)}")
                 raise
 
-    def reinitialize_after_sync(self):
-        """Reinitialize database connections after state sync"""
-        with self.lock:
+    async def fetch_all(self, query, params=None):
+        """Fetch all records from the database asynchronously."""
+        async with self._lock:
             try:
-                # Stop existing worker thread
-                self.running = False
-                if self.worker_thread and self.worker_thread.is_alive():
-                    self.worker_thread.join(timeout=5)
-                
-                # Clear thread local storage
-                if hasattr(self, '_thread_local'):
-                    if hasattr(self._thread_local, 'conn') and self._thread_local.conn:
-                        self._thread_local.conn.close()
-                    self._thread_local = threading.local()
-                
-                # Reset database pragmas
-                self.reset_database_pragmas()
-                
-                # Restart worker thread
-                self.running = True
-                self._start_worker()
-                
-                # Test connection
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
-                conn.close()
-                
-                bt.logging.info("Database manager reinitialized successfully after sync")
-                
+                async with self.conn.execute(query, params or ()) as cursor:
+                    rows = await cursor.fetchall()
+                    columns = [column[0] for column in cursor.description]
+                    return [dict(zip(columns, row)) for row in rows]
             except Exception as e:
-                bt.logging.error(f"Error reinitializing database manager: {e}")
+                bt.logging.error(f"Database error in fetch_all: {e}")
                 raise
 
+    async def fetch_one(self, query, params=None):
+        """Fetch a single record from the database asynchronously."""
+        async with self._lock:
+            try:
+                # Ensure connection exists
+                if self.conn is None:
+                    self.conn = await self.get_connection()
+                    if self.conn is None:
+                        raise RuntimeError("Failed to initialize database connection")
+                
+                async with self.conn.execute(query, params or ()) as cursor:
+                    row = await cursor.fetchone()
+                    if row is None:
+                        return None
+                    columns = [column[0] for column in cursor.description]
+                    return dict(zip(columns, row))
+            except Exception as e:
+                bt.logging.error(f"Database error in fetch_one: {e}")
+                raise
 
-class DatabaseTransaction:
-    def __init__(self, db_manager):
-        self.db_manager = db_manager
-        self.conn = None
-        
-    def __enter__(self):
-        self.conn = self.db_manager.get_connection()
-        return self
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            self.conn.commit()
-        else:
-            self.conn.rollback()
-        self.conn.close()
+    async def executemany(self, query, params_list):
+        """Execute many queries asynchronously."""
+        async with self._lock:
+            try:
+                await self.conn.executemany(query, params_list)
+                await self.conn.commit()
+            except Exception as e:
+                bt.logging.error(f"Error in executemany: {e}")
+                raise
+
+    async def begin_transaction(self):
+        """Begin a new transaction with connection check and timeout"""
+        if not await self.ensure_connection():
+            raise ConnectionError("Could not establish database connection")
+            
+        try:
+            # Try to acquire lock with timeout
+            async with async_timeout.timeout(self._transaction_timeout):
+                await self._lock.acquire()
+                
+                if self._transaction_in_progress:
+                    self._lock.release()
+                    raise RuntimeError("Transaction already in progress")
+                    
+                await self.conn.execute("BEGIN")
+                self._transaction_in_progress = True
+                
+        except asyncio.TimeoutError:
+            if self._lock.locked():
+                self._lock.release()
+            raise TimeoutError("Transaction lock acquisition timed out")
+        except Exception as e:
+            if self._lock.locked():
+                self._lock.release()
+            raise
+
+    async def commit_transaction(self):
+        """Commit transaction and release lock"""
+        if not self.conn:
+            raise ConnectionError("No active database connection")
+            
+        if not self._transaction_in_progress:
+            return
+            
+        try:
+            await self.conn.commit()
+        finally:
+            self._transaction_in_progress = False
+            if self._lock.locked():
+                self._lock.release()
+            bt.logging.debug("Transaction committed and lock released")
+
+    async def rollback_transaction(self):
+        """Rollback transaction and release lock"""
+        if self._operations_paused:
+            bt.logging.warning("Cannot rollback - database operations are paused")
+            return
+            
+        if not await self.ensure_connection():
+            return
+            
+        if not self._transaction_in_progress:
+            return
+            
+        try:
+            await self.conn.rollback()
+        finally:
+            self._transaction_in_progress = False
+            if self._lock.locked():
+                self._lock.release()
+
+    async def close(self):
+        """Close the database connection."""
+        if self.conn:
+            await self.conn.close()
+            self.conn = None
+
+    async def cleanup(self):
+        """Cleanup database connections with retry logic"""
+        bt.logging.info("Cleaning up database connections...")
+        try:
+            await self.pause_operations()
+            await asyncio.sleep(2)
+            
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    async with self._lock:
+                        await self.execute_state_sync_query("PRAGMA wal_checkpoint(TRUNCATE);")
+                        await asyncio.sleep(1)
+                        
+                        if self.conn:
+                            await self.conn.close()
+                            self.conn = None
+                            
+                        bt.logging.info("Database cleanup completed successfully")
+                        break
+                        
+                except sqlite3.OperationalError as e:
+                    if "database table is locked" in str(e) and attempt < max_retries - 1:
+                        bt.logging.warning(f"Cleanup retry {attempt + 1}/{max_retries} - waiting for locks to clear")
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    raise
+                    
+        except Exception as e:
+            bt.logging.error(f"Error during database cleanup: {str(e)}")
+            if self.conn:
+                try:
+                    await self.conn.close()
+                except:
+                    pass
+            self.conn = None
+        finally:
+            self._operations_paused = False
+
+    async def pause_operations(self):
+        """Pause other database operations but maintain connection"""
+        bt.logging.info("Pausing database operations...")
+        async with self._pause_lock:
+            # First ensure we have a valid connection
+            if not await self.ensure_connection():
+                raise ConnectionError("Cannot pause - no active connection")
+                
+            # Wait for any current transaction to complete
+            if self._transaction_in_progress:
+                async with self._lock:
+                    await self.conn.commit()
+                    self._transaction_in_progress = False
+                    
+            self._operations_paused = True
+            bt.logging.debug("Database operations paused with active connection")
+
+    async def resume_operations(self):
+        """Resume database operations"""
+        bt.logging.info("Resuming database operations...")
+        async with self._pause_lock:
+            self._operations_paused = False
+
+    async def reconnect(self):
+        """Force a reconnection to the database"""
+        async with self._connection_lock:
+            if self.conn:
+                try:
+                    await self.conn.close()
+                except Exception:
+                    pass
+            self.conn = None
+            self._transaction_in_progress = False
+            return await self.ensure_connection()
+
+# Usage example
+async def main():
+    db_path = "path/to/your/database.db"
+    db_manager = DatabaseManager(db_path)
+    await db_manager.initialize()
+
+    # Example query
+    result = await db_manager.execute_query("SELECT * FROM your_table")
+    print(result)
+
+# Run the example
+if __name__ == "__main__":
+    asyncio.run(main())
 
