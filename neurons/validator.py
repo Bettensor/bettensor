@@ -195,7 +195,7 @@ async def run(validator: BettensorValidator):
     """Main async run loop for the validator"""
     # Load environment variables
     load_dotenv()
-    initialize(validator)
+    await initialize(validator)
     validator.watchdog = Watchdog(validator=validator, timeout=1200)  # 20 minutes timeout
 
     # Create and start the game data task instead of thread
@@ -364,7 +364,7 @@ async def run_with_timeout(func, timeout: int, *args, **kwargs) -> Optional[Any]
         bt.logging.error(traceback.format_exc())
         return None
 
-def initialize(validator):
+async def initialize(validator):
     validator.is_primary = os.environ.get("VALIDATOR_IS_PRIMARY") == "True"
     should_pull_state = os.environ.get("VALIDATOR_PULL_STATE", "True").lower() == "true"
 
@@ -386,7 +386,7 @@ def initialize(validator):
     # Pull latest state before starting if configured to do so
     if should_pull_state:
         bt.logging.info("Pulling latest state from Azure blob storage...")
-        if validator.state_sync.pull_state():
+        if await validator.state_sync.pull_state():
             bt.logging.info("Successfully pulled latest state")
         else:
             bt.logging.warning("Failed to pull latest state, continuing with local state")
@@ -810,7 +810,7 @@ async def check_state_sync(validator):
             if not validator.is_primary:
                 if validator.state_sync.should_pull_state():
                     bt.logging.info("State divergence detected, pulling latest state")
-                    if validator.state_sync.pull_state():
+                    if await validator.state_sync.pull_state():
                         bt.logging.info("Successfully pulled latest state")
                     else:
                         bt.logging.error("Failed to pull latest state")
