@@ -491,7 +491,7 @@ async def update_game_data(validator, current_time):
                 return
             # Proceed with game data update
             all_games = await validator.sports_data.fetch_and_update_game_data(
-                validator.last_api_call
+                validator.last_api_call - timedelta(hours=1)
             )
             
             if all_games:

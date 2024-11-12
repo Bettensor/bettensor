@@ -126,11 +126,15 @@ class SportsData:
 
                     # Handle outcome
                     outcome = game.get("outcome")
-                    if isinstance(outcome, str):
-                        outcome = 3 if (outcome == "Unfinished" or outcome == None) else (
-                            0 if outcome == "TeamA" else (
-                            1 if outcome == "TeamB" else (
-                            2 if outcome == "Draw" else 3)))
+                    if outcome is None or outcome == "Unfinished":
+                        outcome = 3
+                    elif isinstance(outcome, str):
+                        outcome = (
+                            0 if outcome == "TeamA" else
+                            1 if outcome == "TeamB" else
+                            2 if outcome == "Draw" else
+                            3  # Default to Unfinished for unknown strings
+                        )
                     
                     # Set active status
                     active = 1
