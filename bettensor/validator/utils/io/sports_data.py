@@ -98,7 +98,7 @@ class SportsData:
             bt.logging.info(f"Inserting {len(valid_games)} valid games")
             for game in valid_games:
                 try:
-                    bt.logging.debug(f"Processing game: {game}")
+                    #bt.logging.debug(f"Processing game: {game}")
                     # Extract only the fields we need
                     external_id = str(game.get("externalId"))
                     if not external_id:

@@ -70,16 +70,27 @@ class DatabaseManager:
             os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
             self.conn = await aiosqlite.connect(self.db_path)
             await self.reset_database_pragmas()
+            
             # Initialize the database schema
             statements = initialize_database()
             for statement in statements:
                 try:
                     await self.conn.execute(statement.strip())
+                    await self.conn.commit()  # Commit after each statement
+                except sqlite3.OperationalError as e:
+                    # Ignore specific errors for ALTER TABLE statements
+                    if "duplicate column" in str(e):
+                        bt.logging.debug(f"Column already exists, skipping: {str(e)}")
+                        continue
+                    else:
+                        bt.logging.error(f"Error executing statement: {e}")
+                        bt.logging.error(f"Failed statement: {statement}")
+                        raise
                 except Exception as e:
                     bt.logging.error(f"Error executing statement: {e}")
                     bt.logging.error(f"Failed statement: {statement}")
                     raise
-            await self.conn.commit()
+                    
             self._initialized = True
             bt.logging.info("DatabaseManager initialization complete.")
 

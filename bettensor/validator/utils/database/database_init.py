@@ -43,8 +43,19 @@ def initialize_database():
             miner_lifetime_predictions INTEGER DEFAULT 0,
             miner_lifetime_wins INTEGER DEFAULT 0,
             miner_lifetime_losses INTEGER DEFAULT 0,
-            miner_win_loss_ratio REAL DEFAULT 0.0
+            miner_win_loss_ratio REAL DEFAULT 0.0,
+            most_recent_weight REAL DEFAULT 0.0
         )
+    """)
+    
+    # Add most_recent_weight column to miner_stats
+    statements.append("""
+        ALTER TABLE miner_stats ADD COLUMN most_recent_weight REAL DEFAULT 0.0;
+    """)
+
+    # Add most_recent_weight column to miner_stats_backup
+    statements.append("""
+        ALTER TABLE miner_stats_backup ADD COLUMN most_recent_weight REAL DEFAULT 0.0;
     """)
     
     # 3. Create backup table
@@ -72,7 +83,8 @@ def initialize_database():
             miner_lifetime_predictions INTEGER,
             miner_lifetime_wins INTEGER,
             miner_lifetime_losses INTEGER,
-            miner_win_loss_ratio REAL
+            miner_win_loss_ratio REAL,
+            most_recent_weight REAL
         )
     """)
     
@@ -102,7 +114,8 @@ def initialize_database():
             CAST(COALESCE(miner_lifetime_predictions, 0) AS INTEGER),
             CAST(COALESCE(miner_lifetime_wins, 0) AS INTEGER),
             CAST(COALESCE(miner_lifetime_losses, 0) AS INTEGER),
-            CAST(COALESCE(miner_win_loss_ratio, 0.0) AS REAL)
+            CAST(COALESCE(miner_win_loss_ratio, 0.0) AS REAL),
+            CAST(COALESCE(most_recent_weight, 0.0) AS REAL)
         FROM miner_stats WHERE EXISTS (SELECT 1 FROM miner_stats)
     """)
     
@@ -132,7 +145,8 @@ def initialize_database():
             CAST(COALESCE(miner_lifetime_predictions, 0) AS INTEGER) as miner_lifetime_predictions,
             CAST(COALESCE(miner_lifetime_wins, 0) AS INTEGER) as miner_lifetime_wins,
             CAST(COALESCE(miner_lifetime_losses, 0) AS INTEGER) as miner_lifetime_losses,
-            CAST(COALESCE(miner_win_loss_ratio, 0.0) AS REAL) as miner_win_loss_ratio
+            CAST(COALESCE(miner_win_loss_ratio, 0.0) AS REAL) as miner_win_loss_ratio,
+            CAST(COALESCE(most_recent_weight, 0.0) AS REAL) as most_recent_weight
         FROM miner_stats_backup 
         WHERE EXISTS (SELECT 1 FROM miner_stats_backup)
     """)

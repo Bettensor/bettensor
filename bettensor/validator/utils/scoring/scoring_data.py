@@ -116,9 +116,6 @@ class ScoringData:
         1. Started within the last 24 hours of the given date
         2. Have a valid outcome
         
-        We only use event_start_date to determine which games to include,
-        regardless of when the outcome was recorded.
-        
         Args:
             date_str (str): The target date in ISO format
             
@@ -143,23 +140,20 @@ class ScoringData:
                 outcome,
                 active
             FROM game_data
-            WHERE 
-                -- Only consider games that started in the 24-hour window
-                event_start_date BETWEEN DATETIME(?, '-24 hours') AND DATETIME(?)
-                -- Game has a valid outcome
-                AND outcome IS NOT NULL 
-                AND outcome != 'Unfinished'
-                AND outcome != 3
+            WHERE event_start_date BETWEEN DATETIME(?, '-24 hours') AND DATETIME(?)
+            AND outcome IS NOT NULL 
+            AND outcome != 'Unfinished'
+            AND outcome != 3
         """
         
         games = await self.db_manager.fetch_all(query, (date_str, date_str))
         
-        bt.logging.debug(f"Found {len(games)} closed games for date {date_str}")
+        bt.logging.debug(f"Found {len(games) if games else 0} closed games for date {date_str}")
         if games:
             bt.logging.debug(f"Sample game: {games[0]}")
             bt.logging.debug(f"Event start time: {games[0]['event_start_date']}")
         
-        return games
+        return games or []  # Return empty list if no games found
 
     async def _fetch_predictions(self, game_ids):
         query = """
@@ -220,37 +214,63 @@ class ScoringData:
     async def init_miner_stats(self):
         bt.logging.trace("Initializing Miner Stats")
         try:
-            count = await self.db_manager.fetch_one("SELECT COUNT(*) FROM miner_stats")
-            bt.logging.trace(f"Miner stats count: {count}")
+            # First, get existing records to preserve data
+            existing_records = await self.db_manager.fetch_all(
+                "SELECT miner_uid, miner_hotkey FROM miner_stats", 
+                ()
+            )
+            existing_uids = {record['miner_uid'] for record in existing_records}
             
-            if count == 0:
-                bt.logging.info("Initializing miner_stats table with zero values.")
-                
-                insert_query = """
-                INSERT INTO miner_stats (
-                    miner_hotkey, miner_coldkey, miner_uid, miner_rank, miner_status,
-                    miner_cash, miner_current_incentive, miner_current_tier,
-                    miner_current_scoring_window, miner_current_composite_score,
-                    miner_current_sharpe_ratio, miner_current_sortino_ratio,
-                    miner_current_roi, miner_current_clv_avg, miner_last_prediction_date,
-                    miner_lifetime_earnings, miner_lifetime_wager_amount,
-                    miner_lifetime_roi, miner_lifetime_predictions,
-                    miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """
-                
-                initial_values = [
-                    (f"hotkey_{i}", f"coldkey_{i}", i, 0, "active",
-                    0.0, 0.0, 0, 0, 0.0,
-                    0.0, 0.0, 0.0, 0.0, None,
-                    0.0, 0.0, 0.0, 0, 0, 0, 0.0)
-                    for i in range(self.num_miners)
-                ]
-                
-                await self.db_manager.executemany(insert_query, initial_values)
-                bt.logging.info(f"Successfully initialized {self.num_miners} miners in miner_stats table.")
-            else:
-                bt.logging.info("miner_stats table is not empty. Skipping initialization.")
+            # Get all hotkeys and coldkeys from metagraph
+            hotkeys = self.validator.metagraph.hotkeys
+            coldkeys = self.validator.metagraph.coldkeys
+            active_status = self.validator.metagraph.active
+
+            # First, ensure all miners have a basic entry (not just active ones)
+            insert_base_query = """
+            INSERT OR IGNORE INTO miner_stats (
+                miner_uid, miner_hotkey, miner_coldkey, miner_status,
+                miner_rank, miner_cash, miner_current_incentive, miner_current_tier,
+                miner_current_scoring_window, miner_current_composite_score,
+                miner_current_sharpe_ratio, miner_current_sortino_ratio,
+                miner_current_roi, miner_current_clv_avg, miner_lifetime_earnings,
+                miner_lifetime_wager_amount, miner_lifetime_roi, miner_lifetime_predictions,
+                miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio
+            ) VALUES (?, ?, ?, ?, 0, 0.0, 0.0, 1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0.0)
+            """
+            
+            base_values = [
+                (uid, hotkeys[uid], coldkeys[uid], 'active' if active_status[uid] else 'inactive')
+                for uid in range(min(len(hotkeys), self.num_miners))
+            ]
+            
+            if base_values:
+                await self.db_manager.executemany(insert_base_query, base_values)
+
+            # Clean up any miners beyond num_miners
+            cleanup_query = """
+            DELETE FROM miner_stats 
+            WHERE miner_uid >= ?
+            """
+            await self.db_manager.execute_query(cleanup_query, (self.num_miners,))
+
+            # First delete scores for miners beyond num_miners
+            scores_cleanup_query = """
+            DELETE FROM scores 
+            WHERE miner_uid >= ?
+            """
+            await self.db_manager.execute_query(scores_cleanup_query, (self.num_miners,))
+
+            # Get count using COUNT(*) and proper column name
+            count_result = await self.db_manager.fetch_one(
+                "SELECT COUNT(*) as count FROM miner_stats"
+            )
+            count = count_result['count'] if count_result else 0
+            
+            bt.logging.info(f"Miner stats count after initialization: {count}")
+            
+            if count != self.num_miners:
+                bt.logging.warning(f"Expected {self.num_miners} miners, but found {count}")
         
         except Exception as e:
             bt.logging.error(f"Error initializing miner_stats: {str(e)}")
