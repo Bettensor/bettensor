@@ -16,6 +16,7 @@ from azure.storage.blob import BlobServiceClient
 from azure.core.exceptions import AzureError
 from dotenv import load_dotenv
 import stat  # Make sure to import stat module
+import asyncio
 
 class StateSync:
     def __init__(self, 
@@ -300,14 +301,32 @@ class StateSync:
             
             bt.logging.info("Starting state pull process...")
             
-            # Debug: Check state before sync
-            bt.logging.debug("Checking score_state before sync:")
+            # Debug: Check score_state before sync
             state_before = await db_manager.fetch_all(
                 "SELECT state_id, current_day FROM score_state ORDER BY state_id DESC LIMIT 1"
             )
             bt.logging.debug(f"State before sync: {state_before}")
             
-            # Pause database operations
+            # Wait for any pending writes to complete using WAL checkpoint
+            bt.logging.info("Waiting for pending database operations to complete...")
+            try:
+                await db_manager.execute_query("PRAGMA wal_checkpoint(FULL)")
+                # Additional check to ensure no active transactions
+                active_queries = await db_manager.fetch_all("""
+                    SELECT * FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'
+                    AND EXISTS (SELECT 1 FROM sqlite_master WHERE type='temp_table')
+                """)
+                while active_queries:
+                    bt.logging.debug("Active transactions detected, waiting...")
+                    await asyncio.sleep(1)
+                    active_queries = await db_manager.fetch_all("""
+                        SELECT * FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'
+                        AND EXISTS (SELECT 1 FROM sqlite_master WHERE type='temp_table')
+                    """)
+            except Exception as e:
+                bt.logging.warning(f"Error checking WAL checkpoint: {e}")
+            
+            # Now pause database operations
             await db_manager.pause_operations()
             
             success = False

@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 from sqlite3 import OperationalError
 import sqlite3
+import time
 import aiosqlite
 import bittensor as bt
 import os
@@ -295,13 +296,18 @@ class DatabaseManager:
             self._operations_paused = False
 
     async def pause_operations(self):
-        """Pause database operations"""
-        async with self._lock:
-            self._operations_paused = True
-            bt.logging.info("Database operations paused")
-            
-            # Wait for any in-progress operations to complete
+        """Pause database operations after ensuring all pending operations are complete."""
+        max_wait = 120  # Maximum seconds to wait for operations to complete
+        start_time = time.time()
+        
+        while await self.has_pending_operations():
+            if time.time() - start_time > max_wait:
+                bt.logging.warning("Timeout waiting for database operations to complete")
+                break
             await asyncio.sleep(1)
+        
+        self._operations_paused = True
+        bt.logging.info("Database operations paused")
     
     async def resume_operations(self):
         """Resume database operations"""
@@ -320,6 +326,28 @@ class DatabaseManager:
             self.conn = None
             self._transaction_in_progress = False
             return await self.ensure_connection()
+
+    async def has_pending_operations(self) -> bool:
+        """Check if there are any pending database operations."""
+        try:
+            # Check WAL file size
+            wal_path = Path(self.db_path).with_suffix('.db-wal')
+            if wal_path.exists() and wal_path.stat().st_size > 0:
+                return True
+            
+            # Check for active transactions
+            result = await self.fetch_all("""
+                SELECT COUNT(*) FROM sqlite_master 
+                WHERE type='table' 
+                AND name='sqlite_stat1'
+                AND EXISTS (
+                    SELECT 1 FROM sqlite_master WHERE type='temp_table'
+                )
+            """)
+            return result[0][0] > 0
+        except Exception as e:
+            bt.logging.error(f"Error checking pending operations: {e}")
+            return True  # Assume there are pending operations if we can't check
 
 # Usage example
 async def main():

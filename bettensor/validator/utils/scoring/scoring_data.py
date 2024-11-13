@@ -111,7 +111,20 @@ class ScoringData:
         return structured_predictions, closing_line_odds, results
 
     async def _fetch_closed_game_data(self, date_str):
-        """Fetch all closed games for the given date."""
+        """
+        Fetch games that:
+        1. Started within the last 24 hours of the given date
+        2. Have a valid outcome
+        
+        We only use event_start_date to determine which games to include,
+        regardless of when the outcome was recorded.
+        
+        Args:
+            date_str (str): The target date in ISO format
+            
+        Returns:
+            List[Dict]: List of closed games matching the criteria
+        """
         query = """
             SELECT 
                 game_id,
@@ -130,9 +143,23 @@ class ScoringData:
                 outcome,
                 active
             FROM game_data
-            WHERE DATE(event_start_date) = DATE(?) AND outcome != 3
+            WHERE 
+                -- Only consider games that started in the 24-hour window
+                event_start_date BETWEEN DATETIME(?, '-24 hours') AND DATETIME(?)
+                -- Game has a valid outcome
+                AND outcome IS NOT NULL 
+                AND outcome != 'Unfinished'
+                AND outcome != 3
         """
-        return await self.db_manager.fetch_all(query, (date_str,))
+        
+        games = await self.db_manager.fetch_all(query, (date_str, date_str))
+        
+        bt.logging.debug(f"Found {len(games)} closed games for date {date_str}")
+        if games:
+            bt.logging.debug(f"Sample game: {games[0]}")
+            bt.logging.debug(f"Event start time: {games[0]['event_start_date']}")
+        
+        return games
 
     async def _fetch_predictions(self, game_ids):
         query = """

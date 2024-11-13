@@ -1652,112 +1652,72 @@ class ScoringSystem:
     async def rebuild_historical_scores(self):
         """Rebuilds historical scores for the past 45 days using existing prediction and game data."""
         try:
+            bt.logging.info("Starting complete historical score rebuild...")
+            
             original_day = self.current_day
             original_date = self.current_date
             
             end_date = self.current_date
             start_date = end_date - timedelta(days=self.max_days)
             
-            # First, rebuild the entropy system state
-            bt.logging.info("Rebuilding entropy system state...")
-            games_query = """
-                SELECT 
-                    external_id, team_a_odds, team_b_odds, tie_odds,
-                    event_start_date, outcome
-                FROM game_data 
-                WHERE event_start_date >= ?
-                ORDER BY event_start_date ASC
-            """
-            games = await self.db_manager.fetch_all(games_query, (start_date.isoformat(),))
-            bt.logging.info(f"Found {len(games)} games to process for entropy")
-
-            # Reset entropy system state
+            bt.logging.info(f"Rebuilding scores from {start_date} to {end_date}")
+            
+            # Reset scoring arrays
+            self.roi_scores = np.zeros((self.num_miners, self.max_days))
+            self.clv_scores = np.zeros((self.num_miners, self.max_days))
+            self.sortino_scores = np.zeros((self.num_miners, self.max_days))
+            self.entropy_scores = np.zeros((self.num_miners, self.max_days))
+            self.composite_scores = np.zeros((self.num_miners, self.max_days, self.num_tiers))
+            self.tiers = np.ones((self.num_miners, self.max_days), dtype=int)
+            
+            # Reset entropy system
             self.entropy_system.reset_state()
             
-            # Add games to entropy system
-            for game in games:
-                try:
-                    odds = [
-                        float(game['team_a_odds']), 
-                        float(game['team_b_odds']), 
-                        float(game['tie_odds']) if game['tie_odds'] else 0.0
-                    ]
-                    await self.entropy_system.add_new_game(
-                        game_id=game['external_id'],
-                        num_outcomes=3 if game['tie_odds'] else 2,
-                        odds=odds
-                    )
-                    
-                    if game['outcome'] not in ['Unfinished', None]:
-                        self.entropy_system.close_game(game['external_id'])
-                        
-                except Exception as e:
-                    bt.logging.error(f"Error adding game {game['external_id']} to entropy system: {e}")
-                    continue
-            
-            # Now process each day
+            total_games_processed = 0
+            total_predictions_processed = 0
+
+            # Process each historical day
             for days_ago in range(self.max_days - 1, -1, -1):
                 process_date = end_date - timedelta(days=days_ago)
                 historical_day = (original_day - days_ago) % self.max_days
                 
                 bt.logging.info(f"Processing historical scores for {process_date.date()} (day_index: {historical_day})")
                 
-                # Get closed games for that day
+                # Get closed games for that day using 24-hour window
                 games_query = """
-                    SELECT external_id, outcome, team_a_odds, team_b_odds, tie_odds
+                    SELECT *  # Get all fields for complete game data
                     FROM game_data
-                    WHERE event_start_date <= ?
+                    WHERE event_start_date BETWEEN DATETIME(?, '-24 hours') AND DATETIME(?)
                     AND outcome IS NOT NULL
                     AND outcome != 'Unfinished'
+                    AND outcome != 3
                 """
                 closed_games = await self.db_manager.fetch_all(
                     games_query, 
-                    (process_date.isoformat(),)
+                    (process_date.isoformat(), process_date.isoformat())
                 )
+                
+                bt.logging.info(f"Found {len(closed_games)} closed games for {process_date.date()}")
+                total_games_processed += len(closed_games)
                 
                 if closed_games:
                     game_ids = [game["external_id"] for game in closed_games]
-                    game_outcomes = {g["external_id"]: g["outcome"] for g in closed_games}
                     
-                    # Get predictions for these games
+                    # Get ALL predictions for these games
                     preds_query = """
-                        SELECT p.*
+                        SELECT *  # Get all prediction fields
                         FROM predictions p
                         WHERE p.game_id IN ({})
-                        AND p.prediction_date <= ?
                     """.format(','.join('?' * len(game_ids)))
                     
-                    params = game_ids + [process_date.isoformat()]
-                    predictions = await self.db_manager.fetch_all(preds_query, params)
+                    predictions = await self.db_manager.fetch_all(preds_query, game_ids)
+                    
+                    bt.logging.info(f"Found {len(predictions)} predictions to process for {process_date.date()}")
+                    total_predictions_processed += len(predictions)
                     
                     if predictions:
-                        # Add predictions to entropy system
-                        for pred in predictions:
-                            try:
-                                bt.logging.debug(f"Processing prediction: {pred}")
-                                bt.logging.debug(f"Prediction date type: {type(pred['prediction_date'])}, value: {pred['prediction_date']}")
-                                
-                                self.entropy_system.add_prediction(
-                                    prediction_id=pred['prediction_id'],
-                                    miner_uid=pred['miner_uid'],
-                                    game_id=pred['game_id'],
-                                    predicted_outcome=pred['predicted_outcome'],
-                                    wager=float(pred['wager']),
-                                    predicted_odds=float(pred['predicted_odds']),
-                                    prediction_date=pred['prediction_date'],
-                                    historical_rebuild=True
-                                )
-                            except Exception as e:
-                                bt.logging.error(f"Error adding prediction {pred['prediction_id']} to entropy system: {e}")
-                                continue
-                        
                         # Update predictions with payouts
-                        for pred in predictions:
-                            game_outcome = game_outcomes.get(pred["game_id"])
-                            if game_outcome is not None and game_outcome == pred["predicted_outcome"]:
-                                pred["payout"] = pred["wager"] * pred["predicted_odds"]
-                            else:
-                                pred["payout"] = 0.0
+                        predictions = await self.scoring_data._update_predictions_with_payout(predictions, closed_games)
                         
                         # Format arrays for scoring
                         pred_array = np.array([
@@ -1778,67 +1738,67 @@ class ScoringSystem:
                             [g["external_id"], g["outcome"]] 
                             for g in closed_games
                         ])
-                        
+
                         # Calculate scores for this historical day
                         roi_scores = self._calculate_roi_scores(pred_array, results)
                         clv_scores = self._calculate_clv_scores(pred_array, closing_line_odds)
                         sortino_scores = self._calculate_risk_scores(pred_array, results)
                         
-                        # Get entropy scores from the entropy system
+                        # Add predictions to entropy system
+                        for pred in predictions:
+                            try:
+                                self.entropy_system.add_prediction(
+                                    prediction_id=pred['prediction_id'],
+                                    miner_uid=pred['miner_uid'],
+                                    game_id=pred['game_id'],
+                                    predicted_outcome=pred['predicted_outcome'],
+                                    wager=float(pred['wager']),
+                                    predicted_odds=float(pred['predicted_odds']),
+                                    prediction_date=pred['prediction_date']
+                                )
+                            except Exception as e:
+                                bt.logging.error(f"Error adding prediction to entropy system: {e}")
+                                continue
+                        
+                        # Get entropy scores
                         entropy_scores = self.entropy_system.get_current_ebdr_scores(
-                            process_date, 
+                            process_date,
                             historical_day,
                             game_ids
                         )
                         
-                        # Update score arrays for this day
+                        # Update score arrays
                         self.roi_scores[:, historical_day] = roi_scores
                         self.clv_scores[:, historical_day] = clv_scores
                         self.sortino_scores[:, historical_day] = sortino_scores
-                        self.entropy_scores = entropy_scores  # Full array update
+                        self.entropy_scores[:, historical_day] = entropy_scores[:, historical_day]
                         
                         # Calculate composite scores
                         daily_composite = (
-                            self.clv_weight * clv_scores
-                            + self.roi_weight * roi_scores
-                            + self.sortino_weight * sortino_scores
-                            + self.entropy_weight * entropy_scores[:, historical_day]
+                            self.clv_weight * clv_scores +
+                            self.roi_weight * roi_scores +
+                            self.sortino_weight * sortino_scores +
+                            self.entropy_weight * entropy_scores[:, historical_day]
                         )
-                        
                         self.composite_scores[:, historical_day, 0] = daily_composite
                         
-                        # Calculate rolling averages for each tier
-                        for tier in range(1, 6):
-                            window = self.tier_configs[tier + 1]["window"]
-                            start_day = (historical_day - window + 1) % self.max_days
-                            
-                            if start_day <= historical_day:
-                                window_scores = self.composite_scores[:, start_day:historical_day + 1, 0]
-                            else:
-                                window_scores = np.concatenate(
-                                    [
-                                        self.composite_scores[:, start_day:, 0],
-                                        self.composite_scores[:, :historical_day + 1, 0],
-                                    ],
-                                    axis=1,
-                                )
-                            
-                            rolling_avg = np.mean(window_scores, axis=1)
-                            self.composite_scores[:, historical_day, tier] = rolling_avg
+                        # Update tiers
+                        self._update_tiers(historical_day)
                         
-                        # Save scores for this historical day
+                        # Save scores to database
                         await self.save_scores_for_day(historical_day)
-                
-            self.current_day = original_day
-            self.current_date = original_date
-            bt.logging.info("Historical score rebuild completed successfully")
+
+            bt.logging.info(f"Historical rebuild complete:")
+            bt.logging.info(f"Total games processed: {total_games_processed}")
+            bt.logging.info(f"Total predictions processed: {total_predictions_processed}")
+            bt.logging.info(f"Days processed: {self.max_days}")
+            
+            return True
             
         except Exception as e:
-            bt.logging.error(f"Error rebuilding historical scores: {e}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
-            self.current_day = original_day
-            self.current_date = original_date
-            raise
+            bt.logging.error(f"Error in historical rebuild: {e}")
+            bt.logging.error(traceback.format_exc())
+            return False
 
 
     async def retroactively_calculate_entropy_scores(self):
