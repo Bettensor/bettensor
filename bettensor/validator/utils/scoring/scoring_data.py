@@ -214,19 +214,7 @@ class ScoringData:
     async def init_miner_stats(self):
         bt.logging.trace("Initializing Miner Stats")
         try:
-            # First, get existing records to preserve data
-            existing_records = await self.db_manager.fetch_all(
-                "SELECT miner_uid, miner_hotkey FROM miner_stats", 
-                ()
-            )
-            existing_uids = {record['miner_uid'] for record in existing_records}
-            
-            # Get all hotkeys and coldkeys from metagraph
-            hotkeys = self.validator.metagraph.hotkeys
-            coldkeys = self.validator.metagraph.coldkeys
-            active_status = self.validator.metagraph.active
-
-            # First, ensure all miners have a basic entry (not just active ones)
+            # First ensure all miners have a basic entry
             insert_base_query = """
             INSERT OR IGNORE INTO miner_stats (
                 miner_uid, miner_hotkey, miner_coldkey, miner_status,
@@ -235,46 +223,69 @@ class ScoringData:
                 miner_current_sharpe_ratio, miner_current_sortino_ratio,
                 miner_current_roi, miner_current_clv_avg, miner_lifetime_earnings,
                 miner_lifetime_wager_amount, miner_lifetime_roi, miner_lifetime_predictions,
-                miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio
-            ) VALUES (?, ?, ?, ?, 0, 0.0, 0.0, 1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0.0)
+                miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio,
+                miner_last_prediction_date
+            ) VALUES (?, ?, ?, ?, 0, 0.0, 0.0, 1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0.0, NULL)
             """
             
             base_values = [
-                (uid, hotkeys[uid], coldkeys[uid], 'active' if active_status[uid] else 'inactive')
-                for uid in range(min(len(hotkeys), self.num_miners))
+                (uid, self.validator.metagraph.hotkeys[uid], self.validator.metagraph.coldkeys[uid], 
+                 'active' if self.validator.metagraph.active[uid] else 'inactive')
+                for uid in range(min(len(self.validator.metagraph.hotkeys), self.num_miners))
             ]
             
             if base_values:
                 await self.db_manager.executemany(insert_base_query, base_values)
+                
+                # Also insert into backup table
+                backup_query = insert_base_query.replace('miner_stats', 'miner_stats_backup')
+                await self.db_manager.executemany(backup_query, base_values)
 
-            # Clean up any miners beyond num_miners
-            cleanup_query = """
-            DELETE FROM miner_stats 
-            WHERE miner_uid >= ?
-            """
-            await self.db_manager.execute_query(cleanup_query, (self.num_miners,))
-
-            # First delete scores for miners beyond num_miners
-            scores_cleanup_query = """
-            DELETE FROM scores 
-            WHERE miner_uid >= ?
-            """
-            await self.db_manager.execute_query(scores_cleanup_query, (self.num_miners,))
-
-            # Get count using COUNT(*) and proper column name
-            count_result = await self.db_manager.fetch_one(
-                "SELECT COUNT(*) as count FROM miner_stats"
-            )
-            count = count_result['count'] if count_result else 0
+            # Update lifetime statistics
+            await self._update_lifetime_statistics()
             
-            bt.logging.info(f"Miner stats count after initialization: {count}")
+            # Clean up and sync backup table
+            await self.cleanup_miner_stats()
             
-            if count != self.num_miners:
-                bt.logging.warning(f"Expected {self.num_miners} miners, but found {count}")
-        
         except Exception as e:
-            bt.logging.error(f"Error initializing miner_stats: {str(e)}")
+            bt.logging.error(f"Error initializing miner stats: {e}")
+            bt.logging.error(traceback.format_exc())
             raise
+
+    async def _update_lifetime_statistics(self):
+        """Update lifetime statistics for miners with proper prediction history tracking."""
+        update_lifetime_query = """
+        WITH prediction_stats AS (
+            SELECT 
+                miner_uid,
+                COUNT(*) as total_predictions,
+                SUM(CASE WHEN payout > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN payout = 0 THEN 1 ELSE 0 END) as losses,
+                SUM(payout) as total_earnings,
+                SUM(wager) as total_wager,
+                MAX(prediction_date) as last_prediction
+            FROM predictions
+            GROUP BY miner_uid
+        )
+        UPDATE miner_stats
+        SET
+            miner_lifetime_predictions = COALESCE(ps.total_predictions, 0),
+            miner_lifetime_wins = COALESCE(ps.wins, 0),
+            miner_lifetime_losses = COALESCE(ps.losses, 0),
+            miner_lifetime_earnings = COALESCE(ps.total_earnings, 0),
+            miner_lifetime_wager_amount = COALESCE(ps.total_wager, 0),
+            miner_win_loss_ratio = CASE 
+                WHEN COALESCE(ps.losses, 0) > 0 
+                THEN CAST(COALESCE(ps.wins, 0) AS REAL) / COALESCE(ps.losses, 0)
+                ELSE COALESCE(ps.wins, 0)
+            END,
+            miner_last_prediction_date = ps.last_prediction
+        FROM prediction_stats ps
+        WHERE miner_stats.miner_uid = ps.miner_uid;
+        """
+        
+        await self.db_manager.execute_query(update_lifetime_query)
+        bt.logging.debug("Updated lifetime statistics for miners.")
 
     async def update_miner_stats(self, current_day):
         try:
@@ -422,74 +433,6 @@ class ScoringData:
         non_zero_scores = sum(1 for record in update_records if any(record[:5]))
         bt.logging.info(f"Number of miners with non-zero scores: {non_zero_scores}")
 
-    async def _update_lifetime_statistics(self):
-        """
-        Update lifetime statistics for miners.
-        """
-        update_lifetime_query = """
-            UPDATE miner_stats
-            SET
-                miner_lifetime_earnings = (
-                    SELECT COALESCE(SUM(payout), 0)
-                    FROM predictions p
-                    WHERE p.miner_uid = miner_stats.miner_uid
-                ),
-                miner_lifetime_wager_amount = (
-                    SELECT COALESCE(SUM(wager), 0)
-                    FROM predictions p
-                    WHERE p.miner_uid = miner_stats.miner_uid
-                ),
-                miner_lifetime_predictions = (
-                    SELECT COUNT(*)
-                    FROM predictions p
-                    WHERE p.miner_uid = miner_stats.miner_uid
-                ),
-                miner_lifetime_wins = (
-                    SELECT COUNT(*)
-                    FROM predictions p
-                    WHERE p.miner_uid = miner_stats.miner_uid
-                    AND p.payout > 0
-                ),
-                miner_lifetime_losses = (
-                    SELECT COUNT(*)
-                    FROM predictions p
-                    WHERE p.miner_uid = miner_stats.miner_uid
-                    AND p.payout = 0
-                ),
-                miner_win_loss_ratio = CASE 
-                    WHEN miner_lifetime_losses > 0 
-                    THEN CAST(miner_lifetime_wins AS REAL) / miner_lifetime_losses 
-                    ELSE miner_lifetime_wins 
-                END,
-                miner_lifetime_roi = CASE
-                    WHEN (miner_lifetime_wager_amount - 
-                          (SELECT COALESCE(SUM(p.wager), 0) 
-                           FROM predictions p 
-                           WHERE p.miner_uid = miner_stats.miner_uid 
-                             AND p.outcome = 3)) > 0
-                    THEN (miner_lifetime_earnings - 
-                          (miner_lifetime_wager_amount - 
-                           (SELECT COALESCE(SUM(p.wager), 0) 
-                            FROM predictions p 
-                            WHERE p.miner_uid = miner_stats.miner_uid 
-                              AND p.outcome = 3))
-                         ) / 
-                         (miner_lifetime_wager_amount - 
-                          (SELECT COALESCE(SUM(p.wager), 0) 
-                           FROM predictions p 
-                           WHERE p.miner_uid = miner_stats.miner_uid 
-                             AND p.outcome = 3))
-                    ELSE 0
-                END,
-                miner_last_prediction_date = (
-                    SELECT MAX(p.prediction_date)
-                    FROM predictions p
-                    WHERE p.miner_uid = miner_stats.miner_uid
-                )
-        """
-        await self.db_manager.execute_query(update_lifetime_query)
-        bt.logging.debug("Updated lifetime statistics for miners.")
-
     async def _update_additional_fields(self):
         """
         Update additional miner fields such as rank, status, and cash.
@@ -588,6 +531,61 @@ class ScoringData:
     def get_miner_current_incentive(self, miner_uid: int) -> float:
         incentive = self.validator.metagraph.incentive[miner_uid]
         return float(incentive)
+
+    async def cleanup_miner_stats(self):
+        """Clean up and synchronize miner_stats and miner_stats_backup tables"""
+        try:
+            bt.logging.info("Starting miner stats cleanup...")
+            
+            # First, remove any invalid entries (UID >= 256 or duplicates)
+            cleanup_query = """
+            DELETE FROM miner_stats 
+            WHERE miner_uid >= 256 
+            OR miner_uid IN (
+                SELECT miner_uid 
+                FROM miner_stats 
+                GROUP BY miner_uid 
+                HAVING COUNT(*) > 1
+            );
+            """
+            await self.db_manager.execute_query(cleanup_query)
+            
+            # Same cleanup for backup table
+            cleanup_backup_query = """
+            DELETE FROM miner_stats_backup 
+            WHERE miner_uid >= 256 
+            OR miner_uid IN (
+                SELECT miner_uid 
+                FROM miner_stats_backup 
+                GROUP BY miner_uid 
+                HAVING COUNT(*) > 1
+            );
+            """
+            await self.db_manager.execute_query(cleanup_backup_query)
+            
+            # Sync backup table with main table
+            sync_query = """
+            INSERT OR REPLACE INTO miner_stats_backup
+            SELECT * FROM miner_stats;
+            """
+            await self.db_manager.execute_query(sync_query)
+            
+            # Verify sync
+            verify_query = """
+            SELECT 
+                COUNT(*) as total_rows,
+                COUNT(CASE WHEN miner_uid < 256 THEN 1 END) as valid_miners,
+                COUNT(CASE WHEN miner_uid < 256 AND miner_last_prediction_date IS NOT NULL THEN 1 END) as miners_with_dates,
+                COUNT(CASE WHEN miner_uid < 256 AND miner_lifetime_predictions > 0 THEN 1 END) as miners_with_predictions
+            FROM miner_stats_backup;
+            """
+            backup_stats = await self.db_manager.fetch_one(verify_query)
+            bt.logging.info(f"Backup table stats after sync: {backup_stats}")
+            
+        except Exception as e:
+            bt.logging.error(f"Error during miner stats cleanup: {e}")
+            bt.logging.error(traceback.format_exc())
+            raise
 
 
 

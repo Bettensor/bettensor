@@ -1618,58 +1618,89 @@ class ScoringSystem:
         """
         day_index = self.current_day if historical_day is None else historical_day
         
+        # Get miners with predictions from miner_stats with debug info
+        query = """
+        SELECT 
+            COUNT(*) as total_miners,
+            SUM(CASE WHEN miner_last_prediction_date IS NOT NULL THEN 1 ELSE 0 END) as miners_with_dates,
+            SUM(CASE WHEN miner_lifetime_predictions > 0 THEN 1 ELSE 0 END) as miners_with_predictions
+        FROM miner_stats
+        """
+        stats = await self.db_manager.fetch_one(query)
+        bt.logging.info(f"Database stats: {stats}")
+
+        # Original query but with lifetime predictions check
+        query = """
+        SELECT miner_uid FROM miner_stats 
+        WHERE miner_last_prediction_date IS NOT NULL
+        OR miner_lifetime_predictions > 0
+        """
+        active_miners = await self.db_manager.fetch_all(query)
+        bt.logging.info(f"Active miners: {len(active_miners)}")
+        has_prediction_history = np.zeros(self.num_miners, dtype=bool)
+        for miner in active_miners:
+            has_prediction_history[miner['miner_uid']] = True
+
+        bt.logging.info(f"Total miners: {self.num_miners}")
+        bt.logging.info(f"Miners with prediction history: {np.sum(has_prediction_history)}")
+
+        # Get component scores for the day
         clv = self.clv_scores[:, day_index]
         roi = self.roi_scores[:, day_index]
         entropy = self.entropy_scores[:, day_index]
         sortino = self.sortino_scores[:, day_index]
 
-        # Create prediction history mask (looking back 45 days)
-        start_day = (day_index - 45) % self.max_days
-        if start_day <= day_index:
-            history_window = slice(start_day, day_index + 1)
-        else:
-            # Handle wraparound case
-            history_window = np.r_[start_day:self.max_days, 0:day_index + 1]
-        
-        # Check if any component scores are non-zero in history window
-        has_prediction_history = np.zeros(self.num_miners, dtype=bool)
-        for idx in (history_window if isinstance(history_window, np.ndarray) else range(history_window.start, history_window.stop)):
-            has_prediction_history |= (
-                (self.clv_scores[:, idx] != 0) |
-                (self.roi_scores[:, idx] != 0) |
-                (self.sortino_scores[:, idx] != 0) |
-                (self.entropy_scores[:, idx] != 0)
-            )
+        # Log non-zero scores before normalization
+        bt.logging.info(f"Miners with non-zero CLV scores: {np.sum(clv != 0)}")
+        bt.logging.info(f"Miners with non-zero ROI scores: {np.sum(roi != 0)}")
+        bt.logging.info(f"Miners with non-zero entropy scores: {np.sum(entropy != 0)}")
+        bt.logging.info(f"Miners with non-zero sortino scores: {np.sum(sortino != 0)}")
 
-        # Calculate daily composite scores
-        daily_composite_scores = (
-            self.clv_weight * clv
-            + self.roi_weight * roi
-            + self.sortino_weight * sortino
-            + self.entropy_weight * entropy
+        def normalize_with_negatives(scores, has_history):
+            # Create output array starting with original scores
+            normalized = scores.copy()
+            
+            # Get scores for miners with history
+            active_scores = scores[has_history]
+            if len(active_scores) == 0:
+                return normalized
+            
+            # Get min/max from active scores
+            min_score = active_scores.min()
+            max_score = active_scores.max()
+            score_range = max_score - min_score
+            
+            if score_range > 0:
+                # Normalize all non-zero scores, not just those with history
+                non_zero_mask = scores != 0
+                normalized[non_zero_mask] = (scores[non_zero_mask] - min_score) / score_range
+            
+            bt.logging.debug(f"Normalization - min: {min_score}, max: {max_score}, range: {score_range}")
+            bt.logging.debug(f"Non-zero normalized scores: {np.sum(normalized != 0)}")
+            
+            return normalized
+
+        # Normalize components
+        norm_clv = normalize_with_negatives(clv, has_prediction_history)
+        norm_roi = normalize_with_negatives(roi, has_prediction_history)
+        norm_entropy = normalize_with_negatives(entropy, has_prediction_history)
+        norm_sortino = normalize_with_negatives(sortino, has_prediction_history)
+
+        # Calculate composite score
+        composite = (
+            self.clv_weight * norm_clv
+            + self.roi_weight * norm_roi
+            + self.sortino_weight * norm_sortino
+            + self.entropy_weight * norm_entropy
         )
 
-        # Mask out scores for miners with no prediction history
-        daily_composite_scores[~has_prediction_history] = 0
-
-        # Normalize daily composite scores to 0-10 range
-        # Only consider non-zero scores from miners with history
-        active_mask = (daily_composite_scores != 0) & has_prediction_history
-        if np.any(active_mask):
-            min_score = np.min(daily_composite_scores[active_mask])
-            max_score = np.max(daily_composite_scores[active_mask])
-            
-            if max_score > min_score:
-                # Normalize non-zero scores to 0-10 range
-                normalized_scores = np.zeros_like(daily_composite_scores)
-                normalized_scores[active_mask] = 10 * (daily_composite_scores[active_mask] - min_score) / (max_score - min_score)
-                daily_composite_scores = normalized_scores
-            else:
-                # If all non-zero scores are equal, set them to 5
-                daily_composite_scores[active_mask] = 5
-
-        # Update the daily composite scores (index 0 of the 3rd dimension)
-        self.composite_scores[:, day_index, 0] = daily_composite_scores
+        # Only zero out scores for miners with no history
+        composite[~has_prediction_history] = 0
+        
+        bt.logging.info(f"Miners with non-zero composite scores: {np.sum(composite != 0)}")
+        
+        # Store the base composite score
+        self.composite_scores[:, day_index, 0] = composite
 
         # Calculate rolling averages for each tier based on normalized composite scores
         for tier in range(1, 6):  # Tiers 1 to 5
@@ -2034,3 +2065,29 @@ class ScoringSystem:
         except Exception as e:
             bt.logging.error(f"Error saving scores for day {day_id}: {str(e)}")
             raise
+
+    # Diagnostic query to understand miner_stats data
+    async def debug_miner_stats(self):
+        # Diagnostic query to understand miner_stats data
+        debug_query = """
+        SELECT 
+            COUNT(*) as total_rows,
+            COUNT(CASE WHEN miner_uid < 256 THEN 1 END) as valid_miners,
+            COUNT(CASE WHEN miner_uid < 256 AND miner_last_prediction_date IS NOT NULL THEN 1 END) as miners_with_dates,
+            COUNT(CASE WHEN miner_uid < 256 AND miner_lifetime_predictions > 0 THEN 1 END) as miners_with_predictions,
+            COUNT(CASE WHEN miner_uid >= 256 THEN 1 END) as invalid_miners
+        FROM miner_stats;
+        """
+        debug_stats = await self.db_manager.fetch_one(debug_query)
+        bt.logging.info(f"Detailed stats: {debug_stats}")
+
+        # Also let's see some sample data
+        sample_query = """
+        SELECT miner_uid, miner_last_prediction_date, miner_lifetime_predictions
+        FROM miner_stats
+        WHERE miner_uid < 256
+        ORDER BY miner_last_prediction_date DESC
+        LIMIT 5;
+        """
+        sample_data = await self.db_manager.fetch_all(sample_query)
+        bt.logging.info(f"Sample miner data: {sample_data}")
