@@ -98,6 +98,7 @@ class SportsData:
             bt.logging.info(f"Inserting {len(valid_games)} valid games")
             for game in valid_games:
                 try:
+                    bt.logging.debug(f"Processing game: {game}")
                     # Extract only the fields we need
                     external_id = str(game.get("externalId"))
                     if not external_id:
@@ -130,8 +131,8 @@ class SportsData:
                         outcome = 3
                     elif isinstance(outcome, str):
                         outcome = (
-                            0 if outcome == "TeamA" else
-                            1 if outcome == "TeamB" else
+                            0 if outcome == "TeamAWin" else
+                            1 if outcome == "TeamBWin" else
                             2 if outcome == "Draw" else
                             3  # Default to Unfinished for unknown strings
                         )
@@ -206,7 +207,7 @@ class SportsData:
             try:
                 # Skip if game is not a dictionary
                 if not isinstance(game, dict):
-                    bt.logging.debug(f"Skipping non-dict game entry: {type(game)}")
+                    bt.logging.debug(f"Skipping non-dict game entry: {game}")
                     continue
                     
                 # Check if required fields exist

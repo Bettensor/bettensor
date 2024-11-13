@@ -54,6 +54,7 @@ class MinerDataMixin:
                             predicted_outcome = 1
                         else:
                             predicted_outcome = 2
+                        res.outcome = 3
 
                         # Add to valid predictions for batch insert
                         valid_predictions.append((

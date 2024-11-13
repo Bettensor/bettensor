@@ -1269,7 +1269,7 @@ class ScoringSystem:
                     
                     if (result['days_with_scores'] < total_days or 
                         result['total_entries'] < expected_entries or
-                        result['valid_entries'] < expected_entries * 0.5):  # At least 70% should be valid
+                        result['valid_entries'] < expected_entries * 0.6):  # At least 60% should be valid
                         bt.logging.warning("Incomplete or invalid scores detected, initiating rebuild...")
                         await self.rebuild_historical_scores()
                         bt.logging.info("Historical scores rebuilt successfully")
