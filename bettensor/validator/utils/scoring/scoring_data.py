@@ -316,7 +316,7 @@ class ScoringData:
                     
                     # Reset both UIDs
                     for uid in [old_uid, miner_uid]:
-                        self.scoring_system.reset_miner(uid)
+                         await self.scoring_system.reset_miner(uid)
 
                 # Update or insert the record for current UID
                 await self.db_manager.execute_query(
