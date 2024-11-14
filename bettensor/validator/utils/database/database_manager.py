@@ -360,6 +360,29 @@ class DatabaseManager:
             bt.logging.error(f"Error checking pending operations: {e}")
             return True  # Assume there are pending operations if we can't check
 
+    async def wait_for_locks_to_clear(self, timeout=30):
+        """Wait for any database locks to clear with timeout"""
+        try:
+            async with async_timeout.timeout(timeout):
+                while True:
+                    # Check for locks using sqlite_master
+                    result = await self.fetch_one("""
+                        SELECT COUNT(*) as lock_count 
+                        FROM sqlite_master 
+                        WHERE tbl_name IN (
+                            SELECT name FROM sqlite_master WHERE type='table'
+                        )
+                        AND sql LIKE '%TEMP%'
+                    """)
+                    
+                    if result and result['lock_count'] == 0:
+                        return True
+                        
+                    await asyncio.sleep(1)
+                    
+        except asyncio.TimeoutError:
+            return False
+
 # Usage example
 async def main():
     db_path = "path/to/your/database.db"

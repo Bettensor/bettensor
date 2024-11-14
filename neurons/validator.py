@@ -198,17 +198,18 @@ async def run(validator: BettensorValidator):
     await initialize(validator)
     validator.watchdog = Watchdog(validator=validator, timeout=1200)  # 20 minutes timeout
 
-    # Create and start the game data task instead of thread
-    
-    game_data_task = asyncio.create_task(game_data_update_loop(validator))
+    # Initialize background tasks
+    validator.background_tasks = {
+        'game_data': asyncio.create_task(game_data_update_loop(validator)),
+        'status_log': asyncio.create_task(log_status(validator))  # Using existing method
+    }
 
-    # Create threads for periodic tasks
-    status_log_task = asyncio.create_task(log_status(validator))
-    
-    # Add state sync tasks
-    state_sync_task = asyncio.create_task(push_state_periodic(validator))  # Primary node, pushes state to GitHub
-    state_check_task = asyncio.create_task(check_state_sync(validator))  # Non-primary node, checks if state needs to be pulled from GitHub
-    
+    last_state_push = 0
+    last_state_check = 0
+    STATE_PUSH_INTERVAL = 3600  # 1 hour
+    STATE_CHECK_INTERVAL = 300  # 5 minutes
+    MAX_PUSH_DURATION = 120  # 2 minutes
+
     try:
         # Ensure neuron is initialized
         if not validator.is_initialized:
@@ -217,7 +218,20 @@ async def run(validator: BettensorValidator):
         while True:
             current_time = datetime.now(timezone.utc)
             current_block = validator.subtensor.block
+            current_time_secs = int(time.time())
             bt.logging.info(f"Current block: {current_block}")
+
+            # Check state sync less frequently
+            if (current_time_secs - last_state_check) >= STATE_CHECK_INTERVAL:
+                async with validator.operation_lock:
+                    if validator.state_sync.should_pull_state():
+                        bt.logging.info("State divergence detected, pulling latest state")
+                        if await validator.state_sync.pull_state():
+                            bt.logging.info("Successfully pulled latest state")
+                            continue
+                        else:
+                            bt.logging.error("Failed to pull latest state")
+                last_state_check = current_time_secs
 
             # Create tasks with timeouts
             tasks = []
@@ -294,21 +308,30 @@ async def run(validator: BettensorValidator):
                     bt.logging.error(f"Task {task_coroutine} failed with error: {str(e)}")
                     return None
 
-            # Add tasks with safe execution wrapper
+            # Execute regular tasks first
             if tasks:
                 results = await asyncio.gather(*[
                     execute_task_safely(task_coroutine, timeout_seconds)
                     for task_coroutine, timeout_seconds in tasks
                 ], return_exceptions=True)
-                
-                # Log completion and any errors
-                completed = sum(1 for r in results if r is not None)
-                #bt.logging.info(f"Completed {completed} out of {len(tasks)} tasks")
-                
-                # Log any exceptions
-                for i, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        bt.logging.error(f"Task {i} failed with: {str(result)}")
+
+            # State push with timeout protection
+            if validator.is_primary and (current_time_secs - last_state_push) >= STATE_PUSH_INTERVAL:
+                async with validator.operation_lock:
+                    try:
+                        async with async_timeout.timeout(MAX_PUSH_DURATION):
+                            if await validator.state_sync.push_state():
+                                last_state_push = current_time_secs
+
+                                bt.logging.info("Successfully pushed state")
+                            else:
+                                bt.logging.error("Failed to push state")
+                    except asyncio.TimeoutError:
+                        bt.logging.error(f"State push timed out after {MAX_PUSH_DURATION} seconds")
+                        await validator.db_manager.resume_operations()
+                    except Exception as e:
+                        bt.logging.error(f"Failed to push state: {str(e)}")
+                        await validator.db_manager.resume_operations()
 
             await asyncio.sleep(30)
 
@@ -318,14 +341,11 @@ async def run(validator: BettensorValidator):
     except KeyboardInterrupt:
         bt.logging.info("Keyboard interrupt received. Shutting down gracefully...")
     finally:
-        state_sync_task.cancel()
-        state_check_task.cancel()
-        game_data_task.cancel()
+        # Cancel all background tasks
+        for task in validator.background_tasks.values():
+            task.cancel()
+        await asyncio.gather(*validator.background_tasks.values(), return_exceptions=True)
 
-        await asyncio.gather(state_sync_task, state_check_task, game_data_task,return_exceptions=True)
-        # Wait for thread to finish
-        await status_log_task
-        
 @cancellable_task
 async def run_with_timeout(func, timeout: int, *args, **kwargs) -> Optional[Any]:
     """
@@ -380,7 +400,8 @@ async def initialize(validator):
 
     validator.state_sync = StateSync(
         state_dir="./bettensor/validator/state",
-        db_manager=validator.db_manager
+        db_manager=validator.db_manager,
+        validator=validator
     )
     
     # Pull latest state before starting if configured to do so
@@ -445,35 +466,7 @@ async def log_status_with_watchdog(validator):
                 bt.logging.error(f"Error in status log: {str(e)}")
             await asyncio.sleep(30)
 
-# Add periodic state pushing for primary node
-@cancellable_task
-async def push_state_periodic(validator):
-    """Periodically push state files to Azure blob storage if primary node"""
-    bt.logging.info("\n--------------------------------Pushing state files to Azure blob storage--------------------------------\n")
-    while True:
-        try:
-            if validator.is_primary:
-                bt.logging.debug("Primary node, pushing state files to Azure blob storage")
-                
-                # Ensure database connection
-                if not await validator.db_manager.ensure_connection():
-                    bt.logging.error("Failed to establish database connection for periodic state push")
-                    await asyncio.sleep(300)  # Wait 5 minutes before retry
-                    continue
-                    
-                if await validator.state_sync.push_state():
-                    bt.logging.info("Successfully pushed state files")
-                else:
-                    bt.logging.error("Failed to push state files")
-            else:
-                bt.logging.info("Not primary node, skipping state push")
-                
-            await asyncio.sleep(3600)  # Push every hour
-            
-        except Exception as e:
-            bt.logging.error(f"Error in periodic state push: {str(e)}")
-            bt.logging.error(traceback.format_exc())
-            await asyncio.sleep(300)  # Wait 5 minutes before retry
+
 
 @time_task("update_game_data")
 @cancellable_task
@@ -491,7 +484,7 @@ async def update_game_data(validator, current_time):
                 return
             # Proceed with game data update
             all_games = await validator.sports_data.fetch_and_update_game_data(
-                validator.last_api_call - timedelta(hours=2) #overlap to account for api call delay
+                validator.last_api_call
             )
             
             if all_games:

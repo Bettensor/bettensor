@@ -342,7 +342,7 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                             )
                             self.scores[i] = 0.0
                             await self.scoring_system.reset_miner(i)
-                            self.save_state()
+                            await self.save_state()
                 else:
                     bt.logging.info(
                         f"Init default scores because of state and metagraph hotkey length mismatch. Expected: {len(self.metagraph.hotkeys)} Had: {len(self.hotkeys)}"

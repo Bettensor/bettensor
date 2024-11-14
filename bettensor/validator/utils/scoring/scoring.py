@@ -605,7 +605,7 @@ class ScoringSystem:
             for query, params in queries:
                 for attempt in range(3):  # Try each query up to 3 times
                     try:
-                        await self.db_manager.execute(query, params)
+                        await self.db_manager.execute_query(query, params)
                         break
                     except TimeoutError:
                         if attempt == 2:  # Last attempt

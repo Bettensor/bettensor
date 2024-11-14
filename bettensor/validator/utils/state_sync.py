@@ -17,23 +17,27 @@ from azure.core.exceptions import AzureError
 from dotenv import load_dotenv
 import stat  # Make sure to import stat module
 import asyncio
+import async_timeout
 
 class StateSync:
     def __init__(self, 
                  state_dir: str = "./state",
-                 db_manager = None):
+                 db_manager = None,
+                 validator = None):
         """
         Initialize StateSync with Azure blob storage for both uploads and downloads
         
         Args:
             state_dir: Local directory for state files
             db_manager: Database manager instance
+            validator: Validator instance for task management
         """
         # Load environment variables
         load_dotenv()
         
-        # Store database manager
+        # Store database manager and validator
         self.db_manager = db_manager
+        self.validator = validator
         
         #hardcoded read-only token for easy distribution - will issue tokens via api in the future
         readonly_token = "sp=r&st=2024-11-05T18:31:28Z&se=2039-11-06T02:31:28Z&spr=https&sv=2022-11-02&sr=c&sig=NJPxzJsi3zgVjHtJK5BNNYXUqxG5Hi0WfM4Fg3sgBB4%3D"
@@ -531,65 +535,60 @@ class StateSync:
             bt.logging.error("Azure blob storage not configured")
             return False
 
+        success = False
         try:
-            # Get database manager instance
-            db_manager = self.db_manager  # Use the instance we already have
+            db_manager = self.db_manager
+            validator = self.validator
+            
+            if not validator:
+                bt.logging.error("No validator instance available")
+                return False
             
             bt.logging.info("Preparing database for state push...")
+            
+            # Force WAL checkpoint
+            await db_manager.execute_state_sync_query("PRAGMA wal_checkpoint(FULL);")
+            
+            # Create temporary database copy
+            db_path = self.state_dir / "validator.db"
+            temp_db = db_path.with_suffix('.pushing')
+            
             try:
-                # Pause all ongoing operations while maintaining connection
-                await db_manager.pause_operations()
+                # Use shutil for atomic copy
+                shutil.copy2(db_path, temp_db)
                 
-                try:
-                    # Force a checkpoint to ensure all changes are written to disk
-                    bt.logging.debug("Executing WAL checkpoint...")
-                    await db_manager.execute_state_sync_query("PRAGMA wal_checkpoint(FULL);")
-                    
-                    # Create a temporary copy of the database for pushing
-                    db_path = self.state_dir / "validator.db"
-                    temp_db = db_path.with_suffix('.pushing')
-                    
-                    bt.logging.debug(f"Creating temporary database copy: {temp_db}")
-                    # Use shutil to create an atomic copy
-                    shutil.copy2(db_path, temp_db)
-                    
-                    success = False
-                    try:
-                        # Upload files to Azure
-                        for filename in self.state_files:
-                            filepath = self.state_dir / filename
-                            if not filepath.exists():
-                                continue
+                # Upload files to Azure
+                for filename in self.state_files:
+                    filepath = self.state_dir / filename
+                    if not filepath.exists():
+                        continue
 
-                            # Use the temporary database file instead of the live one
-                            if filename == "validator.db":
-                                filepath = temp_db
+                    # Use temp database for validator.db
+                    if filename == "validator.db":
+                        filepath = temp_db
 
-                            blob_client = self.container.get_blob_client(filename)
-                            with open(filepath, 'rb') as f:
-                                bt.logging.debug(f"Uploading {filename} to Azure blob storage")
-                                blob_client.upload_blob(f, overwrite=True)
+                    blob_client = self.container.get_blob_client(filename)
+                    with open(filepath, 'rb') as f:
+                        bt.logging.debug(f"Uploading {filename} to Azure")
+                        blob_client.upload_blob(f, overwrite=True)
 
-                        success = True
-                        
-                    finally:
-                        # Clean up temp file
-                        if temp_db.exists():
-                            temp_db.unlink()
-                            bt.logging.debug("Temporary database copy removed")
+                success = True
+                
+                # Update metadata and hash files after successful upload
+                if success:
+                    self._update_metadata_file()
+                    self._update_hash_file()
                     
-                    return success
+            finally:
+                # Cleanup temp file
+                if temp_db.exists():
+                    temp_db.unlink()
                     
-                finally:
-                    # Always resume operations
-                    await db_manager.resume_operations()
-                    
-            except Exception as e:
-                bt.logging.error(f"Error in state sync: {str(e)}")
-                bt.logging.error(traceback.format_exc())
+                # Resume operations
                 await db_manager.resume_operations()
-                return False
-                
+            
+            return success
+
         except Exception as e:
             bt.logging.error(f"Error pushing state: {str(e)}")
             bt.logging.error(traceback.format_exc())
