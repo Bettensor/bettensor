@@ -540,7 +540,7 @@ class ScoringSystem:
             tiers (np.ndarray): The array representing current tiers of all miners.
             composite_scores (np.ndarray): The composite scores array for the current day.
         """
-        bt.logging.debug(f"Demoting miner {miner} from tier {current_tier}")
+        bt.logging.debug(f"Demoting miner {miner} from tier {current_tier-1}")
 
         # Determine if the miner is valid
         is_valid_miner = miner in self.valid_uids
@@ -1657,26 +1657,43 @@ class ScoringSystem:
         bt.logging.info(f"Miners with non-zero sortino scores: {np.sum(sortino != 0)}")
 
         def normalize_with_negatives(scores, has_history):
-            # Create output array starting with original scores
+            """
+            Normalize scores while preserving non-zero values and handling negatives.
+            """
             normalized = scores.copy()
+            non_zero_mask = scores != 0
             
-            # Get scores for miners with history
-            active_scores = scores[has_history]
-            if len(active_scores) == 0:
+            if not np.any(non_zero_mask):
                 return normalized
-            
-            # Get min/max from active scores
-            min_score = active_scores.min()
-            max_score = active_scores.max()
+                
+            # Get scores for miners with both history and non-zero values
+            valid_scores = scores[non_zero_mask]  # Changed to use all non-zero scores
+            if len(valid_scores) == 0:
+                return normalized
+                
+            min_score = valid_scores.min()
+            max_score = valid_scores.max()
             score_range = max_score - min_score
             
             if score_range > 0:
-                # Normalize all non-zero scores, not just those with history
-                non_zero_mask = scores != 0
-                normalized[non_zero_mask] = (scores[non_zero_mask] - min_score) / score_range
+                # First shift all non-zero scores to be positive
+                if min_score < 0:
+                    normalized[non_zero_mask] = scores[non_zero_mask] - min_score
+                    max_score = max_score - min_score
+                    
+                # Then normalize to [0,1] range
+                normalized[non_zero_mask] = normalized[non_zero_mask] / max_score
+                
+                # Ensure we don't lose scores due to floating point errors
+                normalized[non_zero_mask] = np.maximum(normalized[non_zero_mask], 1e-10)
             
-            bt.logging.debug(f"Normalization - min: {min_score}, max: {max_score}, range: {score_range}")
-            bt.logging.debug(f"Non-zero normalized scores: {np.sum(normalized != 0)}")
+            bt.logging.debug(f"Normalization stats:")
+            bt.logging.debug(f"  Original non-zero scores: {np.sum(scores != 0)}")
+            bt.logging.debug(f"  Normalized non-zero scores: {np.sum(normalized != 0)}")
+            bt.logging.debug(f"  Min: {min_score:.4f}, Max: {max_score:.4f}, Range: {score_range:.4f}")
+            
+            # Apply history mask after normalization
+            normalized[~has_history] = 0
             
             return normalized
 
@@ -1693,6 +1710,11 @@ class ScoringSystem:
             + self.sortino_weight * norm_sortino
             + self.entropy_weight * norm_entropy
         )
+
+        # After calculating composite scores
+        bt.logging.info(f"Miners with non-zero composite scores before history check: {np.sum(composite != 0)}")
+        composite[~has_prediction_history] = 0
+        bt.logging.info(f"Miners with non-zero composite scores after history check: {np.sum(composite != 0)}")
 
         # Only zero out scores for miners with no history
         composite[~has_prediction_history] = 0
