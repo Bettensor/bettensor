@@ -787,7 +787,7 @@ class ScoringSystem:
         # Add this: Populate amount_wagered after advancing day
         await self.populate_amount_wagered()
 
-        date_str = current_date.isoformat()
+        date_str = current_date.strftime('%Y-%m-%d %H:%M:%S')
 
         bt.logging.info(
             f"Current day: {self.current_day}, reference date: {self.reference_date}"

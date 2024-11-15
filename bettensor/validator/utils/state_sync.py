@@ -411,6 +411,18 @@ class StateSync:
                     )
                     bt.logging.info(f"State after sync: {state_after}")
                     
+                    # Reinitialize the scoring system
+                    if self.validator and self.validator.scoring_system:
+                        bt.logging.info("Reinitializing scoring system with new database state...")
+                        try:
+                            await self.validator.scoring_system.full_reset()
+                            await self.validator.scoring_system.initialize()
+                            bt.logging.info("Scoring system reinitialized successfully")
+                        except Exception as e:
+                            bt.logging.error(f"Error reinitializing scoring system: {e}")
+                            bt.logging.error(traceback.format_exc())
+                            return False
+                    
                     # Update metadata and hashes
                     self._update_metadata_file()
                     self._update_hash_file()

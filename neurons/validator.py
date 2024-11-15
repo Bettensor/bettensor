@@ -159,18 +159,35 @@ async def log_status(validator):
 
 async def game_data_update_loop(validator):
     """Background thread function for updating game data"""
+    # Initialize to trigger deep update on first run
+    last_deep_update = 0
+    DEEP_UPDATE_INTERVAL = 21600  # 6 hours in seconds
+    first_run = True
+    
     while True:
         try:
             current_time = datetime.now(timezone.utc)
-            #bt.logging.debug("Attempting to run game data update...")
+            current_time_secs = int(time.time())
             
             # Try to acquire the lock without blocking
             if validator.operation_lock.locked():
                 bt.logging.debug("Skipping game data update - another operation is running")
                 await asyncio.sleep(30)
                 continue
-                
-            # Use the lock directly in async context
+            
+            # Deep update on startup or every 6 hours
+            if first_run or (current_time_secs - last_deep_update >= DEEP_UPDATE_INTERVAL):
+                bt.logging.info("Performing deep game data update...")
+                deep_update_time = current_time - timedelta(days=2)
+                async with async_timeout.timeout(GAME_DATA_TIMEOUT):
+                    async with validator.operation_lock:
+                        await update_game_data(validator, deep_update_time)
+                last_deep_update = current_time_secs
+                first_run = False
+                bt.logging.info("Deep update completed")
+                await asyncio.sleep(5)  # Brief pause after deep update
+            
+            # Regular update
             async with async_timeout.timeout(GAME_DATA_TIMEOUT):
                 async with validator.operation_lock:
                     await update_game_data(validator, current_time)
@@ -470,37 +487,45 @@ async def log_status_with_watchdog(validator):
 
 @time_task("update_game_data")
 @cancellable_task
-async def update_game_data(validator, current_time):
+async def update_game_data(validator, current_time, deep_query=False):
     """
     Calls SportsData to update game data in the database
+    
+    Args:
+        validator: The validator instance
+        current_time: Current UTC datetime
+        deep_query: If True, queries last 48 hours but doesn't update last_api_call
     """
     bt.logging.info("\n--------------------------------Updating game data--------------------------------\n")
     
     try:
         async with async_timeout.timeout(GAME_DATA_TIMEOUT):
-            # Ensure database connection is valid
             if not await validator.db_manager.ensure_connection():
                 bt.logging.error("Failed to establish database connection")
                 return
-            # Proceed with game data update
-            all_games = await validator.sports_data.fetch_and_update_game_data(
-                validator.last_api_call
-            )
-            
-            if all_games:
-                validator.last_api_call = current_time 
-                await validator.save_state()
                 
+            api_call_time = current_time
+            query_time = current_time - timedelta(days=2) if deep_query else validator.last_api_call
+            
+            bt.logging.info(f"{'Deep query' if deep_query else 'Regular query'} from {query_time} to {current_time}")
+            
+            all_games = await validator.sports_data.fetch_and_update_game_data(query_time)
+            
+            # Only update last_api_call for regular queries
+            if not deep_query:
+                validator.last_api_call = api_call_time
+                await validator.save_state()
+            
+            return all_games
+            
     except asyncio.TimeoutError:
         bt.logging.error("Game data update timed out")
-        
         raise
     except ConnectionError as e:
         bt.logging.error(f"Database connection error: {str(e)}")
         raise
     except Exception as e:
         bt.logging.error(f"Error in game data update: {str(e)}")
-        
         raise
 
 @time_task("sync_metagraph")

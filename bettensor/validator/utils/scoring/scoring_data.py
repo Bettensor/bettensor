@@ -55,6 +55,7 @@ class ScoringData:
         predictions = await self._fetch_predictions(game_ids)
  
         # Step 3: Ensure predictions have their payout calculated and outcome updated
+        bt.logging.debug("Updating predictions with payout")
         predictions = await self._update_predictions_with_payout(predictions, closed_games)
 
        
@@ -111,17 +112,15 @@ class ScoringData:
         return structured_predictions, closing_line_odds, results
 
     async def _fetch_closed_game_data(self, date_str):
-        """
-        Fetch games that:
-        1. Started within the last 24 hours of the given date
-        2. Have a valid outcome
+        # Always use current UTC time as the end of the window
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=24)
         
-        Args:
-            date_str (str): The target date in ISO format
-            
-        Returns:
-            List[Dict]: List of closed games matching the criteria
-        """
+        formatted_end = end_time.strftime('%Y-%m-%d %H:%M:%S')
+        formatted_start = start_time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        bt.logging.debug(f"Using UTC window: {formatted_start} to {formatted_end}")
+        
         query = """
             SELECT 
                 game_id,
@@ -140,20 +139,29 @@ class ScoringData:
                 outcome,
                 active
             FROM game_data
-            WHERE event_start_date BETWEEN DATETIME(?, '-24 hours') AND DATETIME(?)
+            WHERE event_start_date BETWEEN ? AND ?
             AND outcome IS NOT NULL 
             AND outcome != 'Unfinished'
             AND outcome != 3
         """
         
-        games = await self.db_manager.fetch_all(query, (date_str, date_str))
+        # Debug query with actual values
+        debug_query = """
+        SELECT COUNT(*) as count FROM game_data 
+        WHERE event_start_date BETWEEN ? AND ?
+        AND outcome IS NOT NULL
+        """
+        count = await self.db_manager.fetch_one(debug_query, (formatted_start, formatted_end))
+        bt.logging.debug(f"Total games in window (including unfinished): {count['count']}")
         
-        bt.logging.debug(f"Found {len(games) if games else 0} closed games for date {date_str}")
+        games = await self.db_manager.fetch_all(query, (formatted_start, formatted_end))
+        
+        bt.logging.debug(f"Found {len(games) if games else 0} closed games between {formatted_start} and {formatted_end}")
         if games:
             bt.logging.debug(f"Sample game: {games[0]}")
             bt.logging.debug(f"Event start time: {games[0]['event_start_date']}")
         
-        return games or []  # Return empty list if no games found
+        return games or []
 
     async def _fetch_predictions(self, game_ids):
         query = """
@@ -165,33 +173,60 @@ class ScoringData:
         return await self.db_manager.fetch_all(query, game_ids)
 
     async def _update_predictions_with_payout(self, predictions, closed_games):
-        
-
+        bt.logging.debug(f"Predictions: {len(predictions)}")
+        bt.logging.debug(f"Closed games: {len(closed_games)}")
         game_outcomes = {game["external_id"]: game["outcome"] for game in closed_games}
+        bt.logging.debug(f"Game outcomes: {game_outcomes}")
+        skipped_with_payout = 0
+        skipped_unfinished = 0
+        processed_predictions = 0
+        
         for pred in predictions:
             game_id = pred["game_id"]
             miner_uid = pred["miner_uid"]
             outcome = game_outcomes.get(game_id)
-            if outcome is not None and pred["payout"] is None:
-                wager = float(pred["wager"])
-                predicted_outcome = pred["predicted_outcome"]
-                if int(predicted_outcome) == int(outcome):
-                    payout = wager * float(pred["predicted_odds"])
-                    bt.logging.debug(f"Correct prediction for miner {miner_uid}: Payout set to {payout}")
-                else:
-                    payout = 0.0
-                    bt.logging.debug(f"Incorrect prediction for miner {miner_uid}: Payout set to 0.0")
-                await self.db_manager.execute_query(
-                    """
-                    UPDATE predictions
-                    SET payout = ?, outcome = ?
-                    WHERE prediction_id = ?
-                    """,
-                    (payout, outcome, pred["prediction_id"]),
-                )
-                pred["payout"] = payout
-                pred["outcome"] = outcome
+            
+            # Track different skip reasons
+            if pred["payout"] is not None:
+                skipped_with_payout += 1
+                continue
+                
+            if outcome in [None, "Unfinished", 3]:
+                skipped_unfinished += 1
+                continue
+            
+            wager = float(pred["wager"])
+            predicted_outcome = pred["predicted_outcome"]
+            
+            # Calculate payout for valid outcomes
+            if int(predicted_outcome) == int(outcome):
+                payout = wager * float(pred["predicted_odds"])
+                bt.logging.debug(f"Correct prediction for miner {miner_uid}: Payout set to {payout}")
+            else:
+                payout = 0.0
+                bt.logging.debug(f"Incorrect prediction for miner {miner_uid}: Payout set to 0.0")
+            
+            # Update prediction record
+            await self.db_manager.execute_query(
+                """
+                UPDATE predictions
+                SET payout = ?, outcome = ?
+                WHERE prediction_id = ?
+                """,
+                (payout, outcome, pred["prediction_id"]),
+            )
+            pred["payout"] = payout
+            pred["outcome"] = outcome
+            processed_predictions += 1
+
+        bt.logging.info(f"Prediction processing summary:")
+        bt.logging.info(f"- Total predictions: {len(predictions)}")
+        bt.logging.info(f"- Processed: {processed_predictions}")
+        bt.logging.info(f"- Skipped (already had payout): {skipped_with_payout}")
+        bt.logging.info(f"- Skipped (unfinished games): {skipped_unfinished}")
+        
         return predictions
+
     async def validate_data_integrity(self):
         """Validate that all predictions reference closed games with valid outcomes."""
         invalid_predictions = await self.db_manager.fetch_all(
