@@ -53,11 +53,7 @@ def initialize_database():
         ALTER TABLE miner_stats ADD COLUMN most_recent_weight REAL DEFAULT 0.0;
     """)
 
-    # Add most_recent_weight column to miner_stats_backup
-    statements.append("""
-        ALTER TABLE miner_stats_backup ADD COLUMN most_recent_weight REAL DEFAULT 0.0;
-    """)
-    
+
     # 3. Create backup table
     statements.append("""
         CREATE TABLE IF NOT EXISTS miner_stats_backup (
@@ -84,8 +80,13 @@ def initialize_database():
             miner_lifetime_wins INTEGER,
             miner_lifetime_losses INTEGER,
             miner_win_loss_ratio REAL,
-            most_recent_weight REAL
+            most_recent_weight REAL DEFAULT 0.0
         )
+    """)
+
+        # Add most_recent_weight column to miner_stats_backup
+    statements.append("""
+        ALTER TABLE miner_stats_backup ADD COLUMN most_recent_weight REAL DEFAULT 0.0;
     """)
     
     # 4. Backup existing data with proper casting
