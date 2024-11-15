@@ -300,9 +300,7 @@ class StateSync:
             return False
 
         try:
-            # Get database manager instance
             db_manager = self.db_manager
-            
             bt.logging.info("Starting state pull process...")
             
             # Debug: Check score_state before sync
@@ -311,65 +309,46 @@ class StateSync:
             )
             bt.logging.debug(f"State before sync: {state_before}")
             
-            # Wait for any pending writes to complete using WAL checkpoint
-            bt.logging.info("Waiting for pending database operations to complete...")
-            try:
-                await db_manager.execute_query("PRAGMA wal_checkpoint(FULL)")
-                # Additional check to ensure no active transactions
-                active_queries = await db_manager.fetch_all("""
-                    SELECT * FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'
-                    AND EXISTS (SELECT 1 FROM sqlite_master WHERE type='temp_table')
-                """)
-                while active_queries:
-                    bt.logging.debug("Active transactions detected, waiting...")
-                    await asyncio.sleep(1)
-                    active_queries = await db_manager.fetch_all("""
-                        SELECT * FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'
-                        AND EXISTS (SELECT 1 FROM sqlite_master WHERE type='temp_table')
-                    """)
-            except Exception as e:
-                bt.logging.warning(f"Error checking WAL checkpoint: {e}")
+            # First wait for any active transactions to complete
+            await db_manager.wait_for_locks_to_clear(timeout=60)
             
-            # Now pause database operations
-            await db_manager.pause_operations()
+            # Create temporary directory for downloads
+            temp_dir = self.state_dir / "temp"
+            temp_dir.mkdir(exist_ok=True)
             
-            success = False
             try:
-                # Create temporary directory for downloads
-                temp_dir = self.state_dir / "temp"
-                temp_dir.mkdir(exist_ok=True)
+                # Download files to temp directory first
+                for filename in self.state_files:
+                    blob_client = self.container.get_blob_client(filename)
+                    temp_file = temp_dir / filename
+                    
+                    bt.logging.debug(f"Downloading {filename} to temporary location")
+                    with open(temp_file, 'wb') as f:
+                        stream = blob_client.download_blob()
+                        for chunk in stream.chunks():
+                            f.write(chunk)
+                    
+                    os.chmod(temp_file, 0o666)
                 
-                try:
-                    # Pull files from Azure to temp directory first
-                    for filename in self.state_files:
-                        blob_client = self.container.get_blob_client(filename)
-                        temp_file = temp_dir / filename
+                # Special handling for database file
+                db_file = self.state_dir / "validator.db"
+                temp_db = temp_dir / "validator.db"
+                
+                if temp_db.exists():
+                    bt.logging.info("Verifying downloaded database integrity...")
+                    try:
+                        # Test the downloaded database
+                        test_conn = sqlite3.connect(temp_db)
+                        test_conn.execute("PRAGMA integrity_check")
+                        test_conn.close()
                         
-                        bt.logging.debug(f"Downloading {filename} to temporary location")
-                        with open(temp_file, 'wb') as f:
-                            stream = blob_client.download_blob()
-                            for chunk in stream.chunks():
-                                f.write(chunk)
-                        
-                        # Set initial permissions
-                        os.chmod(temp_file, 0o666)
-                    
-                    # Special handling for database file
-                    db_file = self.state_dir / "validator.db"
-                    temp_db = temp_dir / "validator.db"
-                    
-                    if temp_db.exists():
-                        bt.logging.info("Verifying downloaded database integrity...")
+                        # Now pause operations and handle the database swap
+                        await db_manager.pause_operations()
                         try:
-                            # Test the downloaded database
-                            test_conn = sqlite3.connect(temp_db)
-                            test_conn.execute("PRAGMA integrity_check")
-                            test_conn.close()
-                            
-                            # Close existing database connection
+                            # Close existing connection
                             await db_manager.close()
                             
-                            # Move the old database to .bak
+                            # Backup and swap files
                             if db_file.exists():
                                 backup_file = db_file.with_suffix('.bak')
                                 db_file.rename(backup_file)
@@ -387,64 +366,41 @@ class StateSync:
                                         shutil.move(src, dst)
                                         os.chmod(dst, 0o666)
                             
-                            success = True
+                            # Reconnect to the new database
+                            await db_manager.reconnect()
                             
-                        except sqlite3.Error as e:
-                            bt.logging.error(f"Database integrity check failed: {e}")
-                            # Restore from backup if available
-                            if db_file.with_suffix('.bak').exists():
-                                shutil.move(db_file.with_suffix('.bak'), db_file)
-                            raise
-                    
-                finally:
-                    # Cleanup temp directory
-                    if temp_dir.exists():
-                        shutil.rmtree(temp_dir)
-                
-                if success:
-                    # Reconnect to the new database
-                    await db_manager.initialize()
-                    
-                    # Verify the new state
-                    state_after = await db_manager.fetch_all(
-                        "SELECT state_id, current_day FROM score_state ORDER BY state_id DESC LIMIT 1"
-                    )
-                    bt.logging.info(f"State after sync: {state_after}")
-                    
-                    # Reinitialize the scoring system
-                    if self.validator and self.validator.scoring_system:
-                        bt.logging.info("Reinitializing scoring system with new database state...")
-                        try:
-                            await self.validator.scoring_system.full_reset()
-                            await self.validator.scoring_system.initialize()
-                            bt.logging.info("Scoring system reinitialized successfully")
+                            # Resume operations before reinitializing
+                            await db_manager.resume_operations()
+                            
+                            # Reinitialize scoring system
+                            if self.validator and self.validator.scoring_system:
+                                bt.logging.info("Reinitializing scoring system with new database state...")
+                                await self.validator.scoring_system.initialize()
+                            
+                            return True
+                            
                         except Exception as e:
-                            bt.logging.error(f"Error reinitializing scoring system: {e}")
-                            bt.logging.error(traceback.format_exc())
-                            return False
+                            bt.logging.error(f"Error during database swap: {e}")
+                            # Restore from backup if available
+                            if backup_file.exists():
+                                shutil.move(backup_file, db_file)
+                            raise
+                        finally:
+                            # Always ensure operations are resumed
+                            await db_manager.resume_operations()
+                            
+                    except sqlite3.Error as e:
+                        bt.logging.error(f"Database integrity check failed: {e}")
+                        raise
                     
-                    # Update metadata and hashes
-                    self._update_metadata_file()
-                    self._update_hash_file()
-                    
-                    bt.logging.info("State pull completed successfully")
-                
-                return success
-                
-            except Exception as e:
-                bt.logging.error(f"Error syncing files: {e}")
-                bt.logging.error(traceback.format_exc())
-                raise
             finally:
-                # Resume database operations
-                await db_manager.resume_operations()
+                # Cleanup temp directory
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir)
                 
         except Exception as e:
             bt.logging.error(f"Error pulling state: {str(e)}")
             bt.logging.error(traceback.format_exc())
-            # Ensure operations are resumed even if there's an error
-            if 'db_manager' in locals():
-                await db_manager.resume_operations()
             return False
 
     def _should_pull_state(self, remote_metadata: dict) -> bool:
