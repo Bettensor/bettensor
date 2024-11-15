@@ -1411,13 +1411,16 @@ class ScoringSystem:
         """
         try:
             # Clear score_state table
-            await self.db_manager.execute("DELETE FROM score_state", None)
+            await self.db_manager.execute_query("DELETE FROM score_state", None)
 
             # Clear scores table
-            await  self.db_manager.execute("DELETE FROM scores", None)
+            await  self.db_manager.execute_query("DELETE FROM scores", None)
+
+            #Clear score state table
+            await self.db_manager.execute_query("DELETE FROM score_state", None)
 
             # Clear miner_stats table
-            await self.db_manager.execute("DELETE FROM miner_stats", None)
+            await self.db_manager.execute_query("DELETE FROM miner_stats", None)
 
             bt.logging.info("Database state cleared successfully.")
         except Exception as e:
