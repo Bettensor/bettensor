@@ -35,7 +35,7 @@ import signal
 
 # Constants for timeouts (in seconds)
 UPDATE_TIMEOUT = 300  # 5 minutes
-GAME_DATA_TIMEOUT = 600  # 10 minutes (for deep updates)
+GAME_DATA_TIMEOUT = 1200  # 20 minutes (for deep updates)
 METAGRAPH_TIMEOUT = 120  # 2 minutes
 QUERY_TIMEOUT = 600  # 10 minutes
 WEBSITE_TIMEOUT = 60  # 1 minute
@@ -480,6 +480,7 @@ async def initialize(validator):
         validator.last_sent_data_to_website = validator.subtensor.block - 16
         validator.last_scoring_block = validator.subtensor.block - 51
         validator.last_set_weights_block = validator.subtensor.block - 301
+    validator.last_api_call = datetime.now(timezone.utc) - timedelta(days=1)
     
     # Define default intervals if they don't exist
     if not hasattr(validator, 'update_game_data_interval'):
