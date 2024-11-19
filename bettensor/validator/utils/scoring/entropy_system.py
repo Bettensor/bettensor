@@ -475,17 +475,30 @@ class EntropySystem:
         return ebdr_scores
 
     async def save_state(self):
-        """Save the current state to both database and file"""
-        try:
-            # First save to database
-            await self._save_to_database()
-            
-            # Then save to file (keeping existing logic for backwards compatibility)
-            self._save_to_file()
-            
-        except Exception as e:
-            bt.logging.error(f"Error saving entropy system state: {str(e)}")
-            bt.logging.error(traceback.format_exc())
+        """Save the current state to both database and file with retry logic"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # First save to database
+                if await self._save_to_database():
+                    # Then save to file
+                    self._save_to_file()
+                    return True
+                    
+                if attempt < max_retries - 1:
+                    bt.logging.warning(f"Save attempt {attempt + 1} failed, retrying...")
+                    await asyncio.sleep(1)
+                    continue
+                    
+            except Exception as e:
+                bt.logging.error(f"Error saving entropy system state: {str(e)}")
+                bt.logging.error(traceback.format_exc())
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                    continue
+                raise
+                
+        return False
 
     async def _save_to_database(self):
         """Save current state to database tables"""

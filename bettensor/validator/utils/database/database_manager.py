@@ -7,6 +7,8 @@ import aiosqlite
 import bittensor as bt
 import os
 import traceback
+
+import sqlalchemy
 from bettensor.validator.utils.database.database_init import initialize_database
 import async_timeout
 import uuid
@@ -72,24 +74,31 @@ class DatabaseManager:
             finally:
                 await session.close()
 
-    async def execute_query(self, query, params=None):
-        """Execute query maintaining compatibility with old format"""
-        async with self.get_session() as session:
-            async with session.begin():
-                # Handle SQLite-style positional parameters (?)
-                if params and isinstance(params, (list, tuple)):
-                    counter = itertools.count()
-                    # Convert to dict with positional names
-                    params = {f"p{i}": val for i, val in enumerate(params)}
-                    # Replace ? with :p0, :p1, etc.
-                    query = re.sub(r'\?', lambda m: f":p{next(counter)}", query)
-                elif params is None:
-                    params = {}
-                
-                cursor = await session.execute(text(query), params)
-                if query.strip().upper().startswith('SELECT'):
-                    return cursor
-                return None
+    async def execute_query(self, query, params=None, max_retries=3):
+        """Execute query with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                async with self.get_session() as session:
+                    async with session.begin():
+                        if params and isinstance(params, (list, tuple)):
+                            counter = itertools.count()
+                            params = {f"p{i}": val for i, val in enumerate(params)}
+                            query = re.sub(r'\?', lambda m: f":p{next(counter)}", query)
+                        elif params is None:
+                            params = {}
+                        
+                        cursor = await session.execute(text(query), params)
+                        if query.strip().upper().startswith('SELECT'):
+                            return cursor
+                        return None
+                    
+            except SQLAlchemyError as e:
+                if "no active connection" in str(e) and attempt < max_retries - 1:
+                    bt.logging.warning(f"Database connection lost, retrying ({attempt + 1}/{max_retries})...")
+                    await asyncio.sleep(1)
+                    await self.ensure_connection()
+                    continue
+                raise
 
     async def fetch_all(self, query, params=None):
         """Fetch all results maintaining old format"""
@@ -188,10 +197,28 @@ class DatabaseManager:
         """Ensure database connection is active and valid"""
         try:
             async with self.get_session() as session:
-                # Test connection with simple query
                 await session.execute(text("SELECT 1"))
                 return True
-        except SQLAlchemyError as e:
+        except sqlalchemy.exc.OperationalError:
+            bt.logging.warning("Reinitializing database connection pool...")
+            await self.engine.dispose()
+            self.engine = create_async_engine(
+                f"sqlite+aiosqlite:///{self.db_path}",
+                poolclass=AsyncAdaptedQueuePool,
+                pool_pre_ping=True,
+                pool_size=5,
+                max_overflow=10,
+                pool_timeout=30,
+                pool_recycle=1800,
+                echo=False
+            )
+            self.async_session = sessionmaker(
+                self.engine, 
+                class_=AsyncSession, 
+                expire_on_commit=False
+            )
+            return await self.ensure_connection()
+        except Exception as e:
             bt.logging.error(f"Database connection error: {e}")
             return False
 
