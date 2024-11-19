@@ -27,6 +27,23 @@ class MinerDataMixin:
         Inserts new predictions into the database in batches
         """
         self.processed_uids = processed_uids
+        
+        # Initialize validation stats for this batch
+        validation_stats = {
+            'duplicate_prediction': 0,
+            'uid_not_processed': 0,
+            'invalid_uid': 0,
+            'invalid_wager': 0,
+            'daily_limit_exceeded': 0,
+            'game_not_found': 0,
+            'game_started': 0,
+            'invalid_outcome': 0,
+            'invalid_odds': 0,
+            'invalid_confidence': 0,
+            'other_errors': 0,
+            'successful': 0
+        }
+
         try:
             current_time = datetime.now(timezone.utc).isoformat()
             bt.logging.trace(f"insert_predictions called with {len(predictions)} predictions")
@@ -38,11 +55,17 @@ class MinerDataMixin:
             for miner_uid, prediction_dict in predictions.items():
                 for prediction_id, res in prediction_dict.items():
                     # Validate the prediction
-                    is_valid, message = await self.validate_prediction(
+                    is_valid, message, validation_type = await self.validate_prediction(
                         miner_uid, 
                         prediction_id, 
                         res.dict()  # Convert Pydantic model to dict
                     )
+                    
+                    # Update validation stats
+                    if is_valid:
+                        validation_stats['successful'] += 1
+                    else:
+                        validation_stats[validation_type] += 1
                     
                     return_dict[prediction_id] = (is_valid, message)
                     
@@ -64,6 +87,14 @@ class MinerDataMixin:
                             res.outcome, res.model_name, res.confidence_score
                         ))
             bt.logging.info(f"Validated {len(valid_predictions)} predictions")
+
+            # Log validation statistics for this batch
+            bt.logging.info("Batch Validation Statistics:")
+            total_predictions = sum(validation_stats.values())
+            for reason, count in validation_stats.items():
+                if count > 0:
+                    percentage = (count / total_predictions) * 100
+                    bt.logging.info(f"  {reason}: {count} ({percentage:.1f}%)")
 
             # Handle database operations for valid predictions
             if valid_predictions:
@@ -199,25 +230,15 @@ class MinerDataMixin:
 
         bt.logging.info(f"Sending confirmation synapse to miner {miner_uid}, axon: {axon}")
         try:
-            # Check if self.dendrite.query is asynchronous
-            if asyncio.iscoroutinefunction(self.dendrite.query):
-                await self.dendrite.query(
-                    axons=axon,
-                    synapse=synapse,
-                    timeout=self.timeout,
-                    deserialize=True,
-                )
-            else:
-                # If it's synchronous, consider running it in an executor
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None,
-                    self.dendrite.query,
-                    axon,
-                    synapse,
-                    self.timeout,
-                    True,
-                )
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                self.dendrite.query,
+                axon,
+                synapse,
+                self.timeout,
+                True,
+            )
             bt.logging.info(f"Confirmation synapse sent to miner {miner_uid}")
         except Exception as e:
             bt.logging.error(f"An error occurred while sending confirmation synapse: {e}")
@@ -244,9 +265,33 @@ class MinerDataMixin:
                 
                 prediction_dict = synapse.prediction_dict
                 metadata = synapse.metadata
+                headers = synapse.to_headers()
+                #bt.logging.info(f"Synapse headers: {headers}")
 
                 if metadata and hasattr(metadata, "neuron_uid"):
                     uid = metadata.neuron_uid
+                    synapse_hotkey = headers.get("bt_header_axon_hotkey")
+
+                    # check synapse hotkey matches hotkey in metagraph
+                    if synapse_hotkey != self.metagraph.hotkeys[int(uid)]:
+                        bt.logging.warning(f"Synapse hotkey {synapse_hotkey} does not match hotkey {self.metagraph.hotkeys[int(uid)]} for miner {uid}")
+                        continue
+
+                    #check that all predictions are submitted with the same uid as the synapse
+                    if any(pred.miner_uid != uid for pred in prediction_dict.values()):
+                        bt.logging.warning(f"Predictions submitted with different miner UID than synapse: {uid}")
+                        continue
+
+                    # for each prediction, check the miner_uid matches the synapse uid and print the number of predictions that match
+                    matching_predictions = sum(1 for pred in prediction_dict.values() if pred.miner_uid == uid)
+                    #bt.logging.info(f"Number of predictions matching synapse uid: {matching_predictions}")
+
+                    # if any predictions don't match the synapse uid, log a warning, and skip the synapse
+                    if matching_predictions != len(prediction_dict):
+                        bt.logging.warning(f"Some predictions do not match synapse uid: {uid}")
+                        bt.logging.warning(f"Offending uid and hotkey: {uid} {synapse_hotkey}")
+                        continue
+
                     # Ensure prediction_dict is not None before processing
                     if prediction_dict is not None:
                         predictions[uid] = prediction_dict
@@ -254,6 +299,7 @@ class MinerDataMixin:
                         bt.logging.trace(
                         f"prediction from miner {uid} is empty and will be skipped."
                     )
+                    #bt.logging.info(f"Predictions dict length for uid {uid}: {len(prediction_dict)}")
                 else:
                     bt.logging.warning(
                         "metadata is missing or does not contain neuron_uid."
@@ -269,13 +315,13 @@ class MinerDataMixin:
     def update_recent_games(self):
         bt.logging.info("miner_data.py update_recent_games called")
         current_time = datetime.now(timezone.utc)
-        five_hours_ago = current_time - timedelta(hours=5)
+        five_hours_ago = current_time - timedelta(hours=4)
 
         recent_games = self.db_manager.fetch_all(
             """
             SELECT external_id, team_a, team_b, sport, league, event_start_date
             FROM game_data
-            WHERE event_start_date < ? AND outcome = 'Unfinished'
+            WHERE event_start_date < ? AND (outcome = 'Unfinished' OR outcome = 3)
             """,
             (five_hours_ago.isoformat(),),
         )
@@ -371,6 +417,7 @@ class MinerDataMixin:
                 # Skip games with None outcome
                 if row['outcome'] is None:
                     bt.logging.warning(f"Skipping game with ID {row.get('game_id')} due to None outcome")
+                    bt.logging.warning(f"Offending game: {row}")
                     continue
                     
                 team_game = TeamGame(
@@ -397,7 +444,7 @@ class MinerDataMixin:
                 
         return gamedata_dict
 
-    async def validate_prediction(self, miner_uid: int, prediction_id: str, prediction_data: dict) -> tuple[bool, str]:
+    async def validate_prediction(self, miner_uid: int, prediction_id: str, prediction_data: dict) -> tuple[bool, str, str]:
         """
         Validates a prediction before insertion, including checking for duplicates.
         
@@ -407,7 +454,7 @@ class MinerDataMixin:
             prediction_data (dict): The prediction data to validate
             
         Returns:
-            tuple: (is_valid, message)
+            tuple: (is_valid, message, validation_type)
         """
         try:
             # First check if prediction already exists
@@ -417,25 +464,25 @@ class MinerDataMixin:
             )
             
             if existing_prediction:
-                return False, f"Prediction {prediction_id} already exists in database"
+                return False, f"Prediction {prediction_id} already exists in database", 'duplicate_prediction'
             
             # Check if miner UID is in processed UIDs
             if int(miner_uid) not in self.processed_uids:
-                return False, "UID not in processed_uids"
+                return False, "UID not in processed_uids", 'uid_not_processed'
 
             # Verify miner exists in metagraph
             try:
                 hotkey = self.metagraph.hotkeys[int(miner_uid)]
             except IndexError:
-                return False, "Invalid miner UID - not found in metagraph"
+                return False, "Invalid miner UID - not found in metagraph", 'invalid_uid'
 
             # Validate wager amount
             try:
                 wager = float(prediction_data.get('wager', 0))
                 if wager <= 0:
-                    return False, "Prediction with non-positive wager - nice try"
+                    return False, "Prediction with non-positive wager - nice try", 'invalid_wager'
             except (ValueError, TypeError):
-                return False, "Invalid wager value"
+                return False, "Invalid wager value", 'invalid_wager'
 
             # Check daily wager limit
             current_time = datetime.now(timezone.utc)
@@ -445,7 +492,7 @@ class MinerDataMixin:
             )
             current_total_wager = float(current_total_wager['total'])
             if current_total_wager + wager > 1000:
-                return False, f"Prediction would exceed daily limit (Current: ${current_total_wager:.2f}, Attempted: ${wager:.2f})"
+                return False, f"Prediction would exceed daily limit (Current: ${current_total_wager:.2f}, Attempted: ${wager:.2f})", 'daily_limit_exceeded'
 
             # Validate game exists and get game data
             query = """
@@ -457,11 +504,11 @@ class MinerDataMixin:
             game = await self.db_manager.fetch_one(query, (prediction_data.get('game_id'),))
             
             if not game:
-                return False, "Game not found in validator game_data"
+                return False, "Game not found in validator game_data", 'game_not_found'
 
             # Check if game has started
             if current_time >= datetime.fromisoformat(game['event_start_date']).replace(tzinfo=timezone.utc):
-                return False, "Game has already started"
+                return False, "Game has already started", 'game_started'
 
             # Validate predicted outcome
             predicted_outcome = prediction_data.get('predicted_outcome')
@@ -472,7 +519,7 @@ class MinerDataMixin:
             elif str(predicted_outcome).lower() == "tie":
                 numeric_outcome = 2
             else:
-                return False, f"Invalid predicted_outcome: {predicted_outcome}"
+                return False, f"Invalid predicted_outcome: {predicted_outcome}", 'invalid_outcome'
 
             # Validate odds
             outcome_to_odds = {
@@ -482,7 +529,7 @@ class MinerDataMixin:
             }
             predicted_odds = outcome_to_odds.get(numeric_outcome)
             if predicted_odds is None:
-                return False, "Invalid odds for predicted outcome"
+                return False, "Invalid odds for predicted outcome", 'invalid_odds'
 
             # Optional: Validate confidence score format if provided
             confidence_score = prediction_data.get('confidence_score')
@@ -490,15 +537,15 @@ class MinerDataMixin:
                 try:
                     confidence = float(confidence_score)
                     if not 0 <= confidence <= 1:
-                        return False, "If provided, confidence score must be between 0 and 1"
+                        return False, "If provided, confidence score must be between 0 and 1", 'invalid_confidence'
                 except (ValueError, TypeError):
-                    return False, "Invalid confidence score format"
+                    return False, "Invalid confidence score format", 'invalid_confidence'
 
             # Model name is optional - no validation needed
 
-            return True, "Prediction validated successfully"
+            return True, "Prediction validated successfully", 'successful'
 
         except Exception as e:
             bt.logging.error(f"Error validating prediction: {e}")
-            return False, f"Validation error: {str(e)}"
+            return False, f"Validation error: {str(e)}", 'other_errors'
 

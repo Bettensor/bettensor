@@ -51,6 +51,7 @@ TASK_TIMEOUTS = {
     'set_weights': 300,  # 5 minutes
     'perform_update': 300,  # 5 minutes
     'check_hotkeys': 60,  # 1 minute
+    'state_sync': 300,  # 5 minutes
 }
 
 def cancellable_task(func):
@@ -130,6 +131,7 @@ async def log_status(validator):
         blocks_until_send_data = max(0, validator.send_data_to_website_interval - (current_block - validator.last_sent_data_to_website))
         blocks_until_scoring = max(0, validator.scoring_interval - (current_block - validator.last_scoring_block))
         blocks_until_set_weights = max(0, validator.set_weights_interval - (current_block - validator.last_set_weights_block))
+        blocks_until_state_sync = max(0, validator.state_sync_interval - (current_block - validator.last_state_sync))
 
         status_message = (
             "\n"
@@ -142,6 +144,7 @@ async def log_status(validator):
             f"Blocks until send_data_to_website: {blocks_until_send_data}\n"
             f"Blocks until scoring_run: {blocks_until_scoring}\n"
             f"Blocks until set_weights: {blocks_until_set_weights}\n"
+            f"Blocks until state sync: {blocks_until_state_sync}\n"
             "================================================================================\n"
         )
         
@@ -207,6 +210,29 @@ async def update_game_data_with_lock(validator, current_time):
                 await asyncio.to_thread(update_game_data, validator, current_time)
     except asyncio.TimeoutError:
         bt.logging.error("Game data update timed out while waiting for lock")
+        
+async def state_sync_task(validator):
+        """
+        Periodically checks and performs state synchronization (for primary validator nodes)
+        """
+        while True:
+            try:
+                current_block = validator.subtensor.block
+                blocks_since_sync = current_block - validator.last_state_sync
+                if validator.is_primary and blocks_since_sync >= validator.state_sync_interval:
+                    bt.logging.info("Initiating state synchronization...")
+                    async with async_timeout.timeout(300):  # Adjust timeout as needed
+                        if await validator.state_sync.push_state():
+                            validator.last_state_sync = current_block
+                            bt.logging.info("State synchronization successful.")
+                        else:
+                            bt.logging.error("State synchronization failed.")
+            except asyncio.TimeoutError:
+                bt.logging.error("State synchronization timed out.")
+            except Exception as e:
+                bt.logging.error(f"State synchronization error: {e}")
+            finally:
+                await asyncio.sleep(60)
 
 async def run(validator: BettensorValidator):
     """Main async run loop for the validator"""
@@ -241,10 +267,11 @@ async def run(validator: BettensorValidator):
             # Check state sync less frequently
             if (current_time_secs - last_state_check) >= STATE_CHECK_INTERVAL:
                 async with validator.operation_lock:
-                    if validator.state_sync.should_pull_state():
+                    if await validator.state_sync.should_pull_state():
                         bt.logging.info("State divergence detected, pulling latest state")
                         if await validator.state_sync.pull_state():
                             bt.logging.info("Successfully pulled latest state")
+                            await validator.db_manager.initialize(force=True)
                             continue
                         else:
                             bt.logging.error("Failed to pull latest state")
@@ -333,24 +360,26 @@ async def run(validator: BettensorValidator):
                 ], return_exceptions=True)
 
             # State push with timeout protection
-            if validator.is_primary and (current_time_secs - last_state_push) >= STATE_PUSH_INTERVAL:
-                async with validator.operation_lock:
-                    try:
-                        async with async_timeout.timeout(MAX_PUSH_DURATION):
-                            if await validator.state_sync.push_state():
-                                last_state_push = current_time_secs
+            current_block = validator.subtensor.block
+            blocks_since_sync = current_block - validator.last_state_sync
+            if validator.is_primary and blocks_since_sync >= validator.state_sync_interval:
+                bt.logging.info("Initiating state synchronization...")
+                try:
+                    async with async_timeout.timeout(300):
+                        if await validator.state_sync.push_state():
+                            validator.last_state_sync = current_block
+                            bt.logging.info("State synchronization successful.")
+                        else:
+                            bt.logging.error("State synchronization failed.")
+                except asyncio.TimeoutError:
+                    bt.logging.error("State synchronization timed out.")
+                except Exception as e:
+                    bt.logging.error(f"State synchronization error: {e}")
+            
 
-                                bt.logging.info("Successfully pushed state")
-                            else:
-                                bt.logging.error("Failed to push state")
-                    except asyncio.TimeoutError:
-                        bt.logging.error(f"State push timed out after {MAX_PUSH_DURATION} seconds")
-                        await validator.db_manager.resume_operations()
-                    except Exception as e:
-                        bt.logging.error(f"Failed to push state: {str(e)}")
-                        await validator.db_manager.resume_operations()
 
-            await asyncio.sleep(30)
+            
+           
 
     except Exception as e:
         bt.logging.error(f"Error in main loop: {e}")
@@ -402,8 +431,11 @@ async def run_with_timeout(func, timeout: int, *args, **kwargs) -> Optional[Any]
         return None
 
 async def initialize(validator):
+    load_dotenv()
     validator.is_primary = os.environ.get("VALIDATOR_IS_PRIMARY") == "True"
     should_pull_state = os.environ.get("VALIDATOR_PULL_STATE", "True").lower() == "true"
+    bt.logging.info(f"Validator is primary: {validator.is_primary}")
+    bt.logging.info(f"Should pull state: {should_pull_state}")
 
     # Add state sync initialization
     branch = subprocess.check_output(
@@ -424,10 +456,12 @@ async def initialize(validator):
     # Pull latest state before starting if configured to do so
     if should_pull_state:
         bt.logging.info("Pulling latest state from Azure blob storage...")
-        if await validator.state_sync.pull_state():
-            bt.logging.info("Successfully pulled latest state")
-        else:
-            bt.logging.warning("Failed to pull latest state, continuing with local state")
+        async with async_timeout.timeout(300):  # 5 minute timeout
+            if await validator.state_sync.pull_state():
+                bt.logging.info("Successfully pulled latest state")
+                await validator.db_manager.initialize(force=True)
+            else:
+                bt.logging.warning("Failed to pull latest state, continuing with local state")
     else:
         bt.logging.info("Skipping state pull due to VALIDATOR_PULL_STATE configuration")
     
@@ -471,6 +505,12 @@ async def initialize(validator):
     if not hasattr(validator, 'last_set_weights_block'):
         validator.last_set_weights_block = validator.subtensor.block - 300
     validator.operation_lock = asyncio.Lock()
+
+    # Define state sync intervals
+    if not hasattr(validator, 'state_sync_interval'):
+        validator.state_sync_interval = 200  # 15 minutes
+    if not hasattr(validator, 'last_state_sync'):
+        validator.last_state_sync = validator.subtensor.block - 200
 
 
 @cancellable_task
@@ -826,13 +866,16 @@ async def check_state_sync(validator):
     while True:
         try:
             if not validator.is_primary:
-                if validator.state_sync.should_pull_state():
+                if await validator.state_sync.should_pull_state():
                     bt.logging.info("State divergence detected, pulling latest state")
-                    if await validator.state_sync.pull_state():
-                        bt.logging.info("Successfully pulled latest state")
-                    else:
-                        bt.logging.error("Failed to pull latest state")
+                    async with async_timeout.timeout(300):  # 5 minute timeout
+                        if await validator.state_sync.pull_state():
+                            bt.logging.info("Successfully pulled latest state")
+                        else:
+                            bt.logging.error("Failed to pull latest state")
             await asyncio.sleep(3600)  # Check every hour
+        except asyncio.TimeoutError:
+            bt.logging.error("State sync check timed out")
         except Exception as e:
             bt.logging.error(f"Error in state sync check: {e}")
             await asyncio.sleep(300)  # On error, retry after 5 minutes

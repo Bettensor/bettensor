@@ -373,7 +373,7 @@ class ScoringData:
                     """UPDATE miner_stats
                        SET miner_current_tier = ?
                        WHERE miner_uid = ?""",
-                    (int(current_tier), miner_uid)
+                    (int(current_tier -1 ), miner_uid)
                 )
             
             await self._update_current_daily_scores(current_day, tiers_dict)

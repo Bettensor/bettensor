@@ -64,6 +64,7 @@ class SportsData:
                                     bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
                                     
                             inserted_ids.extend(chunk_ids)
+                            await self.entropy_system.save_state()
                         except Exception:
                             
                             raise

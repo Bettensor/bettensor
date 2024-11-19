@@ -709,6 +709,14 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         
         result = await self.db_queue.execute(db_operation)
 
+    def __del__(self):
+        """
+        Regular (non-async) destructor that ensures resources are cleaned up.
+        Note: We should avoid complex cleanup logic in __del__
+        """
+        if hasattr(self, 'db_manager'):
+            bt.logging.info("Object being destroyed, cleanup should have been called explicitly")
+
     async def cleanup(self):
         """Cleanup validator resources"""
         bt.logging.info("Cleaning up validator resources...")
@@ -730,15 +738,3 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
                 
         except Exception as e:
             bt.logging.error(f"Error during cleanup: {str(e)}")
-
-    def __del__(self):
-        """Ensure cleanup runs during deletion"""
-        if hasattr(self, 'db_manager'):
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self.cleanup())
-                else:
-                    loop.run_until_complete(self.cleanup())
-            except Exception as e:
-                bt.logging.error(f"Error in cleanup during deletion: {str(e)}")

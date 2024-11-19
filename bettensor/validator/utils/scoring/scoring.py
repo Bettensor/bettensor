@@ -140,7 +140,7 @@ class ScoringSystem:
 
 
         
-        self.entropy_system = EntropySystem(num_miners, max_days)
+        self.entropy_system = EntropySystem(num_miners, max_days, db_manager=db_manager)
         self.incentives = []
 
         self.current_day = 0
@@ -1829,9 +1829,30 @@ class ScoringSystem:
                 
                 day_predictions = await self.db_manager.fetch_all(predictions_query, game_ids)
 
+                bt.logging.info(
+                    f"Processing {process_date}: {len(day_games)} games, "
+                    f"{len(day_predictions)} predictions with valid IDs"
+                )
+
+                # Add a diagnostic query to understand the missing IDs
+                diagnostic_query = """
+                    SELECT 
+                        COUNT(*) as total_predictions,
+                        SUM(CASE WHEN prediction_id IS NULL THEN 1 ELSE 0 END) as null_ids,
+                        SUM(CASE WHEN prediction_id IS NOT NULL THEN 1 ELSE 0 END) as valid_ids
+                    FROM predictions 
+                    WHERE game_id IN ({})
+                """.format(','.join('?' * len(game_ids)))
                 
-                bt.logging.info(f"Processing {process_date}: {len(day_games)} games, {len(day_predictions)} predictions")
-                
+                diagnostic_result = await self.db_manager.fetch_one(diagnostic_query, game_ids)
+                if diagnostic_result:
+                    bt.logging.info(
+                        f"Prediction ID statistics for {process_date}:\n"
+                        f"  Total predictions: {diagnostic_result['total_predictions']}\n"
+                        f"  Missing IDs: {diagnostic_result['null_ids']}\n"
+                        f"  Valid IDs: {diagnostic_result['valid_ids']}"
+                    )
+
                 if not day_games or not day_predictions:
                     continue
                     
@@ -1908,18 +1929,39 @@ class ScoringSystem:
                         self.clv_scores[:, historical_day] = clv_scores
                         self.sortino_scores[:, historical_day] = sortino_scores
                         
-                        # Add predictions to entropy system
-                        for pred in day_predictions:
-                            self.entropy_system.add_prediction(
-                                prediction_id=pred['prediction_id'],
-                                miner_uid=pred['miner_uid'],
-                                game_id=pred['game_id'],
-                                predicted_outcome=pred['predicted_outcome'],
-                                wager=float(pred['wager']),
-                                predicted_odds=float(pred['predicted_odds']),
-                                prediction_date=pred['prediction_date'],
-                                historical_rebuild=True
+                        # Add predictions to entropy system - only process predictions that have IDs
+                        valid_predictions = [
+                            pred for pred in day_predictions 
+                            if 'prediction_id' in pred and pred['prediction_id'] is not None
+                        ]
+                        
+                        if len(valid_predictions) != len(day_predictions):
+                            bt.logging.warning(
+                                f"Skipping {len(day_predictions) - len(valid_predictions)} predictions "
+                                f"without prediction IDs for {process_date}"
                             )
+                        
+                        for pred in valid_predictions:
+                            try:
+                                self.entropy_system.add_prediction(
+                                    prediction_id=pred['prediction_id'],
+                                    miner_uid=pred['miner_uid'],
+                                    game_id=pred['game_id'],
+                                    predicted_outcome=pred['predicted_outcome'],
+                                    wager=float(pred['wager']),
+                                    predicted_odds=float(pred['predicted_odds']),
+                                    prediction_date=pred['prediction_date'],
+                                    historical_rebuild=True
+                                )
+                            except Exception as e:
+                                bt.logging.error(
+                                    f"Error adding prediction to entropy system:\n"
+                                    f"  Prediction ID: {pred.get('prediction_id')}\n"
+                                    f"  Game ID: {pred.get('game_id')}\n"
+                                    f"  Miner: {pred.get('miner_uid')}\n"
+                                    f"  Error: {str(e)}"
+                                )
+                                continue
                         
                         # Get entropy scores
                         entropy_scores = self.entropy_system.get_current_ebdr_scores(

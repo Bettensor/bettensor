@@ -10,14 +10,17 @@ import json
 import logging
 from pathlib import Path
 import bittensor as bt
+from sqlalchemy import text
 import ssdeep 
 import sqlite3
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob.aio import BlobServiceClient
 from azure.core.exceptions import AzureError
 from dotenv import load_dotenv
 import stat  # Make sure to import stat module
 import asyncio
 import async_timeout
+import aiofiles
+import hashlib
 
 class StateSync:
     def __init__(self, 
@@ -52,7 +55,7 @@ class StateSync:
 
        
 
-        # Azure setup
+        # Azure setup using the async BlobServiceClient
         self.azure_enabled = bool(sas_url)
         if self.azure_enabled:
             self.blob_service = BlobServiceClient(account_url=sas_url, credential=credential)
@@ -256,32 +259,28 @@ class StateSync:
             bt.logging.error(f"Error comparing database states: {e}")
             return False
 
-    def should_pull_state(self) -> bool:
+    async def should_pull_state(self) -> bool:
         """
-        Determine if state should be pulled based on similarity and timestamps
-        Returns: True if state should be pulled, False otherwise
+        Determine if the state should be pulled based on remote metadata.
         """
-        if not self.azure_enabled:
-            bt.logging.error("Azure blob storage not configured")
-            return False
-
         try:
             # Get remote metadata from Azure blob storage
             metadata_client = self.container.get_blob_client("state_metadata.json")
             temp_metadata = self.metadata_file.with_suffix('.tmp')
             
             try:
-                # Download metadata file
-                with open(temp_metadata, 'wb') as f:
-                    stream = metadata_client.download_blob()
-                    for chunk in stream.chunks():
-                        f.write(chunk)
+                # Download metadata file asynchronously
+                async with aiofiles.open(temp_metadata, 'wb') as f:
+                    stream = await metadata_client.download_blob()
+                    async for chunk in stream.chunks():
+                        await f.write(chunk)
                 
                 # Load remote metadata
-                with open(temp_metadata) as f:
-                    remote_metadata = json.load(f)
+                async with aiofiles.open(temp_metadata, 'r') as f:
+                    remote_metadata_content = await f.read()
+                    remote_metadata = json.loads(remote_metadata_content)
                     
-                return self._should_pull_state(remote_metadata)
+                return await self._should_pull_state(remote_metadata)
                 
             finally:
                 # Clean up temp metadata file
@@ -299,119 +298,207 @@ class StateSync:
         if not self.azure_enabled:
             return False
 
-        try:
-            db_manager = self.db_manager
-            bt.logging.info("Starting state pull process...")
-            
-            # Debug: Check score_state before sync
-            state_before = await db_manager.fetch_all(
-                "SELECT state_id, current_day FROM score_state ORDER BY state_id DESC LIMIT 1"
-            )
-            bt.logging.debug(f"State before sync: {state_before}")
-            
-            # First wait for any active transactions to complete
-            await db_manager.wait_for_locks_to_clear(timeout=60)
-            
-            # Create temporary directory for downloads
-            temp_dir = self.state_dir / "temp"
-            temp_dir.mkdir(exist_ok=True)
-            
+        max_retries = 3
+        retry_count = 0
+        db_file = self.state_dir / "validator.db"
+        
+        while retry_count < max_retries:
             try:
-                # Download files to temp directory first
-                for filename in self.state_files:
-                    blob_client = self.container.get_blob_client(filename)
-                    temp_file = temp_dir / filename
-                    
-                    bt.logging.debug(f"Downloading {filename} to temporary location")
-                    with open(temp_file, 'wb') as f:
-                        stream = blob_client.download_blob()
-                        for chunk in stream.chunks():
-                            f.write(chunk)
-                    
-                    os.chmod(temp_file, 0o666)
+                db_manager = self.db_manager
+                bt.logging.info(f"Starting state pull process (attempt {retry_count + 1}/{max_retries})...")
                 
-                # Special handling for database file
-                db_file = self.state_dir / "validator.db"
-                temp_db = temp_dir / "validator.db"
+                # Create temporary directory for downloads
+                temp_dir = self.state_dir / "temp"
+                temp_dir.mkdir(exist_ok=True)
+                backup_file = None
                 
-                if temp_db.exists():
-                    bt.logging.info("Verifying downloaded database integrity...")
-                    try:
-                        # Test the downloaded database
-                        test_conn = sqlite3.connect(temp_db)
-                        test_conn.execute("PRAGMA integrity_check")
-                        test_conn.close()
+                try:
+                    # Download files to temp directory first
+                    for filename in self.state_files:
+                        blob_client = self.container.get_blob_client(filename)
+                        temp_file = temp_dir / filename
                         
-                        # Now pause operations and handle the database swap
-                        await db_manager.pause_operations()
-                        try:
-                            # Close existing connection
-                            await db_manager.close()
-                            
-                            # Backup and swap files
-                            if db_file.exists():
-                                backup_file = db_file.with_suffix('.bak')
-                                db_file.rename(backup_file)
-                            
-                            # Move new database into place
-                            shutil.move(temp_db, db_file)
-                            os.chmod(db_file, 0o666)
-                            
-                            # Move other state files
-                            for filename in self.state_files:
-                                if filename != "validator.db":
-                                    src = temp_dir / filename
-                                    dst = self.state_dir / filename
-                                    if src.exists():
-                                        shutil.move(src, dst)
-                                        os.chmod(dst, 0o666)
-                            
-                            # Reconnect to the new database
-                            await db_manager.reconnect()
-                            
-                            # Resume operations before reinitializing
-                            await db_manager.resume_operations()
-                            
-                            # Reinitialize scoring system
-                            if self.validator and self.validator.scoring_system:
-                                bt.logging.info("Reinitializing scoring system with new database state...")
-                                await self.validator.scoring_system.initialize()
-                            
-                            return True
-                            
-                        except Exception as e:
-                            bt.logging.error(f"Error during database swap: {e}")
-                            # Restore from backup if available
-                            if backup_file.exists():
-                                shutil.move(backup_file, db_file)
-                            raise
-                        finally:
-                            # Always ensure operations are resumed
-                            await db_manager.resume_operations()
-                            
-                    except sqlite3.Error as e:
-                        bt.logging.error(f"Database integrity check failed: {e}")
-                        raise
+                        bt.logging.debug(f"Downloading {filename} to temporary location")
+                        async with aiofiles.open(temp_file, 'wb') as f:
+                            download_stream = await blob_client.download_blob()
+                            async for chunk in download_stream.chunks():
+                                await f.write(chunk)
+                        
+                        os.chmod(temp_file, 0o666)
                     
-            finally:
-                # Cleanup temp directory
-                if temp_dir.exists():
-                    shutil.rmtree(temp_dir)
-                
-        except Exception as e:
-            bt.logging.error(f"Error pulling state: {str(e)}")
-            bt.logging.error(traceback.format_exc())
-            return False
+                    # Special handling for database file
+                    temp_db = temp_dir / "validator.db"
+                    
+                    if temp_db.exists():
+                        bt.logging.info("Verifying downloaded database integrity...")
+                        try:
+                            # Verify database integrity
+                            async def verify_database(db_path):
+                                try:
+                                    conn = sqlite3.connect(db_path)
+                                    cursor = conn.cursor()
+                                    
+                                    # Run integrity check
+                                    cursor.execute("PRAGMA integrity_check")
+                                    integrity_result = cursor.fetchone()[0]
+                                    
+                                    # Run quick check
+                                    cursor.execute("PRAGMA quick_check")
+                                    quick_check = cursor.fetchone()[0]
+                                    
+                                    cursor.close()
+                                    conn.close()
+                                    
+                                    return integrity_result == "ok" and quick_check == "ok"
+                                except Exception as e:
+                                    bt.logging.error(f"Database verification failed: {e}")
+                                    return False
 
-    def _should_pull_state(self, remote_metadata: dict) -> bool:
+                            # Verify the downloaded database
+                            if not await verify_database(temp_db):
+                                raise sqlite3.DatabaseError("Downloaded database failed integrity check")
+                            
+                            # Now handle the database swap
+                            try:
+                                # Wait for any pending operations to complete
+                                await db_manager.wait_for_locks_to_clear(timeout=60)
+                                
+                                # Clean up any existing WAL/SHM files
+                                wal_file = db_file.with_suffix('.db-wal')
+                                shm_file = db_file.with_suffix('.db-shm')
+                                if wal_file.exists():
+                                    wal_file.unlink()
+                                if shm_file.exists():
+                                    shm_file.unlink()
+                                
+                                # Create backup of existing database
+                                if db_file.exists():
+                                    backup_file = db_file.with_suffix('.bak')
+                                    shutil.copy2(db_file, backup_file)
+                                    os.chmod(backup_file, 0o666)
+                                    
+                                    # Verify backup integrity
+                                    if not await verify_database(backup_file):
+                                        bt.logging.error("Backup creation failed integrity check")
+                                        raise sqlite3.DatabaseError("Backup creation failed")
+                                
+                                # Move new database into place
+                                shutil.move(temp_db, db_file)
+                                os.chmod(db_file, 0o666)
+                                
+                                # Verify final database
+                                if not await verify_database(db_file):
+                                    raise sqlite3.DatabaseError("Final database failed integrity check")
+                                
+                                # Move other state files
+                                for filename in self.state_files:
+                                    if filename != "validator.db":
+                                        src = temp_dir / filename
+                                        dst = self.state_dir / filename
+                                        if src.exists():
+                                            shutil.move(src, dst)
+                                            os.chmod(dst, 0o666)
+                                
+                                # Initialize new database connection
+                                try:
+                                    # Verify connection works
+                                    async with db_manager.engine.connect() as conn:
+                                        bt.logging.debug("Verifying connection")
+                                        await conn.execute(text("SELECT 1"))
+                                        
+                                except Exception as e:
+                                    bt.logging.error(f"Database initialization failed: {e}")
+                                    if backup_file and backup_file.exists():
+                                        shutil.move(backup_file, db_file)
+                                    raise
+                                
+                                # If everything succeeded, remove the backup
+                                if backup_file and backup_file.exists():
+                                    backup_file.unlink()
+                                
+                               
+                                bt.logging.info("State pull method done")
+                                return True
+                                
+                            except sqlite3.DatabaseError as e:
+                                bt.logging.error(f"Database error during swap: {e}")
+                                retry_count += 1
+                                if retry_count < max_retries:
+                                    bt.logging.info(f"Retrying after database error (attempt {retry_count + 1})...")
+                                    # Clean up and try again
+                                    if backup_file and backup_file.exists():
+                                        shutil.move(backup_file, db_file)
+                                    continue
+                                raise
+                                
+                        except sqlite3.Error as e:
+                            bt.logging.error(f"Database integrity check failed: {e}")
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                bt.logging.info(f"Retrying after integrity check failure (attempt {retry_count + 1})...")
+                                continue
+                            raise
+                        
+                finally:
+                    # Cleanup temp directory
+                    if temp_dir.exists():
+                        shutil.rmtree(temp_dir)
+                    
+                    # Cleanup backup file if it still exists
+                    if backup_file and backup_file.exists():
+                        try:
+                            backup_file.unlink()
+                        except Exception as e:
+                            bt.logging.warning(f"Failed to remove backup file: {e}")
+                    
+                return True
+
+            except Exception as e:
+                bt.logging.error(f"Error during pull state attempt {retry_count + 1}: {str(e)}")
+                bt.logging.error(traceback.format_exc())
+                retry_count += 1
+                
+                if retry_count < max_retries:
+                    # Clean up any WAL/SHM files before retrying
+                    try:
+                        wal_file = db_file.with_suffix('.db-wal')
+                        shm_file = db_file.with_suffix('.db-shm')
+                        if wal_file.exists():
+                            wal_file.unlink()
+                        if shm_file.exists():
+                            shm_file.unlink()
+                        bt.logging.info("Cleaned up WAL/SHM files before retry")
+                    except Exception as cleanup_error:
+                        bt.logging.warning(f"Error cleaning up WAL/SHM files: {cleanup_error}")
+                    
+                    # Wait before retrying
+                    await asyncio.sleep(2 * retry_count)  # Exponential backoff
+                    continue
+                
+                return False
+
+        bt.logging.error(f"Failed to pull state after {max_retries} attempts")
+        return False
+
+    async def _should_pull_state(self, remote_metadata: dict) -> bool:
         """
         Determine if state should be pulled based on remote metadata
         """
         try:
+            #check node config
+            if os.environ.get("VALIDATOR_PULL_STATE", "True").lower() == "true":
+                bt.logging.info("Node config requires state pull")
+            else:
+                bt.logging.info("Node config does not require state pull")
+                return False
+
             # Validate remote metadata structure
             required_fields = ["last_update", "files"]
             if not all(field in remote_metadata for field in required_fields):
-                bt.logging.warning("Remote metadata missing required fields")
+                missing_fields = [field for field in required_fields if field not in remote_metadata]
+                bt.logging.warning(f"Remote metadata missing required fields: {missing_fields}")
+                bt.logging.debug(f"Available fields in remote metadata: {list(remote_metadata.keys())}")
+                bt.logging.debug(f"Remote metadata: {remote_metadata}")
                 return False
                 
             # Load local metadata
@@ -420,8 +507,9 @@ class StateSync:
                 return True
                 
             try:
-                with open(self.metadata_file) as f:
-                    local_metadata = json.load(f)
+                async with aiofiles.open(self.metadata_file) as f:
+                    content = await f.read()
+                    local_metadata = json.loads(content)
             except json.JSONDecodeError:
                 bt.logging.warning("Invalid local metadata file")
                 return True
@@ -498,66 +586,125 @@ class StateSync:
             return False
 
     async def push_state(self):
-        """Push state files to Azure blob storage"""
+        """Push state with proper SQLAlchemy async handling and other state files."""
         if not self.azure_enabled:
             bt.logging.error("Azure blob storage not configured")
             return False
 
         success = False
+        db_manager = self.db_manager
+        validator = self.validator
+        temp_db = self.state_dir / "validator.db.backup"
+
         try:
-            db_manager = self.db_manager
-            validator = self.validator
-            
             if not validator:
                 bt.logging.error("No validator instance available")
                 return False
-            
+
             bt.logging.info("Preparing database for state push...")
-            
-            # Force WAL checkpoint
-            await db_manager.execute_state_sync_query("PRAGMA wal_checkpoint(FULL);")
-            
-            # Create temporary database copy
-            db_path = self.state_dir / "validator.db"
-            temp_db = db_path.with_suffix('.pushing')
-            
-            try:
-                # Use shutil for atomic copy
-                shutil.copy2(db_path, temp_db)
-                
-                # Upload files to Azure
-                for filename in self.state_files:
-                    filepath = self.state_dir / filename
-                    if not filepath.exists():
-                        continue
 
-                    # Use temp database for validator.db
-                    if filename == "validator.db":
-                        filepath = temp_db
+            # Create a verified database backup using the backup API
+            backup_result = await db_manager.create_verified_backup(temp_db)
+            bt.logging.debug(f"Backup result: {backup_result}")
+            if not backup_result:
+                bt.logging.error("Database backup creation or verification failed")
+                return False
 
-                    blob_client = self.container.get_blob_client(filename)
-                    with open(filepath, 'rb') as f:
-                        bt.logging.debug(f"Uploading {filename} to Azure")
-                        blob_client.upload_blob(f, overwrite=True)
+            # Upload all state files to Azure
+            for filename in self.state_files:
+                filepath = self.state_dir / filename
+                if not filepath.exists():
+                    bt.logging.warning(f"State file {filename} does not exist, skipping.")
+                    continue
 
-                success = True
-                
-                # Update metadata and hash files after successful upload
-                if success:
-                    self._update_metadata_file()
-                    self._update_hash_file()
-                    
-            finally:
-                # Cleanup temp file
-                if temp_db.exists():
-                    temp_db.unlink()
-                    
-                # Resume operations
-                await db_manager.resume_operations()
-            
-            return success
+                # Use temp database backup for validator.db
+                upload_path = temp_db if filename == "validator.db" else filepath
+
+                blob_client = self.container.get_blob_client(filename)
+                try:
+                    async with aiofiles.open(upload_path, 'rb') as f:
+                        data = await f.read()
+
+                    # Ensure data is bytes
+                    if isinstance(data, dict):
+                        bt.logging.error(f"Data for {filename} is a dict. Serializing to bytes.")
+                        data = json.dumps(data).encode('utf-8')
+
+                    await blob_client.upload_blob(data, overwrite=True)
+                    bt.logging.debug(f"Uploaded {filename} to Azure")
+                except Exception as e:
+                    bt.logging.error(f"Failed to upload {filename} to Azure: {e}")
+                    bt.logging.error(traceback.format_exc())
+                    return False
+
+            success = True
+
+            # Update metadata and hash files after successful upload
+            if success:
+                await self._update_metadata_file()
+                await self._update_hash_file()
+
+            return True
 
         except Exception as e:
             bt.logging.error(f"Error pushing state: {str(e)}")
             bt.logging.error(traceback.format_exc())
             return False
+        finally:
+            # Cleanup temporary database file
+            if temp_db.exists():
+                try:
+                    temp_db.unlink()
+                    bt.logging.debug(f"Temporary backup file {temp_db} deleted.")
+                except Exception as e:
+                    bt.logging.error(f"Error cleaning up temporary database: {e}")
+
+    async def _safe_checkpoint(self, checkpoint_type="FULL", max_retries=3):
+        """Execute WAL checkpoint with retries and proper error handling"""
+        db_manager = self.db_manager
+        
+        for attempt in range(max_retries):
+            try:
+                await db_manager.execute_state_sync_query(f"PRAGMA wal_checkpoint({checkpoint_type});")
+                return True
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    bt.logging.warning(f"Checkpoint retry {attempt + 1}/{max_retries}")
+                    await asyncio.sleep(5 * (attempt + 1))  # Exponential backoff
+                    continue
+                raise
+            except Exception as e:
+                bt.logging.error(f"Checkpoint error: {e}")
+                raise
+
+    async def _update_metadata_file(self):
+        """Update metadata file after successful upload."""
+        metadata_path = self.state_dir / "state_metadata.json"
+        metadata = {
+            "last_backup": datetime.utcnow().isoformat(),
+            "files_uploaded": self.state_files
+        }
+        try:
+            async with aiofiles.open(metadata_path, 'w') as f:
+                await f.write(json.dumps(metadata))
+            bt.logging.debug("Metadata file updated.")
+        except Exception as e:
+            bt.logging.error(f"Failed to update metadata file: {e}")
+
+    async def _update_hash_file(self):
+        """Update hash file after successful upload."""
+        hash_path = self.state_dir / "state_hashes.txt"
+        try:
+            hashes = {}
+            for filename in self.state_files:
+                filepath = self.state_dir / filename
+                if not filepath.exists():
+                    continue
+                async with aiofiles.open(filepath, 'rb') as f:
+                    data = await f.read()
+                    hashes[filename] = hashlib.sha256(data).hexdigest()
+            async with aiofiles.open(hash_path, 'w') as f:
+                await f.write(json.dumps(hashes))
+            bt.logging.debug("Hash file updated.")
+        except Exception as e:
+            bt.logging.error(f"Failed to update hash file: {e}")

@@ -228,6 +228,50 @@ def initialize_database():
             amount_wagered TEXT,
             last_update_date TEXT
         )""",
+        
+        # Store game pools and their entropy scores
+        """CREATE TABLE IF NOT EXISTS entropy_game_pools (
+            game_id INTEGER,
+            outcome INTEGER,
+            entropy_score REAL DEFAULT 0.0,
+            PRIMARY KEY (game_id, outcome)
+        )""",
+        
+        # Store individual predictions and their entropy contributions
+        """CREATE TABLE IF NOT EXISTS entropy_predictions (
+            prediction_id TEXT PRIMARY KEY,
+            game_id INTEGER,
+            outcome INTEGER,
+            miner_uid INTEGER,
+            odds REAL,
+            wager REAL,
+            prediction_date TEXT,
+            entropy_contribution REAL,
+            FOREIGN KEY (game_id, outcome) REFERENCES entropy_game_pools(game_id, outcome)
+        )""",
+        
+        # Store daily miner entropy scores
+        """CREATE TABLE IF NOT EXISTS entropy_miner_scores (
+            miner_uid INTEGER,
+            day INTEGER,
+            contribution REAL,
+            PRIMARY KEY (miner_uid, day)
+        )""",
+        
+        # Store closed games tracking
+        """CREATE TABLE IF NOT EXISTS entropy_closed_games (
+            game_id INTEGER PRIMARY KEY,
+            close_time TEXT
+        )""",
+        
+        # Store system state
+        """CREATE TABLE IF NOT EXISTS entropy_system_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            current_day INTEGER DEFAULT 0,
+            num_miners INTEGER,
+            max_days INTEGER,
+            last_processed_date TEXT
+        )"""
     ])
     
     # 7. Create triggers
@@ -252,6 +296,20 @@ def initialize_database():
             DELETE FROM score_state
             WHERE last_update_date < date('now', '-7 days');
         END""",
+        
+        """CREATE TRIGGER IF NOT EXISTS cleanup_old_entropy_predictions
+        AFTER INSERT ON entropy_predictions
+        BEGIN
+            DELETE FROM entropy_predictions
+            WHERE prediction_date < date('now', '-45 days');
+        END""",
+        
+        """CREATE TRIGGER IF NOT EXISTS cleanup_old_entropy_closed_games
+        AFTER INSERT ON entropy_closed_games
+        BEGIN
+            DELETE FROM entropy_closed_games
+            WHERE close_time < date('now', '-45 days');
+        END"""
     ])
 
     # 8. Re-enable foreign key constraints

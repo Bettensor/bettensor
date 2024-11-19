@@ -1,4 +1,5 @@
 import json
+from sqlite3 import OperationalError
 import traceback
 import numpy as np
 import math
@@ -7,6 +8,8 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Tuple
 from scipy.spatial.distance import euclidean
+import os
+import asyncio
 
 
 class EntropySystem:
@@ -15,7 +18,7 @@ class EntropySystem:
         self,
         num_miners: int,
         max_days: int,
-        
+        db_manager=None  # Add db_manager parameter with default None
     ):
         """
         Initialize the EntropySystem object.
@@ -23,7 +26,7 @@ class EntropySystem:
         Args:
             num_miners (int): Maximum number of miners.
             max_days (int): Maximum number of days to store scores.
-            state_file_path (str, optional): Path to the state file. Defaults to 'entropy_system_state.json'.
+            db_manager (DatabaseManager, optional): Database manager instance.
         """
         self.num_miners = num_miners
         self.max_days = max_days
@@ -38,9 +41,10 @@ class EntropySystem:
         self.epsilon = 1e-8
         self.closed_games = set()
         self.game_close_times = {}
+        self.db_manager = db_manager  # Store db_manager reference
 
         # Attempt to load existing state
-        self.load_state()
+        asyncio.create_task(self.load_state())
 
     def _get_array_for_day(self, array: np.ndarray, day: int) -> np.ndarray:
         return array[:, day % self.max_days]
@@ -167,24 +171,17 @@ class EntropySystem:
     ) -> float:
         """
         Calculate how similar this prediction is to existing ones.
+        Higher similarity should lead to higher penalties.
         
-        Args:
-            game_id: The game identifier
-            outcome: The predicted outcome
-            miner_uid: The miner's identifier
-            odds: The predicted odds
-            prediction_date: The time of prediction
-            wager: The amount wagered
-            
         Returns:
-            float: Similarity score between 0 and 1
+            float: Similarity score between 0 (unique) and 1 (very similar)
         """
         try:
             pool = self.game_pools[game_id][outcome]
             existing_predictions = pool["predictions"]
             
             if not existing_predictions:
-                return 0.0
+                return 0.0  # First prediction is unique
                 
             # Ensure prediction_date is timezone-aware
             if prediction_date.tzinfo is None:
@@ -203,47 +200,33 @@ class EntropySystem:
                 for pt in prediction_times
             ]
             
-            # Add current prediction time
-            all_times = prediction_times + [prediction_date]
+            # Calculate time-based similarity
+            time_diffs = [(prediction_date - pt).total_seconds() for pt in prediction_times]
+            time_similarity = np.mean([1.0 / (1.0 + abs(td)/3600) for td in time_diffs])  # Decay over hours
             
-            if len(all_times) < 2:
-                return 0.0
-                
-            earliest_time = min(all_times)
-            latest_time = max(all_times)
-            
-            # Calculate time range in seconds (add small buffer to avoid division by zero)
-            time_range = max(
-                (latest_time - earliest_time).total_seconds(),
-                60  # minimum 1 minute range
-            )
-            
-            # Time similarity (closer in time = more similar)
-            time_similarity = 1 - abs(
-                (prediction_date - earliest_time).total_seconds()
-            ) / time_range
-            
-            # Odds similarity
+            # Calculate odds similarity
             existing_odds = [float(pred["odds"]) for pred in existing_predictions]
-            odds_range = max(max(existing_odds) - min(existing_odds), 0.1)  # minimum 0.1 range
-            odds_similarity = 1 - abs(odds - np.mean(existing_odds)) / odds_range
+            odds_diffs = [abs(odds - eo) for eo in existing_odds]
+            odds_similarity = np.mean([1.0 / (1.0 + diff) for diff in odds_diffs])
             
-            # Wager similarity
+            # Calculate wager similarity
             existing_wagers = [float(pred["wager"]) for pred in existing_predictions]
-            wager_range = max(max(existing_wagers) - min(existing_wagers), 1.0)  # minimum 1.0 range
-            wager_similarity = 1 - abs(wager - np.mean(existing_wagers)) / wager_range
+            wager_diffs = [abs(wager - ew)/max(wager, ew) for ew in existing_wagers]
+            wager_similarity = np.mean([1.0 - diff for diff in wager_diffs])
             
-            # Combine similarities (weighted average)
+            # Combine similarities with weights
             similarity = (
-                0.4 * time_similarity +
-                0.4 * odds_similarity +
-                0.2 * wager_similarity
+                0.5 * time_similarity +   # Time is most important (50%)
+                0.4 * wager_similarity +  # Wager is second most important (40%)
+                0.1 * odds_similarity     # Odds are least important (10%)
             )
             
             bt.logging.debug(
-                f"Prediction similarity for game {game_id}: "
-                f"time={time_similarity:.3f}, odds={odds_similarity:.3f}, "
-                f"wager={wager_similarity:.3f}, combined={similarity:.3f}"
+                f"Prediction similarity for game {game_id}:\n"
+                f"  time={time_similarity:.3f} (weight: 0.5)\n"
+                f"  wager={wager_similarity:.3f} (weight: 0.4)\n"
+                f"  odds={odds_similarity:.3f} (weight: 0.1)\n"
+                f"  combined={similarity:.3f}"
             )
             
             return max(0.0, min(1.0, similarity))
@@ -264,45 +247,67 @@ class EntropySystem:
     ) -> float:
         """
         Calculate the entropy contribution for a prediction.
+        High similarity should result in penalties (negative scores).
+        Score range is expanded to [-10, 10].
         
-        Args:
-            game_id: The game identifier
-            predicted_outcome: The predicted outcome
-            miner_uid: The miner's identifier
-            predicted_odds: The predicted odds
-            wager: The amount wagered
-            prediction_date: The prediction datetime (ISO format string)
-            
         Returns:
-            float: The entropy contribution score
+            float: The entropy contribution score between -10 and 10
         """
+        # Calculate similarity (0 to 1)
         prediction_similarity = self.calculate_prediction_similarity(
             game_id=game_id,
             outcome=predicted_outcome,
             miner_uid=miner_uid,
             odds=predicted_odds,
-            prediction_date=prediction_date,  # Fixed parameter order
+            prediction_date=prediction_date,
             wager=wager
         )
         
+        # Invert similarity to make it a penalty
+        # High similarity (1.0) becomes high penalty (-1.0)
+        similarity_penalty = -(prediction_similarity)
+        
+        # Calculate contrarian component (-1 to 1)
         contrarian_component = self.calculate_contrarian_component(
             game_id, predicted_outcome, miner_uid
         )
-
-        # Combine components with weights
-        entropy_contribution = 0.6 * prediction_similarity + 0.4 * contrarian_component
         
-        # Normalize to [-1, 1] range
-        normalized_contribution = max(min(entropy_contribution, 1), -1)
+        # Combine components with weights
+        # Note: similarity_penalty is already negative for high similarity
+        raw_contribution = 0.6 * similarity_penalty + 0.4 * contrarian_component
+        
+        # Get all contributions in this pool for proper normalization
+        pool = self.game_pools[game_id][predicted_outcome]
+        all_contributions = [
+            pred["entropy_contribution"] 
+            for pred in pool["predictions"]
+        ] + [raw_contribution]
+        
+        # Normalize using the full range of contributions
+        if len(all_contributions) > 1:
+            min_contrib = min(all_contributions)
+            max_contrib = max(all_contributions)
+            range_contrib = max_contrib - min_contrib
+            if range_contrib > 0:
+                normalized_contribution = (raw_contribution - min_contrib) / range_contrib
+                # Scale to [-10, 10] range
+                final_contribution = (normalized_contribution * 20) - 10
+            else:
+                final_contribution = 0.0
+        else:
+            # First prediction in pool
+            final_contribution = 0.0
         
         bt.logging.debug(
-            f"Entropy contribution for game {game_id}: "
-            f"similarity={prediction_similarity:.3f}, "
-            f"contrarian={contrarian_component:.3f}, "
-            f"final={normalized_contribution:.3f}"
+            f"Entropy calculation for game {game_id}:\n"
+            f"  similarity={prediction_similarity:.3f}\n"
+            f"  similarity_penalty={similarity_penalty:.3f}\n"
+            f"  contrarian={contrarian_component:.3f}\n"
+            f"  raw_contribution={raw_contribution:.3f}\n"
+            f"  final_contribution={final_contribution:.3f}"
         )
         
-        return normalized_contribution
+        return final_contribution
 
     def calculate_contrarian_component(self, game_id, predicted_outcome, miner_uid):
         total_predictions = sum(
@@ -469,83 +474,301 @@ class EntropySystem:
         
         return ebdr_scores
 
-    def save_state(self):
-        """
-        Save the current state of the EntropySystem to a JSON file.
-
-        Args:
-            file_path (str): The path to save the JSON file.
-        """
-        state = {
-            "current_day": self.current_day,
-            "game_outcome_entropies": self.game_outcome_entropies,
-            "prediction_counts": self.prediction_counts,
-            "ebdr_scores": self.ebdr_scores.tolist(),
-            "game_pools": {
-                str(game_id): {
-                    str(outcome): {
-                        "predictions": [
-                            {
-                                "miner_uid": pred["miner_uid"],
-                                "odds": pred["odds"],
-                                "wager": pred["wager"],
-                                "prediction_date": pred["prediction_date"],
-                                "entropy_contribution": pred["entropy_contribution"],
-                            }
-                            for pred in pool["predictions"]
-                        ],
-                        "entropy_score": pool["entropy_score"],
-                    }
-                    for outcome, pool in outcomes.items()
-                }
-                for game_id, outcomes in self.game_pools.items()
-            },
-            "miner_predictions": {
-                str(day): {
-                    str(miner_id): contributions
-                    for miner_id, contributions in miners.items()
-                }
-                for day, miners in self.miner_predictions.items()
-            },
-            "closed_games": list(self.closed_games),
-            "game_close_times": {
-                str(game_id): game_close_time.isoformat()
-                for game_id, game_close_time in self.game_close_times.items()
-            },
-        }
-
-        with open(self.state_file_path, "w") as f:
-            json.dump(state, f)
-
-        bt.logging.info(f"EntropySystem state saved to {self.state_file_path}")
-
-    def load_state(self):
-        """
-        Load the state of the EntropySystem from a JSON file.
-
-        Args:
-            file_path (str): The path to load the JSON file from.
-        """
+    async def save_state(self):
+        """Save the current state to both database and file"""
         try:
+            # First save to database
+            await self._save_to_database()
+            
+            # Then save to file (keeping existing logic for backwards compatibility)
+            self._save_to_file()
+            
+        except Exception as e:
+            bt.logging.error(f"Error saving entropy system state: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+
+    async def _save_to_database(self):
+        """Save current state to database tables"""
+        try:
+            if not self.db_manager:
+                return False
+
+            # Save system state
+            await self.db_manager.execute_query("""
+                INSERT OR REPLACE INTO entropy_system_state 
+                (id, current_day, num_miners, max_days, last_processed_date)
+                VALUES (1, ?, ?, ?, datetime('now'))
+            """, (self.current_day, self.num_miners, self.max_days))
+            
+            # Save game pools
+            for game_id, outcomes in self.game_pools.items():
+                for outcome, pool in outcomes.items():
+                    await self.db_manager.execute_query("""
+                        INSERT OR REPLACE INTO entropy_game_pools 
+                        (game_id, outcome, entropy_score)
+                        VALUES (?, ?, ?)
+                    """, (game_id, outcome, pool["entropy_score"]))
+                    
+                    # Save predictions for this pool
+                    for pred in pool["predictions"]:
+                        if "prediction_id" not in pred:
+                            # bt.logging.warning(
+                            #     f"Skipping prediction without ID for game {game_id}, outcome {outcome}:\n"
+                            #     f"  Miner: {pred.get('miner_uid')}\n"
+                            #     f"  Odds: {pred.get('odds')}\n"
+                            #     f"  Wager: {pred.get('wager')}\n"
+                            #     f"  Date: {pred.get('prediction_date')}\n"
+                            #     f"  Entropy Contribution: {pred.get('entropy_contribution')}"
+                            # )
+                            continue
+                            
+                        # Ensure prediction_date is in the correct format
+                        if isinstance(pred["prediction_date"], datetime):
+                            pred_date = pred["prediction_date"].isoformat()
+                        else:
+                            pred_date = pred["prediction_date"]
+                            
+                        await self.db_manager.execute_query("""
+                            INSERT OR REPLACE INTO entropy_predictions 
+                            (prediction_id, game_id, outcome, miner_uid, odds, 
+                             wager, prediction_date, entropy_contribution)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            pred["prediction_id"], game_id, outcome, 
+                            pred["miner_uid"], pred["odds"], pred["wager"],
+                            pred_date, pred["entropy_contribution"]
+                        ))
+            
+            # Save miner predictions
+            for day, miners in self.miner_predictions.items():
+                for miner_uid, contribution in miners.items():
+                    await self.db_manager.execute_query("""
+                        INSERT OR REPLACE INTO entropy_miner_scores
+                        (miner_uid, day, contribution)
+                        VALUES (?, ?, ?)
+                    """, (miner_uid, day, contribution))
+            
+            # Save closed games
+            for game_id in self.closed_games:
+                close_time = self.game_close_times.get(game_id)
+                if close_time:
+                    if isinstance(close_time, datetime):
+                        close_time = close_time.isoformat()
+                        
+                    await self.db_manager.execute_query("""
+                        INSERT OR REPLACE INTO entropy_closed_games
+                        (game_id, close_time)
+                        VALUES (?, ?)
+                    """, (game_id, close_time))
+            
+            bt.logging.info("Successfully saved entropy system state to database")
+            return True
+            
+        except Exception as e:
+            bt.logging.error(f"Error saving to database: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+            return False
+
+    def _save_to_file(self):
+        """Original file-based save logic with proper datetime handling"""
+        try:
+            if os.path.exists(self.state_file_path):
+                backup_path = f"{self.state_file_path}.backup"
+                os.replace(self.state_file_path, backup_path)
+
+            # Create a state dictionary with properly serialized datetime objects
+            state = {
+                "current_day": self.current_day,
+                "game_outcome_entropies": self.game_outcome_entropies,
+                "prediction_counts": self.prediction_counts,
+                "ebdr_scores": self.ebdr_scores.tolist(),
+                "game_pools": {
+                    str(game_id): {
+                        str(outcome): {
+                            "predictions": [
+                                {
+                                    "prediction_id": pred["prediction_id"],
+                                    "miner_uid": pred["miner_uid"],
+                                    "odds": float(pred["odds"]),
+                                    "wager": float(pred["wager"]),
+                                    "prediction_date": pred["prediction_date"].isoformat() if isinstance(pred["prediction_date"], datetime) else pred["prediction_date"],
+                                    "entropy_contribution": float(pred["entropy_contribution"])
+                                }
+                                for pred in pool["predictions"]
+                            ],
+                            "entropy_score": float(pool["entropy_score"])
+                        }
+                        for outcome, pool in outcomes.items()
+                    }
+                    for game_id, outcomes in self.game_pools.items()
+                },
+                "miner_predictions": {
+                    str(day): {
+                        str(miner_id): float(contributions)
+                        for miner_id, contributions in miners.items()
+                    }
+                    for day, miners in self.miner_predictions.items()
+                },
+                "closed_games": list(self.closed_games),
+                "game_close_times": {
+                    str(game_id): game_close_time.isoformat() if isinstance(game_close_time, datetime) else game_close_time
+                    for game_id, game_close_time in self.game_close_times.items()
+                }
+            }
+
+            temp_path = f"{self.state_file_path}.tmp"
+            with open(temp_path, "w") as f:
+                json.dump(state, f, indent=2)
+
+            # Verify the JSON is valid
+            with open(temp_path, "r") as f:
+                json.load(f)
+
+            os.replace(temp_path, self.state_file_path)
+            bt.logging.info(f"Successfully saved entropy system state to file")
+
+        except Exception as e:
+            bt.logging.error(f"Error saving to file: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+
+    async def load_state(self):
+        """Load state from database, falling back to file if needed"""
+        try:
+            # First try to load from database
+            if await self._load_from_database():
+                bt.logging.info("Successfully loaded state from database")
+                return
+                
+            # If no database state, try to load from file and migrate
+            if os.path.exists(self.state_file_path):
+                bt.logging.info("No database state found, attempting to migrate from file")
+                if self._load_from_file():
+                    bt.logging.info("Successfully loaded state from file")
+                    # Save to database for future use
+                    await self._save_to_database()
+                    return
+                    
+            bt.logging.warning("No existing state found, starting fresh")
+            
+        except Exception as e:
+            bt.logging.error(f"Error loading state: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+
+    async def _load_from_database(self) -> bool:
+        """Load state from database tables"""
+        try:
+            if not self.db_manager:
+                return False
+
+            # Load system state
+            try:
+                row = await self.db_manager.fetch_one(
+                    "SELECT current_day FROM entropy_system_state WHERE id = 1"
+                )
+            except OperationalError as e:
+                #reinit db manager with new file, migrating
+                await self.db_manager.initialize()
+                return False
+
+            # Access columns by name instead of index
+            self.current_day = row['current_day']
+            
+            # Verify the system parameters match
+            if (row['num_miners'] != self.num_miners or 
+                row['max_days'] != self.max_days):
+                bt.logging.warning(
+                    f"Database state parameters don't match current system:\n"
+                    f"  Miners: {row['num_miners']} (DB) vs {self.num_miners} (current)\n"
+                    f"  Days: {row['max_days']} (DB) vs {self.max_days} (current)"
+                )
+                return False
+
+            # Load game pools
+            pools_query = """
+                SELECT game_id, outcome, entropy_score
+                FROM entropy_game_pools
+            """
+            pools = await self.db_manager.fetch_all(pools_query)
+            
+            # Load predictions for each pool
+            for pool in pools:
+                game_id = pool['game_id']
+                outcome = pool['outcome']
+                
+                if game_id not in self.game_pools:
+                    self.game_pools[game_id] = {}
+                
+                predictions_query = """
+                    SELECT prediction_id, miner_uid, odds, wager, 
+                           prediction_date, entropy_contribution
+                    FROM entropy_predictions
+                    WHERE game_id = ? AND outcome = ?
+                """
+                predictions = await self.db_manager.fetch_all(
+                    predictions_query, 
+                    (game_id, outcome)
+                )
+                
+                self.game_pools[game_id][outcome] = {
+                    "predictions": [
+                        {
+                            "prediction_id": p['prediction_id'],
+                            "miner_uid": p['miner_uid'],
+                            "odds": p['odds'],
+                            "wager": p['wager'],
+                            "prediction_date": p['prediction_date'],
+                            "entropy_contribution": p['entropy_contribution']
+                        }
+                        for p in predictions
+                    ],
+                    "entropy_score": float(pool['entropy_score'])
+                }
+            
+            # Load miner predictions
+            self.miner_predictions = defaultdict(dict)
+            rows = await self.db_manager.fetch_all("SELECT * FROM entropy_miner_scores")
+            for row in rows:
+                miner_uid, day, contribution = row
+                self.miner_predictions[day][miner_uid] = contribution
+            
+            # Load closed games
+            self.closed_games = set()
+            self.game_close_times = {}
+            rows = await self.db_manager.fetch_all("SELECT * FROM entropy_closed_games")
+            for row in rows:
+                game_id, close_time = row
+                self.closed_games.add(game_id)
+                self.game_close_times[game_id] = datetime.fromisoformat(close_time)
+            
+            return True
+            
+        except Exception as e:
+            bt.logging.error(f"Error loading from database: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+            return False
+
+    def _load_from_file(self) -> bool:
+        """Original file-based load logic. Returns True if successful."""
+        try:
+            if not os.path.exists(self.state_file_path):
+                return False
+
             with open(self.state_file_path, "r") as f:
                 state = json.load(f)
 
-            self.current_day = int(state["current_day"])
-            self.game_outcome_entropies = {
-                int(k): {int(ok): v for ok, v in ov.items()}
-                for k, ov in state["game_outcome_entropies"].items()
-            }
-            self.prediction_counts = {
-                int(k): {int(ok): v for ok, v in ov.items()}
-                for k, ov in state["prediction_counts"].items()
-            }
-            self.ebdr_scores = np.array(state["ebdr_scores"])
+            self.current_day = state.get("current_day", 0)
+            self.game_outcome_entropies = state.get("game_outcome_entropies", {})
+            self.prediction_counts = state.get("prediction_counts", {})
+            self.ebdr_scores = np.array(state.get("ebdr_scores", []))
+            
+            # Load game pools
             self.game_pools = defaultdict(dict)
             for game_id, outcomes in state["game_pools"].items():
                 for outcome, pool in outcomes.items():
                     self.game_pools[int(game_id)][int(outcome)] = {
                         "predictions": [
                             {
+                                "prediction_id": pred["prediction_id"],
                                 "miner_uid": pred["miner_uid"],
                                 "odds": pred["odds"],
                                 "wager": pred["wager"],
@@ -556,6 +779,8 @@ class EntropySystem:
                         ],
                         "entropy_score": float(pool["entropy_score"]),
                     }
+                    
+            # Load other state components
             self.miner_predictions = {
                 int(day): {
                     int(miner_id): float(contribution)
@@ -563,35 +788,37 @@ class EntropySystem:
                 }
                 for day, miners in state["miner_predictions"].items()
             }
+            
             self.closed_games = set(state.get("closed_games", []))
             self.game_close_times = {
                 int(game_id): datetime.fromisoformat(game_close_time)
-                for game_id, game_close_time in state.get(
-                    "game_close_times", {}
-                ).items()
+                for game_id, game_close_time in state.get("game_close_times", {}).items()
             }
-            bt.logging.info(f"EntropySystem state loaded from {self.state_file_path}")
-
-        except FileNotFoundError:
-            bt.logging.warning(
-                f"No state file found at {self.state_file_path}. Starting with fresh state."
-            )
-
-        except json.JSONDecodeError:
-            bt.logging.error(
-                f"Error decoding JSON from {self.state_file_path}. Starting with fresh state."
-            )
-            bt.logging.error(traceback.format_exc())
-        except KeyError as e:
-            bt.logging.error(
-                f"Missing key in state file: {e}. Starting with fresh state."
-            )
-            bt.logging.error(traceback.format_exc())
+            
+            return True
+            
         except Exception as e:
-            bt.logging.error(
-                f"Unexpected error loading state: {e}. Starting with fresh state."
-            )
+            bt.logging.error(f"Error loading from file: {str(e)}")
             bt.logging.error(traceback.format_exc())
+            return False
+
+    def _handle_corrupted_state(self):
+        """Handle corrupted state file by attempting recovery or reset."""
+        try:
+            # Try to load backup if it exists
+            backup_path = f"{self.state_file_path}.backup"
+            if os.path.exists(backup_path):
+                bt.logging.info("Attempting to restore from backup...")
+                with open(backup_path, "r") as f:
+                    state = json.load(f)
+                os.replace(backup_path, self.state_file_path)
+                bt.logging.info("Successfully restored from backup")
+            else:
+                bt.logging.warning("No backup found, resetting to fresh state")
+                self.reset_state()
+        except Exception as e:
+            bt.logging.error(f"Error handling corrupted state: {str(e)}")
+            self.reset_state()
 
     def reset_state(self):
         """Reset the entropy system state to initial values."""
