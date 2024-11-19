@@ -660,28 +660,36 @@ class EntropySystem:
             if not self.db_manager:
                 return False
 
-            # Load system state
-            try:
-                row = await self.db_manager.fetch_one(
-                    "SELECT current_day FROM entropy_system_state WHERE id = 1"
-                )
-            except OperationalError as e:
-                #reinit db manager with new file, migrating
-                await self.db_manager.initialize()
+            # Load system state - first check what columns we actually have
+            schema_query = """
+                SELECT sql FROM sqlite_master 
+                WHERE type='table' AND name='entropy_system_state'
+            """
+            schema_row = await self.db_manager.fetch_one(schema_query)
+            if schema_row:
+                bt.logging.debug(f"Entropy system state schema: {schema_row['sql']}")
+
+            # Load system state with only the columns we know exist
+            state_query = """
+                SELECT current_day, last_processed_date
+                FROM entropy_system_state 
+                WHERE id = 1
+            """
+            row = await self.db_manager.fetch_one(state_query)
+            if not row:
+                bt.logging.info("No entropy system state found in database")
                 return False
 
             # Access columns by name instead of index
             self.current_day = row['current_day']
             
-            # Verify the system parameters match
-            if (row['num_miners'] != self.num_miners or 
-                row['max_days'] != self.max_days):
-                bt.logging.warning(
-                    f"Database state parameters don't match current system:\n"
-                    f"  Miners: {row['num_miners']} (DB) vs {self.num_miners} (current)\n"
-                    f"  Days: {row['max_days']} (DB) vs {self.max_days} (current)"
-                )
-                return False
+            # Skip parameter verification since we don't store these in the DB
+            # Just log the current values
+            bt.logging.info(
+                f"Current system parameters:\n"
+                f"  Miners: {self.num_miners}\n"
+                f"  Max days: {self.max_days}"
+            )
 
             # Load game pools
             pools_query = """
@@ -689,6 +697,9 @@ class EntropySystem:
                 FROM entropy_game_pools
             """
             pools = await self.db_manager.fetch_all(pools_query)
+            
+            # Initialize game pools
+            self.game_pools = {}
             
             # Load predictions for each pool
             for pool in pools:
@@ -721,27 +732,49 @@ class EntropySystem:
                         }
                         for p in predictions
                     ],
-                    "entropy_score": float(pool['entropy_score'])
+                    "entropy_score": pool['entropy_score']
                 }
-            
+
             # Load miner predictions
-            self.miner_predictions = defaultdict(dict)
-            rows = await self.db_manager.fetch_all("SELECT * FROM entropy_miner_scores")
-            for row in rows:
-                miner_uid, day, contribution = row
-                self.miner_predictions[day][miner_uid] = contribution
+            miner_scores_query = """
+                SELECT miner_uid, day, contribution
+                FROM entropy_miner_scores
+            """
+            miner_scores = await self.db_manager.fetch_all(miner_scores_query)
             
+            # Initialize miner predictions
+            self.miner_predictions = {}
+            
+            for score in miner_scores:
+                day = score['day']
+                miner_uid = score['miner_uid']
+                if day not in self.miner_predictions:
+                    self.miner_predictions[day] = {}
+                self.miner_predictions[day][miner_uid] = score['contribution']
+
             # Load closed games
-            self.closed_games = set()
-            self.game_close_times = {}
-            rows = await self.db_manager.fetch_all("SELECT * FROM entropy_closed_games")
-            for row in rows:
-                game_id, close_time = row
-                self.closed_games.add(game_id)
-                self.game_close_times[game_id] = datetime.fromisoformat(close_time)
+            closed_games_query = """
+                SELECT game_id, close_time
+                FROM entropy_closed_games
+            """
+            closed_games = await self.db_manager.fetch_all(closed_games_query)
             
+            self.closed_games = set(g['game_id'] for g in closed_games)
+            self.game_close_times = {
+                g['game_id']: datetime.fromisoformat(g['close_time']) 
+                if isinstance(g['close_time'], str) else g['close_time']
+                for g in closed_games
+            }
+
+            bt.logging.info(
+                f"Successfully loaded entropy system state from database:\n"
+                f"  Current day: {self.current_day}\n"
+                f"  Game pools: {len(self.game_pools)}\n"
+                f"  Closed games: {len(self.closed_games)}\n"
+                f"  Days with predictions: {len(self.miner_predictions)}"
+            )
             return True
-            
+
         except Exception as e:
             bt.logging.error(f"Error loading from database: {str(e)}")
             bt.logging.error(traceback.format_exc())

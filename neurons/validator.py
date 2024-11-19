@@ -35,7 +35,7 @@ import signal
 
 # Constants for timeouts (in seconds)
 UPDATE_TIMEOUT = 300  # 5 minutes
-GAME_DATA_TIMEOUT = 180  # 3 minutes
+GAME_DATA_TIMEOUT = 600  # 10 minutes (for deep updates)
 METAGRAPH_TIMEOUT = 120  # 2 minutes
 QUERY_TIMEOUT = 600  # 10 minutes
 WEBSITE_TIMEOUT = 60  # 1 minute
