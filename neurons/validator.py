@@ -186,6 +186,8 @@ async def game_data_update_loop(validator):
                     async with validator.operation_lock:
                         await update_game_data(validator, deep_update_time)
                 last_deep_update = current_time_secs
+                validator.last_api_call = deep_update_time
+                await validator.save_state()
                 first_run = False
                 bt.logging.info("Deep update completed")
                 await asyncio.sleep(5)  # Brief pause after deep update
@@ -194,6 +196,9 @@ async def game_data_update_loop(validator):
             async with async_timeout.timeout(GAME_DATA_TIMEOUT):
                 async with validator.operation_lock:
                     await update_game_data(validator, current_time)
+                    validator.last_api_call = current_time
+                    await validator.save_state()
+                    
             
             await asyncio.sleep(30)
             
