@@ -119,6 +119,7 @@ class EntropySystem:
 
             if predicted_outcome not in self.game_pools[game_id]:
                 bt.logging.error(f"Invalid outcome {predicted_outcome} for game {game_id}")
+                bt.logging.warning(f"Game pools: {self.game_pools[game_id]}")
                 return
 
             # Only check for closed games during live operation, not during rebuilds

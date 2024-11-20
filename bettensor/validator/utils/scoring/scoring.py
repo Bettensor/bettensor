@@ -1612,13 +1612,6 @@ class ScoringSystem:
         return risk_scores
 
     async def _update_composite_scores(self, historical_day=None):
-        """
-        Update composite scores for either current day or a historical day.
-        
-        Args:
-            historical_day (int, optional): The historical day index being processed.
-                If None, uses self.current_day.
-        """
         day_index = self.current_day if historical_day is None else historical_day
         
         # Get miners with predictions from miner_stats with debug info
@@ -1626,26 +1619,26 @@ class ScoringSystem:
         SELECT 
             COUNT(*) as total_miners,
             SUM(CASE WHEN miner_last_prediction_date IS NOT NULL THEN 1 ELSE 0 END) as miners_with_dates,
-            SUM(CASE WHEN miner_lifetime_predictions > 0 THEN 1 ELSE 0 END) as miners_with_predictions
+            SUM(CASE WHEN miner_lifetime_predictions > 0 THEN 1 END) as miners_with_predictions
         FROM miner_stats
         """
         stats = await self.db_manager.fetch_one(query)
         bt.logging.info(f"Database stats: {stats}")
 
-        # Original query but with lifetime predictions check
+        # Get active miners
         query = """
         SELECT miner_uid FROM miner_stats 
         WHERE miner_last_prediction_date IS NOT NULL
         OR miner_lifetime_predictions > 0
         """
         active_miners = await self.db_manager.fetch_all(query)
-        bt.logging.info(f"Active miners: {len(active_miners)}")
         has_prediction_history = np.zeros(self.num_miners, dtype=bool)
         for miner in active_miners:
             has_prediction_history[miner['miner_uid']] = True
 
-        bt.logging.info(f"Total miners: {self.num_miners}")
-        bt.logging.info(f"Miners with prediction history: {np.sum(has_prediction_history)}")
+        # Create a 2D valid_history array
+        valid_history = np.zeros((self.num_miners, self.max_days), dtype=bool)
+        valid_history[:, day_index] = has_prediction_history  # Set current day's history
 
         # Get component scores for the day
         clv = self.clv_scores[:, day_index]
@@ -1714,12 +1707,7 @@ class ScoringSystem:
             + self.entropy_weight * norm_entropy
         )
 
-        # After calculating composite scores
-        bt.logging.info(f"Miners with non-zero composite scores before history check: {np.sum(composite != 0)}")
-        composite[~has_prediction_history] = 0
-        bt.logging.info(f"Miners with non-zero composite scores after history check: {np.sum(composite != 0)}")
-
-        # Only zero out scores for miners with no history
+        # Only zero out scores once for miners with no history
         composite[~has_prediction_history] = 0
         
         bt.logging.info(f"Miners with non-zero composite scores: {np.sum(composite != 0)}")
@@ -1727,25 +1715,29 @@ class ScoringSystem:
         # Store the base composite score
         self.composite_scores[:, day_index, 0] = composite
 
-        # Calculate rolling averages for each tier based on normalized composite scores
-        for tier in range(1, 6):  # Tiers 1 to 5
-            window = self.tier_configs[tier + 1]["window"]  # +1 because tier configs are 0-indexed
+        # Calculate rolling averages for each tier - simplified to just average over window
+        for tier in range(1, 6):
+            window = self.tier_configs[tier + 1]["window"]
             start_day = (day_index - window + 1) % self.max_days
-
+            
+            # Handle circular buffer for window scores
             if start_day <= day_index:
                 window_scores = self.composite_scores[:, start_day:day_index + 1, 0]
             else:
-                window_scores = np.concatenate(
-                    [
-                        self.composite_scores[:, start_day:, 0],
-                        self.composite_scores[:, :day_index + 1, 0],
-                    ],
-                    axis=1,
-                )
-
-            rolling_avg = np.mean(window_scores, axis=1)
-            # Ensure rolling averages are also masked for miners with no history
-            rolling_avg[~has_prediction_history] = 0
+                window_scores = np.concatenate([
+                    self.composite_scores[:, start_day:, 0],
+                    self.composite_scores[:, :day_index + 1, 0]
+                ], axis=1)
+            
+            # Simple average over window, only considering non-zero scores
+            valid_scores = window_scores != 0
+            valid_days = np.sum(valid_scores, axis=1)
+            rolling_avg = np.zeros(self.num_miners)
+            mask = valid_days > 0
+            
+            if np.any(mask):
+                rolling_avg[mask] = np.sum(window_scores[mask] * valid_scores[mask], axis=1) / valid_days[mask]
+            
             self.composite_scores[:, day_index, tier] = rolling_avg
 
         # Add logging about prediction history
@@ -1801,6 +1793,9 @@ class ScoringSystem:
             start_date = end_date - timedelta(days=self.max_days)
             
             bt.logging.info(f"Rebuilding scores from {start_date} to {end_date}")
+            
+            # Track valid history periods
+            valid_history = np.zeros((self.num_miners, self.max_days), dtype=bool)
             
             # Process each day
             for days_ago in range(self.max_days - 1, -1, -1):
@@ -1919,12 +1914,16 @@ class ScoringSystem:
                     ])
 
                     if pred_array.size > 0:
-                        # Calculate scores using existing methods
+                        # Mark this day as having valid history for these miners
+                        active_miners = np.unique(pred_array[:, 0].astype(int))
+                        valid_history[active_miners, historical_day] = True
+                        
+                        # Calculate scores for this day
                         roi_scores = self._calculate_roi_scores(pred_array, results)
                         clv_scores = self._calculate_clv_scores(pred_array, closing_line_odds)
                         sortino_scores = self._calculate_risk_scores(pred_array, results)
                         
-                        # Update score arrays for this day
+                        # Update score arrays
                         self.roi_scores[:, historical_day] = roi_scores
                         self.clv_scores[:, historical_day] = clv_scores
                         self.sortino_scores[:, historical_day] = sortino_scores
@@ -1972,11 +1971,25 @@ class ScoringSystem:
                         
                         self.entropy_scores[:, historical_day] = entropy_scores[:, historical_day]
                         
-                        # Calculate composite scores
+                        # Update composite scores for this day
                         await self._update_composite_scores(historical_day)
                         
-                        # Save scores to database
-                        await self.save_scores_for_day(historical_day)
+                        # After processing each day, ensure continuity in tier scores
+                        for tier in range(1, 6):
+                            window = self.tier_configs[tier + 1]["window"]
+                            start_window = (historical_day - window + 1) % self.max_days
+                            
+                            # Check which miners have any history in this window
+                            miners_with_history = np.any(valid_history[:, max(0, historical_day - window + 1):historical_day + 1], axis=1)
+                            
+                            if np.any(miners_with_history):
+                                # Ensure all days in window have scores for these miners
+                                for d in range(max(0, historical_day - window + 1), historical_day + 1):
+                                    day_idx = d % self.max_days
+                                    if not np.any(self.composite_scores[miners_with_history, day_idx, tier]):
+                                        # Recalculate tier score for this day
+                                        await self._update_composite_scores(day_idx)
+                                        bt.logging.debug(f"Filled gap in tier {tier} scores for day {day_idx}")
                     
                 except Exception as e:
                     bt.logging.error(f"Error processing day {process_date}: {str(e)}")
