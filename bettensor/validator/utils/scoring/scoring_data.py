@@ -54,7 +54,7 @@ class ScoringData:
         # Step 1: Get closed games for that day (Outcome != 3)
         closed_games = await self._fetch_closed_game_data(date_str)
 
-        if not closed_games:
+        if len(closed_games) == 0:
             bt.logging.warning("No closed games found for the given date.")
             return np.array([]), np.array([]), np.array([])
 
@@ -67,7 +67,6 @@ class ScoringData:
         bt.logging.debug("Updating predictions with payout")
         predictions = await self._update_predictions_with_payout(predictions, closed_games)
 
-       
         # Step 4: Structure prediction data into the format necessary for scoring
         structured_predictions = np.array(
             [
@@ -84,8 +83,6 @@ class ScoringData:
             ]
         )
 
-        bt.logging.debug(f"Structured predictions: {structured_predictions}")
-
         results = np.array(
             [
                 [
@@ -100,86 +97,94 @@ class ScoringData:
             [
                 [
                     int(game["external_id"]),
-                    float(game["team_a_odds"]),
-                    float(game["team_b_odds"]),
-                    float(game["tie_odds"]) if game["tie_odds"] is not None else 0.0,
+                    float(game["closing_line_odds"][0]),  # team_a_odds
+                    float(game["closing_line_odds"][1]),  # team_b_odds
+                    float(game["closing_line_odds"][2]),  # tie_odds
                 ]
                 for game in closed_games
             ]
         )
 
-        bt.logging.debug(
-            f"Structured predictions shape: {structured_predictions.shape}"
-        )
+        bt.logging.debug(f"Structured predictions shape: {structured_predictions.shape}")
         bt.logging.debug(f"Closing line odds shape: {closing_line_odds.shape}")
         bt.logging.debug(f"Results shape: {results.shape}")
-
-        bt.logging.debug(f"First 5 structured predictions: {structured_predictions[:5]}")
-        bt.logging.debug(f"First 5 closing line odds: {closing_line_odds[:5]}")
-        bt.logging.debug(f"First 5 results: {results[:5]}")
 
         return structured_predictions, closing_line_odds, results
 
     async def _fetch_closed_game_data(self, date_str):
-        # Always use current UTC time as the end of the window
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(hours=24)
-        
-        formatted_end = end_time.strftime('%Y-%m-%d %H:%M:%S')
-        formatted_start = start_time.strftime('%Y-%m-%d %H:%M:%S')
-        
-        bt.logging.debug(f"Using UTC window: {formatted_start} to {formatted_end}")
-        
-        query = """
-            SELECT 
-                game_id,
-                external_id,
-                team_a,
-                team_b,
-                team_a_odds,
-                team_b_odds,
-                tie_odds,
-                can_tie,
-                event_start_date,
-                create_date,
-                last_update_date,
-                sport,
-                league,
-                outcome,
-                active
-            FROM game_data
-            WHERE event_start_date BETWEEN ? AND ?
-            AND outcome IS NOT NULL 
-            AND outcome != 'Unfinished'
-            AND outcome != 3
-        """
-        
-        # Debug query with actual values
-        debug_query = """
-        SELECT COUNT(*) as count FROM game_data 
-        WHERE event_start_date BETWEEN ? AND ?
-        AND outcome IS NOT NULL
-        """
-        count = await self.db_manager.fetch_one(debug_query, (formatted_start, formatted_end))
-        bt.logging.debug(f"Total games in window (including unfinished): {count['count']}")
-        
-        games = await self.db_manager.fetch_all(query, (formatted_start, formatted_end))
-        
-        bt.logging.debug(f"Found {len(games) if games else 0} closed games between {formatted_start} and {formatted_end}")
-        if games:
-            bt.logging.debug(f"Sample game: {games[0]}")
-            bt.logging.debug(f"Event start time: {games[0]['event_start_date']}")
-        
-        return games or []
+        """Fetch closed game data for a specific date."""
+        try:
+            # Parse the input date
+            target_date = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+            
+            # Format start and end dates
+            formatted_start = target_date.replace(hour=0, minute=0, second=0).isoformat()
+            formatted_end = target_date.replace(hour=23, minute=59, second=59).isoformat()
+            
+            query = """
+                SELECT 
+                    external_id,
+                    event_start_date,
+                    team_a_odds,
+                    team_b_odds,
+                    tie_odds,
+                    outcome
+                FROM game_data
+                WHERE event_start_date BETWEEN :start_date AND :end_date
+                AND outcome IS NOT NULL
+                AND outcome != 'Unfinished'
+                AND outcome != 3
+                ORDER BY event_start_date ASC
+            """
+            
+            params = {
+                "start_date": formatted_start,
+                "end_date": formatted_end
+            }
+            
+            games = await self.db_manager.fetch_all(query, params)
+            
+            if not games:
+                bt.logging.warning(f"No closed games found for date {date_str}")
+                return np.array([])
+            
+            # Process the games to combine odds into the expected format
+            processed_games = []
+            for game in games:
+                processed_game = {
+                    'external_id': game['external_id'],
+                    'event_start_date': game['event_start_date'],
+                    'closing_line_odds': [
+                        game['team_a_odds'],
+                        game['team_b_odds'],
+                        game['tie_odds'] if game['tie_odds'] is not None else float('inf')
+                    ],
+                    'outcome': game['outcome']
+                }
+                processed_games.append(processed_game)
+            
+            bt.logging.info(f"Found {len(processed_games)} closed games for date {date_str}")
+            return np.array(processed_games)
+            
+        except Exception as e:
+            bt.logging.error(f"Error fetching closed game data: {e}")
+            bt.logging.error(traceback.format_exc())
+            return np.array([])
 
     async def _fetch_predictions(self, game_ids):
+        """Fetch predictions for given game IDs"""
+        if not game_ids:
+            return []
+        
         query = """
-        SELECT * FROM predictions
-        WHERE game_id IN ({})
-        """.format(
-            ",".join(["?"] * len(game_ids))
-        )
-        return await self.db_manager.fetch_all(query, game_ids)
+            SELECT * FROM predictions
+            WHERE game_id IN ({})
+        """.format(','.join(':id_' + str(i) for i in range(len(game_ids))))
+
+        # Convert list of game_ids to dictionary of named parameters
+        params = {f'id_{i}': game_id for i, game_id in enumerate(game_ids)}
+        
+        return await self.db_manager.fetch_all(query, params)
 
     async def _update_predictions_with_payout(self, predictions, closed_games):
         bt.logging.debug(f"Predictions: {len(predictions)}")
@@ -497,9 +502,9 @@ class ScoringData:
         fetch_scores_query = """
             SELECT miner_uid, score_type, clv_score, roi_score, sortino_score, entropy_score, composite_score
             FROM scores
-            WHERE day_id = ?
+            WHERE day_id = :day_id
         """
-        scores = await self.db_manager.fetch_all(fetch_scores_query, (current_day,))
+        scores = await self.db_manager.fetch_all(fetch_scores_query, {"day_id": current_day})
 
         # Organize scores by miner_uid and score_type
         miner_scores = defaultdict(lambda: defaultdict(dict))

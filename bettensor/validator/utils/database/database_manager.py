@@ -81,129 +81,112 @@ class DatabaseManager:
         """Session context manager with improved error handling and connection management"""
         if self._shutting_down:
             raise RuntimeError("Database manager is shutting down")
-        
+            
         session = None
         connection = None
-        try:
-            # Cleanup stale connections first
-            await self._cleanup_stale_connections()
-            
-            # Get connection first
-            connection = await self._acquire_connection()
-            
-            # Create session with acquired connection
-            session = self.async_session(bind=connection)
-            session.created_at = time.time()
-            self._active_sessions.add(session)
-            
-            # Set pragmas for this session
-            await session.execute(text("PRAGMA journal_mode = WAL"))
-            await session.execute(text("PRAGMA synchronous = NORMAL"))
-            await session.execute(text("PRAGMA busy_timeout = 120000"))  # 2 minute timeout
-            await session.execute(text("PRAGMA temp_store = MEMORY"))
-            await session.execute(text("PRAGMA cache_size = -4000"))  # Increased cache
-            await session.execute(text("PRAGMA mmap_size = 268435456"))
-            
-            yield session
-                
-        except asyncio.CancelledError:
-            bt.logging.warning("Session operation cancelled, performing cleanup")
-            await self._safe_close_session(session)
-            if connection:
-                await self._safe_close_connection(connection)
-            raise
-        except SQLAlchemyError as e:
-            bt.logging.error(f"Database error: {e}")
-            await self._safe_close_session(session)
-            if connection:
-                await self._safe_close_connection(connection)
-            raise
-        except Exception as e:
-            bt.logging.error(f"Unexpected error in get_session: {e}")
-            await self._safe_close_session(session)
-            if connection:
-                await self._safe_close_connection(connection)
-            raise
-        finally:
-            await self._safe_close_session(session)
-            if connection:
-                await self._safe_close_connection(connection)
-
-    async def _acquire_connection(self):
-        """Acquire a database connection with improved retry logic"""
-        max_retries = 3
-        base_delay = 1.0
+        retries = 3
+        last_error = None
         
-        for attempt in range(max_retries):
+        for attempt in range(retries):
             try:
-                # Try to get a connection
-                connection = await self.engine.connect()
-                
-                # Set pragmas for better concurrency
-                await connection.execute(text("PRAGMA journal_mode = WAL"))
-                await connection.execute(text("PRAGMA synchronous = NORMAL"))
-                await connection.execute(text("PRAGMA busy_timeout = 120000"))  # 2 minute timeout
-                await connection.execute(text("PRAGMA temp_store = MEMORY"))
-                await connection.execute(text("PRAGMA cache_size = -4000"))  # Increased cache
-                await connection.execute(text("PRAGMA mmap_size = 268435456"))
-                
-                # Test the connection
-                await connection.execute(text("SELECT 1"))
-                
-                return connection
+                # Use a very short timeout for initial connection attempt
+                async with async_timeout.timeout(1):
+                    connection = await self._acquire_connection()
+                    
+                    # Create session with minimal initialization
+                    session = self.async_session(bind=connection)
+                    session.created_at = time.time()
+                    self._active_sessions.add(session)
+                    
+                    # Only set essential pragmas
+                    await session.execute(text("PRAGMA busy_timeout = 5000"))
+                    
+                    yield session
+                    break
+                    
+            except asyncio.TimeoutError:
+                last_error = f"Timeout on attempt {attempt + 1}/{retries}"
+                if attempt < retries - 1:
+                    # Add exponential backoff with jitter
+                    delay = min(0.1 * (2 ** attempt) + random.uniform(0, 0.1), 1.0)
+                    bt.logging.debug(f"Connection timeout, retrying in {delay:.2f}s ({attempt + 1}/{retries})")
+                    await asyncio.sleep(delay)
+                    continue
+                bt.logging.error(f"Database timeout after {retries} attempts")
+                raise
                 
             except Exception as e:
-                bt.logging.error(f"Connection attempt {attempt + 1} failed: {e}")
-                
-                if attempt < max_retries - 1:
-                    # Exponential backoff with jitter
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-                    bt.logging.info(f"Retrying connection in {delay:.1f}s...")
+                last_error = str(e)
+                if attempt < retries - 1:
+                    delay = min(0.1 * (2 ** attempt) + random.uniform(0, 0.1), 1.0)
+                    bt.logging.debug(f"Connection error, retrying in {delay:.2f}s ({attempt + 1}/{retries}): {e}")
                     await asyncio.sleep(delay)
-                    
-                    # Try to cleanup before retry
-                    try:
-                        await self.engine.dispose()
-                    except Exception as cleanup_error:
-                        bt.logging.error(f"Error during engine cleanup: {cleanup_error}")
-                else:
-                    bt.logging.error("Failed to establish connection after all retries")
-                    raise
+                    continue
+                bt.logging.error(f"Database error after {retries} attempts: {e}")
+                raise
+                
+            finally:
+                if session and session in self._active_sessions:
+                    self._active_sessions.remove(session)
+                    await self._safe_close_session(session)
+                if connection:
+                    await self._safe_close_connection(connection)
+
+    async def _acquire_connection(self):
+        """Acquire a database connection."""
+        try:
+            if not self.engine:
+                self.engine = create_async_engine(
+                    f"sqlite+aiosqlite:///{self.db_path}",
+                    echo=False,
+                    pool_pre_ping=True,
+                    pool_size=10,
+                    max_overflow=20,
+                    pool_recycle=3600
+                )
+
+            connection = await self.engine.connect()
+            await connection.execute(text("PRAGMA busy_timeout = 30000"))  # 30 second timeout
+            await connection.execute(text("PRAGMA journal_mode = WAL"))
+            await connection.execute(text("PRAGMA synchronous = NORMAL"))
+            return connection
+
+        except Exception as e:
+            bt.logging.error(f"Error acquiring connection: {str(e)}")
+            raise
 
     async def _cleanup_stale_connections(self):
         """Cleanup stale connections and sessions"""
-        current_time = time.time()
-        stale_timeout = 300  # 5 minutes
-        
-        # Cleanup stale sessions
-        stale_sessions = [
-            session for session in self._active_sessions
-            if hasattr(session, 'created_at') and 
-            current_time - session.created_at > stale_timeout
-        ]
-        
-        for session in stale_sessions:
-            try:
+        try:
+            current_time = time.time()
+            stale_timeout = 60  # Reduced from 300
+            
+            # Cleanup stale sessions
+            stale_sessions = [
+                session for session in self._active_sessions
+                if hasattr(session, 'created_at') and 
+                current_time - session.created_at > stale_timeout
+            ]
+            
+            for session in stale_sessions:
                 await self._safe_close_session(session)
-            except Exception as e:
-                bt.logging.error(f"Error cleaning up stale session: {e}")
-        
-        # Cleanup engine if needed
-        if self._connection_attempts > self._max_connection_attempts // 2:
-            try:
+                
+            # Periodically dispose engine connections
+            if (current_time - getattr(self, '_last_engine_cleanup', 0)) > 300:  # Every 5 minutes
                 await self.engine.dispose()
-                self._connection_attempts = 0
-                bt.logging.info("Engine cleaned up")
-            except Exception as e:
-                bt.logging.error(f"Error cleaning up engine: {e}")
+                self._last_engine_cleanup = current_time
+                
+        except Exception as e:
+            bt.logging.error(f"Error in connection cleanup: {e}")
 
     async def _safe_close_connection(self, connection):
-        """Safely close a connection with proper error handling"""
-        try:
-            if connection:
-                await connection.close()
-        except Exception as e:
-            bt.logging.error(f"Error in safe connection close: {e}")
+        """Safely close a connection with timeout"""
+        if connection:
+            try:
+                async with async_timeout.timeout(1):
+                    await connection.close()
+            except Exception as e:
+                bt.logging.debug(f"Error closing connection: {e}")
 
     async def cleanup(self):
         """Clean shutdown of database connections"""
@@ -247,21 +230,13 @@ class DatabaseManager:
             await asyncio.sleep(60)  # Run cleanup every minute
 
     async def _safe_close_session(self, session):
-        """Safely close a session, handling any errors that might occur."""
-        try:
-            if session:
-                if session.in_transaction():
-                    try:
-                        await session.rollback()
-                    except Exception as e:
-                        bt.logging.error(f"Error rolling back session: {e}")
-                try:
+        """Safely close a session with timeout"""
+        if session:
+            try:
+                async with async_timeout.timeout(1):
                     await session.close()
-                except Exception as e:
-                    bt.logging.error(f"Error closing session: {e}")
-                self._active_sessions.discard(session)
-        except Exception as e:
-            bt.logging.error(f"Error in safe session close: {e}")
+            except Exception as e:
+                bt.logging.debug(f"Error closing session: {e}")
 
     @asynccontextmanager
     async def get_session(self):
@@ -407,26 +382,18 @@ class DatabaseManager:
             return None
 
     async def fetch_all(self, query, params=None):
-        """Fetch all results maintaining old format"""
-        async with self.get_session() as session:
-            # Handle SQLite-style positional parameters (?)
-            if params and isinstance(params, (list, tuple)):
-                # If params is a list of tuples (for IN clause), format differently
-                if isinstance(params[0], (list, tuple)):
-                    placeholders = ','.join('?' * len(params[0]))
-                    query = query.replace('(?)', f'({placeholders})')
-                    # Flatten the parameters
-                    params = list(params[0])
-                else:
-                    counter = itertools.count()
-                    params = {f"p{i}": val for i, val in enumerate(params)}
-                    query = re.sub(r'\?', lambda m: f":p{next(counter)}", query)
-            
-            result = await session.execute(text(query), params)
-            if not result.returns_rows:
-                return []
-            columns = result.keys()
-            return [dict(zip(columns, row)) for row in result.all()]
+        """Execute a query with improved timeout handling"""
+        try:
+            async with async_timeout.timeout(3):  # Overall timeout for the operation
+                async with self.get_session() as session:
+                    result = await session.execute(text(query), params)
+                    return [dict(row) for row in result.mappings()]
+        except asyncio.TimeoutError:
+            bt.logging.error("Query execution timed out")
+            raise
+        except Exception as e:
+            bt.logging.error(f"Error executing query: {e}")
+            raise
 
     async def fetch_one(self, query, params=None):
         """Fetch single record maintaining old format"""

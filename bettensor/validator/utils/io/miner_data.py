@@ -394,55 +394,70 @@ class MinerDataMixin:
             bt.logging.error(f"Database error in get_current_odds: {e}")
             return [0.0, 0.0, 0.0]  # Return default values in case of database error
 
-    async def fetch_local_game_data(self, current_timestamp: str) -> Dict[str, TeamGame]:
+    async def fetch_local_game_data(self, current_time):
         """Fetch game data from local database."""
-        # Calculate timestamp for 15 days ago
-        fifteen_days_ago = (
-            datetime.fromisoformat(current_timestamp) - timedelta(days=15)
-        ).isoformat()
-
-        query = """
-            SELECT external_id, team_a, team_b, sport, league, create_date, last_update_date, event_start_date, active, outcome, team_a_odds, team_b_odds, tie_odds, can_tie
-            FROM game_data
-            WHERE event_start_date > ? OR (event_start_date BETWEEN ? AND ?)
-        """
-
-        rows = await self.db_manager.fetch_all(
-            query, (current_timestamp, fifteen_days_ago, current_timestamp)
-        )
-
-        gamedata_dict = {}
-        for row in rows:
-            try:
-                # Skip games with None outcome
-                if row['outcome'] is None:
-                    bt.logging.warning(f"Skipping game with ID {row.get('game_id')} due to None outcome")
-                    bt.logging.warning(f"Offending game: {row}")
-                    continue
-                    
-                team_game = TeamGame(
-                    game_id=row["external_id"],  # External ID from API
-                    team_a=row["team_a"],
-                    team_b=row["team_b"],
-                    sport=row["sport"],
-                    league=row["league"],
-                    create_date=row["create_date"],
-                    last_update_date=row["last_update_date"],
-                    event_start_date=row["event_start_date"],
-                    active=bool(row["active"]),
-                    outcome=row["outcome"],
-                    team_a_odds=row["team_a_odds"],
-                    team_b_odds=row["team_b_odds"],
-                    tie_odds=row["tie_odds"],
-                    can_tie=bool(row["can_tie"]),
-                )
-                gamedata_dict[row["external_id"]] = team_game
-                
-            except ValidationError as e:
-                bt.logging.warning(f"Validation error for game {row.get('id')}: {str(e)}")
-                continue
-                
-        return gamedata_dict
+        try:
+            # Ensure current_time is a datetime object
+            if isinstance(current_time, str):
+                current_time = datetime.fromisoformat(current_time.replace('Z', '+00:00'))
+            
+            # Calculate time window
+            start_time = current_time - timedelta(hours=24)
+            end_time = current_time + timedelta(hours=48)
+            
+            query = """
+                SELECT 
+                    external_id,
+                    event_start_date,
+                    team_a,
+                    team_b,
+                    team_a_odds,
+                    team_b_odds,
+                    tie_odds,
+                    outcome,
+                    sport,
+                    league
+                FROM game_data
+                WHERE event_start_date >= :start_date
+                AND event_start_date <= :end_date
+                AND outcome IS NULL
+            """
+            
+            # Pass parameters as a dictionary
+            params = {
+                "start_date": start_time.isoformat(),
+                "end_date": end_time.isoformat()
+            }
+            
+            bt.logging.debug(f"Querying games between {start_time} and {end_time}")
+            rows = await self.db_manager.fetch_all(query, params)
+            
+            if not rows:
+                return {}
+            
+            # Process the results into a dictionary
+            gamedata_dict = {}
+            for row in rows:
+                game_id = row['external_id']
+                gamedata_dict[game_id] = {
+                    'external_id': game_id,
+                    'event_start_date': row['event_start_date'],
+                    'team_a': row['team_a'],
+                    'team_b': row['team_b'],
+                    'team_a_odds': row['team_a_odds'],
+                    'team_b_odds': row['team_b_odds'],
+                    'tie_odds': row['tie_odds'],
+                    'outcome': row['outcome'],
+                    'sport': row['sport'],
+                    'league': row['league']
+                }
+            
+            return gamedata_dict
+            
+        except Exception as e:
+            bt.logging.error(f"Error querying and processing game data: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+            return {}
 
     async def validate_prediction(self, miner_uid: int, prediction_id: str, prediction_data: dict) -> tuple[bool, str, str]:
         """
