@@ -1,12 +1,21 @@
+import os
+import json
+import time
+import asyncio
 import traceback
-import pytz
+import threading
+from datetime import datetime, timezone
 import bittensor as bt
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+import async_timeout
+import pytz
 import numpy as np
 from datetime import datetime, timedelta, timezone
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 from typing import List, Tuple, Dict
 from collections import defaultdict
-import threading
+import random
 
 
 class ScoringData:
@@ -247,45 +256,141 @@ class ScoringData:
             bt.logging.debug("All predictions reference valid closed games.")
 
     async def init_miner_stats(self):
+        """Initialize or update miner stats with proper retry logic and transaction management."""
         bt.logging.trace("Initializing Miner Stats")
-        try:
-            # First ensure all miners have a basic entry
-            insert_base_query = """
-            INSERT OR IGNORE INTO miner_stats (
-                miner_uid, miner_hotkey, miner_coldkey, miner_status,
-                miner_rank, miner_cash, miner_current_incentive, miner_current_tier,
-                miner_current_scoring_window, miner_current_composite_score,
-                miner_current_sharpe_ratio, miner_current_sortino_ratio,
-                miner_current_roi, miner_current_clv_avg, miner_lifetime_earnings,
-                miner_lifetime_wager_amount, miner_lifetime_roi, miner_lifetime_predictions,
-                miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio,
-                miner_last_prediction_date
-            ) VALUES (?, ?, ?, ?, 0, 0.0, 0.0, 1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0.0, NULL)
-            """
-            
-            base_values = [
-                (uid, self.validator.metagraph.hotkeys[uid], self.validator.metagraph.coldkeys[uid], 
-                 'active' if self.validator.metagraph.active[uid] else 'inactive')
-                for uid in range(min(len(self.validator.metagraph.hotkeys), self.num_miners))
-            ]
-            
-            if base_values:
-                await self.db_manager.executemany(insert_base_query, base_values)
-                
-                # Also insert into backup table
-                backup_query = insert_base_query.replace('miner_stats', 'miner_stats_backup')
-                await self.db_manager.executemany(backup_query, base_values)
+        max_retries = 5
+        base_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                # Use a longer timeout for the entire operation
+                async with async_timeout.timeout(60):  # 60 second timeout
+                    async with self.db_manager.get_long_running_session() as session:
+                        # First ensure all miners have a basic entry
+                        insert_base_query = text("""
+                        INSERT OR IGNORE INTO miner_stats (
+                            miner_uid, miner_hotkey, miner_coldkey, miner_status,
+                            miner_rank, miner_cash, miner_current_incentive, miner_current_tier,
+                            miner_current_scoring_window, miner_current_composite_score,
+                            miner_current_sharpe_ratio, miner_current_sortino_ratio,
+                            miner_current_roi, miner_current_clv_avg, miner_lifetime_earnings,
+                            miner_lifetime_wager_amount, miner_lifetime_roi, miner_lifetime_predictions,
+                            miner_lifetime_wins, miner_lifetime_losses, miner_win_loss_ratio,
+                            miner_last_prediction_date
+                        ) VALUES (
+                            :miner_uid, :hotkey, :coldkey, :status,
+                            0, 0.0, 0.0, 1, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0.0, NULL
+                        )
+                        """)
+                        
+                        # Prepare base values as dictionaries with named parameters
+                        base_values = [
+                            {
+                                "miner_uid": uid,
+                                "hotkey": self.validator.metagraph.hotkeys[uid],
+                                "coldkey": self.validator.metagraph.coldkeys[uid],
+                                "status": 'active' if self.validator.metagraph.active[uid] else 'inactive'
+                            }
+                            for uid in range(min(len(self.validator.metagraph.hotkeys), self.num_miners))
+                        ]
+                        
+                        if base_values:
+                            # Process in smaller batches
+                            batch_size = 25
+                            for i in range(0, len(base_values), batch_size):
+                                batch = base_values[i:i + batch_size]
+                                bt.logging.debug(f"Processing batch {i//batch_size + 1} of {(len(base_values) + batch_size - 1)//batch_size}")
+                                
+                                try:
+                                    await session.execute(insert_base_query, batch)
+                                    await session.commit()
+                                    
+                                    # Also insert into backup table
+                                    backup_query = text(insert_base_query.text.replace('miner_stats', 'miner_stats_backup'))
+                                    await session.execute(backup_query, batch)
+                                    await session.commit()
+                                except Exception as e:
+                                    bt.logging.error(f"Error processing batch: {e}")
+                                    raise
 
-            # Update lifetime statistics
-            await self._update_lifetime_statistics()
-            
-            # Clean up and sync backup table
-            await self.cleanup_miner_stats()
-            
-        except Exception as e:
-            bt.logging.error(f"Error initializing miner stats: {e}")
-            bt.logging.error(traceback.format_exc())
-            raise
+                        # Update lifetime statistics
+                        update_lifetime_query = text("""
+                        WITH prediction_stats AS (
+                            SELECT 
+                                miner_uid,
+                                COUNT(*) as total_predictions,
+                                SUM(CASE WHEN payout > 0 THEN 1 ELSE 0 END) as wins,
+                                SUM(CASE WHEN payout = 0 THEN 1 ELSE 0 END) as losses,
+                                SUM(payout) as total_earnings,
+                                SUM(wager) as total_wager,
+                                MAX(prediction_date) as last_prediction
+                            FROM predictions
+                            GROUP BY miner_uid
+                        )
+                        UPDATE miner_stats
+                        SET
+                            miner_lifetime_predictions = COALESCE(ps.total_predictions, 0),
+                            miner_lifetime_wins = COALESCE(ps.wins, 0),
+                            miner_lifetime_losses = COALESCE(ps.losses, 0),
+                            miner_lifetime_earnings = COALESCE(ps.total_earnings, 0),
+                            miner_lifetime_wager_amount = COALESCE(ps.total_wager, 0),
+                            miner_win_loss_ratio = CASE 
+                                WHEN COALESCE(ps.losses, 0) > 0 
+                                THEN CAST(COALESCE(ps.wins, 0) AS REAL) / COALESCE(ps.losses, 0)
+                                ELSE COALESCE(ps.wins, 0)
+                            END,
+                            miner_last_prediction_date = ps.last_prediction
+                        FROM prediction_stats ps
+                        WHERE miner_stats.miner_uid = ps.miner_uid;
+                        """)
+                        
+                        await session.execute(update_lifetime_query)
+                        await session.commit()
+                        bt.logging.debug("Updated lifetime statistics for miners.")
+
+                        # Clean up and sync backup table
+                        cleanup_query = text("""
+                        DELETE FROM miner_stats 
+                        WHERE miner_uid >= 256 
+                        OR miner_uid IN (
+                            SELECT miner_uid 
+                            FROM miner_stats 
+                            GROUP BY miner_uid 
+                            HAVING COUNT(*) > 1
+                        );
+                        """)
+                        await session.execute(cleanup_query)
+                        await session.commit()
+                        
+                        # Same cleanup for backup table
+                        cleanup_backup_query = text(cleanup_query.text.replace('miner_stats', 'miner_stats_backup'))
+                        await session.execute(cleanup_backup_query)
+                        await session.commit()
+                        
+                        # Sync backup table with main table
+                        sync_query = text("""
+                        INSERT OR REPLACE INTO miner_stats_backup
+                        SELECT * FROM miner_stats;
+                        """)
+                        await session.execute(sync_query)
+                        await session.commit()
+                        
+                        bt.logging.info("Successfully initialized miner stats")
+                        return
+                        
+            except (asyncio.TimeoutError, SQLAlchemyError) as e:
+                if attempt < max_retries - 1:
+                    # Exponential backoff with jitter
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    bt.logging.warning(f"Initialization attempt {attempt + 1} failed, retrying in {delay:.1f}s: {str(e)}")
+                    await asyncio.sleep(delay)
+                    continue
+                bt.logging.error(f"Error initializing miner stats after {max_retries} attempts: {e}")
+                raise
+            except Exception as e:
+                bt.logging.error(f"Error initializing miner stats: {e}")
+                bt.logging.error(traceback.format_exc())
+                raise
 
     async def _update_lifetime_statistics(self):
         """Update lifetime statistics for miners with proper prediction history tracking."""
@@ -326,55 +431,44 @@ class ScoringData:
         try:
             bt.logging.info(f"Updating miner stats for day {current_day}...")
             
-            # First, get all existing hotkeys and their UIDs
-            existing_hotkeys = {row['miner_hotkey']: row['miner_uid'] 
-                              for row in await self.db_manager.fetch_all(
-                                  "SELECT miner_uid, miner_hotkey FROM miner_stats WHERE miner_hotkey IS NOT NULL", 
-                                  ())}
-
             # Update miner_hotkey and miner_coldkey from metagraph
-            for miner_uid in range(len(self.validator.metagraph.hotkeys)):
+            updates = []
+            column_names = ['miner_uid', 'miner_hotkey', 'miner_coldkey']
+            
+            for miner_uid in range(min(256, len(self.validator.metagraph.hotkeys))):
                 hotkey = self.validator.metagraph.hotkeys[miner_uid]
                 coldkey = self.validator.metagraph.coldkeys[miner_uid]
+                updates.append((miner_uid, hotkey, coldkey))
 
-                # If hotkey exists but with different UID
-                if hotkey in existing_hotkeys and existing_hotkeys[hotkey] != miner_uid:
-                    old_uid = existing_hotkeys[hotkey]
-                    
-                    # First, clear the hotkey from the old record
-                    await self.db_manager.execute_query(
-                        """UPDATE miner_stats 
-                           SET miner_hotkey = NULL, miner_coldkey = NULL
-                           WHERE miner_uid = ?""",
-                        (old_uid,)
-                    )
-                    
-                    # Reset both UIDs
-                    for uid in [old_uid, miner_uid]:
-                         await self.scoring_system.reset_miner(uid)
-
-                # Update or insert the record for current UID
-                await self.db_manager.execute_query(
-                    """INSERT INTO miner_stats (miner_uid, miner_hotkey, miner_coldkey)
-                       VALUES (?, ?, ?)
-                       ON CONFLICT(miner_uid) DO UPDATE SET
-                       miner_hotkey = EXCLUDED.miner_hotkey,
-                       miner_coldkey = EXCLUDED.miner_coldkey""",
-                    (miner_uid, hotkey, coldkey)
-                )
+            # Batch update with proper column names
+            await self.db_manager.executemany(
+                """INSERT INTO miner_stats (miner_uid, miner_hotkey, miner_coldkey)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(miner_uid) DO UPDATE SET
+                   miner_hotkey = EXCLUDED.miner_hotkey,
+                   miner_coldkey = EXCLUDED.miner_coldkey""",
+                updates,
+                column_names=column_names
+            )
 
             # Continue with rest of the updates...
             await self._update_lifetime_statistics()
             tiers_dict = self.get_current_tiers()
             
             # Update current tiers
+            tier_updates = []
+            tier_column_names = ['tier', 'miner_uid']
             for miner_uid, current_tier in tiers_dict.items():
-                await self.db_manager.execute_query(
-                    """UPDATE miner_stats
-                       SET miner_current_tier = ?
-                       WHERE miner_uid = ?""",
-                    (int(current_tier -1 ), miner_uid)
-                )
+                if miner_uid < 256:  # Only update valid UIDs
+                    tier_updates.append((int(current_tier - 1), miner_uid))
+            
+            await self.db_manager.executemany(
+                """UPDATE miner_stats
+                   SET miner_current_tier = ?
+                   WHERE miner_uid = ?""",
+                tier_updates,
+                column_names=tier_column_names
+            )
             
             await self._update_current_daily_scores(current_day, tiers_dict)
             await self._update_additional_fields()

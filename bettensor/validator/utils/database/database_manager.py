@@ -9,6 +9,7 @@ import os
 import traceback
 
 import sqlalchemy
+from sqlalchemy import inspect
 from bettensor.validator.utils.database.database_init import initialize_database
 import async_timeout
 import uuid
@@ -23,256 +24,409 @@ import itertools
 import aiofiles
 import hashlib
 import json
+import random
+import weakref
 
 class DatabaseManager:
     _instance = None
-    _lock = asyncio.Lock()
 
     def __new__(cls, db_path):
         if cls._instance is None:
             cls._instance = super(DatabaseManager, cls).__new__(cls)
             cls._instance._initialized = False
-            cls._instance._instance_lock = asyncio.Lock()
         return cls._instance
 
-    def __init__(self, db_path):
-        self.db_path = db_path
+    def __init__(self, database_path: str):
+        """Initialize the database manager with WAL mode and optimized concurrency settings"""
+        self.database_path = database_path
+        self._shutting_down = False
+        self._active_sessions = set()
+        self._cleanup_event = asyncio.Event()
+        self._cleanup_task = None
+        self._connection_attempts = 0
+        self._max_connection_attempts = 50
+        self._connection_attempt_reset = time.time()
+        self._connection_reset_interval = 60
+        
+        # Initialize engine with WAL mode and optimized settings
         self.engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_path}",
-            poolclass=AsyncAdaptedQueuePool,
-            pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
-            pool_timeout=30,
-            pool_recycle=1800,
-            echo=False
+            f"sqlite+aiosqlite:///{database_path}",
+            echo=False,
+            connect_args={
+                "timeout": 30,  # SQLite busy timeout
+                "check_same_thread": False,
+                "isolation_level": None,  # Let SQLAlchemy handle transactions
+            }
         )
+        
         self.async_session = sessionmaker(
-            self.engine, 
-            class_=AsyncSession, 
+            bind=self.engine,
+            class_=AsyncSession,
             expire_on_commit=False
         )
-        self._transaction_in_progress = False
-        self._lock = asyncio.Lock()
-        self._connection_lock = asyncio.Lock()
-        self._pause_lock = asyncio.Lock()
-        self._operations_paused = False
-        self._transaction_timeout = 120  # 30 second timeout
-        self._transaction_lock = asyncio.Lock()
-        self._active_transactions = set()
+
+    async def _initialize_connection(self, connection):
+        """Initialize connection with WAL mode and optimized settings"""
+        await connection.execute(text("PRAGMA journal_mode = WAL"))
+        await connection.execute(text("PRAGMA synchronous = NORMAL"))
+        await connection.execute(text("PRAGMA busy_timeout = 30000"))
+        await connection.execute(text("PRAGMA temp_store = MEMORY"))
+        await connection.execute(text("PRAGMA cache_size = -2000"))
+        await connection.execute(text("PRAGMA mmap_size = 268435456"))
+        await connection.execute(text("PRAGMA wal_autocheckpoint = 1000"))
+        await connection.execute(text("PRAGMA read_uncommitted = 1"))  # Allow reading uncommitted changes
 
     @asynccontextmanager
     async def get_session(self):
-        """Session context manager with error handling"""
-        async with self.async_session() as session:
-            try:
-                yield session
-            except SQLAlchemyError as e:
-                await session.rollback()
-                bt.logging.error(f"Database error: {e}")
-                raise
-            finally:
-                await session.close()
+        """Session context manager with improved error handling and connection management"""
+        if self._shutting_down:
+            raise RuntimeError("Database manager is shutting down")
+        
+        session = None
+        connection = None
+        try:
+            # Cleanup stale connections first
+            await self._cleanup_stale_connections()
+            
+            # Get connection first
+            connection = await self._acquire_connection()
+            
+            # Create session with acquired connection
+            session = self.async_session(bind=connection)
+            session.created_at = time.time()
+            self._active_sessions.add(session)
+            
+            # Set pragmas for this session
+            await session.execute(text("PRAGMA journal_mode = WAL"))
+            await session.execute(text("PRAGMA synchronous = NORMAL"))
+            await session.execute(text("PRAGMA busy_timeout = 120000"))  # 2 minute timeout
+            await session.execute(text("PRAGMA temp_store = MEMORY"))
+            await session.execute(text("PRAGMA cache_size = -4000"))  # Increased cache
+            await session.execute(text("PRAGMA mmap_size = 268435456"))
+            
+            yield session
+                
+        except asyncio.CancelledError:
+            bt.logging.warning("Session operation cancelled, performing cleanup")
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+            raise
+        except SQLAlchemyError as e:
+            bt.logging.error(f"Database error: {e}")
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+            raise
+        except Exception as e:
+            bt.logging.error(f"Unexpected error in get_session: {e}")
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+            raise
+        finally:
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
 
-    async def execute_query(self, query, params=None, max_retries=3):
-        """Execute query with retry logic"""
+    async def _acquire_connection(self):
+        """Acquire a database connection with improved retry logic"""
+        max_retries = 3
+        base_delay = 1.0
+        
         for attempt in range(max_retries):
             try:
-                async with self.get_session() as session:
-                    async with session.begin():
-                        if params and isinstance(params, (list, tuple)):
-                            counter = itertools.count()
-                            params = {f"p{i}": val for i, val in enumerate(params)}
-                            query = re.sub(r'\?', lambda m: f":p{next(counter)}", query)
-                        elif params is None:
-                            params = {}
-                        
-                        cursor = await session.execute(text(query), params)
-                        if query.strip().upper().startswith('SELECT'):
-                            return cursor
-                        return None
+                # Try to get a connection
+                connection = await self.engine.connect()
+                
+                # Set pragmas for better concurrency
+                await connection.execute(text("PRAGMA journal_mode = WAL"))
+                await connection.execute(text("PRAGMA synchronous = NORMAL"))
+                await connection.execute(text("PRAGMA busy_timeout = 120000"))  # 2 minute timeout
+                await connection.execute(text("PRAGMA temp_store = MEMORY"))
+                await connection.execute(text("PRAGMA cache_size = -4000"))  # Increased cache
+                await connection.execute(text("PRAGMA mmap_size = 268435456"))
+                
+                # Test the connection
+                await connection.execute(text("SELECT 1"))
+                
+                return connection
+                
+            except Exception as e:
+                bt.logging.error(f"Connection attempt {attempt + 1} failed: {e}")
+                
+                if attempt < max_retries - 1:
+                    # Exponential backoff with jitter
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                    bt.logging.info(f"Retrying connection in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
                     
-            except SQLAlchemyError as e:
-                if "no active connection" in str(e) and attempt < max_retries - 1:
-                    bt.logging.warning(f"Database connection lost, retrying ({attempt + 1}/{max_retries})...")
-                    await asyncio.sleep(1)
-                    await self.ensure_connection()
-                    continue
-                raise
+                    # Try to cleanup before retry
+                    try:
+                        await self.engine.dispose()
+                    except Exception as cleanup_error:
+                        bt.logging.error(f"Error during engine cleanup: {cleanup_error}")
+                else:
+                    bt.logging.error("Failed to establish connection after all retries")
+                    raise
+
+    async def _cleanup_stale_connections(self):
+        """Cleanup stale connections and sessions"""
+        current_time = time.time()
+        stale_timeout = 300  # 5 minutes
+        
+        # Cleanup stale sessions
+        stale_sessions = [
+            session for session in self._active_sessions
+            if hasattr(session, 'created_at') and 
+            current_time - session.created_at > stale_timeout
+        ]
+        
+        for session in stale_sessions:
+            try:
+                await self._safe_close_session(session)
+            except Exception as e:
+                bt.logging.error(f"Error cleaning up stale session: {e}")
+        
+        # Cleanup engine if needed
+        if self._connection_attempts > self._max_connection_attempts // 2:
+            try:
+                await self.engine.dispose()
+                self._connection_attempts = 0
+                bt.logging.info("Engine cleaned up")
+            except Exception as e:
+                bt.logging.error(f"Error cleaning up engine: {e}")
+
+    async def _safe_close_connection(self, connection):
+        """Safely close a connection with proper error handling"""
+        try:
+            if connection:
+                await connection.close()
+        except Exception as e:
+            bt.logging.error(f"Error in safe connection close: {e}")
+
+    async def cleanup(self):
+        """Clean shutdown of database connections"""
+        try:
+            self._shutting_down = True
+            
+            # Close all active sessions
+            for session in list(self._active_sessions):
+                try:
+                    if session.in_transaction():
+                        await session.rollback()
+                    await session.close()
+                except Exception as e:
+                    bt.logging.error(f"Error closing session during cleanup: {e}")
+            self._active_sessions.clear()
+            
+            # Final WAL cleanup and engine disposal
+            try:
+                async with self.get_session() as session:
+                    await session.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            except Exception as e:
+                bt.logging.error(f"Error during WAL cleanup: {e}")
+            
+            try:
+                await self.engine.dispose()
+            except Exception as e:
+                bt.logging.error(f"Error disposing engine: {e}")
+            
+        except Exception as e:
+            bt.logging.error(f"Error during database cleanup: {e}")
+        finally:
+            self._shutting_down = False
+
+    async def _cleanup_sessions(self):
+        """Background task to cleanup stale sessions and connections"""
+        while not self._cleanup_event.is_set():
+            try:
+                await self._cleanup_stale_connections()
+            except Exception as e:
+                bt.logging.error(f"Error in cleanup task: {e}")
+            await asyncio.sleep(60)  # Run cleanup every minute
+
+    async def _safe_close_session(self, session):
+        """Safely close a session, handling any errors that might occur."""
+        try:
+            if session:
+                if session.in_transaction():
+                    try:
+                        await session.rollback()
+                    except Exception as e:
+                        bt.logging.error(f"Error rolling back session: {e}")
+                try:
+                    await session.close()
+                except Exception as e:
+                    bt.logging.error(f"Error closing session: {e}")
+                self._active_sessions.discard(session)
+        except Exception as e:
+            bt.logging.error(f"Error in safe session close: {e}")
+
+    @asynccontextmanager
+    async def get_session(self):
+        """Session context manager with improved error handling and connection management"""
+        if self._shutting_down:
+            raise RuntimeError("Database manager is shutting down")
+            
+        session = None
+        connection = None
+        try:
+            # Try to acquire lock with timeout
+      
+            # Cleanup stale connections first
+            await self._cleanup_stale_connections()
+            
+            # Get connection first
+            connection = await self._acquire_connection()
+            
+            # Create session with acquired connection
+            session = self.async_session(bind=connection)
+            session.created_at = time.time()
+            self._active_sessions.add(session)
+            
+            # Set pragmas for this session with shorter timeout
+            async with async_timeout.timeout(5):
+                await session.execute(text("PRAGMA journal_mode = WAL"))
+                await session.execute(text("PRAGMA synchronous = NORMAL"))
+                await session.execute(text("PRAGMA busy_timeout = 30000"))
+                await session.execute(text("PRAGMA temp_store = MEMORY"))
+                await session.execute(text("PRAGMA cache_size = -2000"))
+                
+            yield session
+                
+        except asyncio.CancelledError:
+            bt.logging.warning("Session operation cancelled, performing cleanup")
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+            raise
+        except SQLAlchemyError as e:
+            bt.logging.error(f"Database error: {e}")
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+            raise
+        except asyncio.TimeoutError:
+            bt.logging.error("Timeout waiting for database connection lock")
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+            raise
+        except Exception as e:
+            bt.logging.error(f"Unexpected error in get_session: {e}")
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+            raise
+        finally:
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+
+    @asynccontextmanager
+    async def get_long_running_session(self):
+        """Session context manager optimized for long-running operations"""
+        if self._shutting_down:
+            raise RuntimeError("Database manager is shutting down")
+        
+        session = None
+        connection = None
+        try:
+            # Get dedicated connection for long-running operation
+            connection = await self._acquire_connection()
+            
+            # Create session with acquired connection
+            session = self.async_session(bind=connection)
+            session.created_at = time.time()
+            session.is_long_running = True  # Mark as long-running
+            self._active_sessions.add(session)
+            
+            # Set optimized pragmas for long-running operations
+            await session.execute(text("PRAGMA journal_mode = WAL"))
+            await session.execute(text("PRAGMA synchronous = NORMAL"))
+            await session.execute(text("PRAGMA busy_timeout = 120000"))  # 2 minute timeout
+            await session.execute(text("PRAGMA temp_store = MEMORY"))
+            await session.execute(text("PRAGMA cache_size = -4000"))  # 4MB cache
+            await session.execute(text("PRAGMA page_size = 4096"))
+            await session.execute(text("PRAGMA mmap_size = 268435456"))  # 256MB mmap
+            
+            yield session
+            
+        except Exception as e:
+            bt.logging.error(f"Error in long-running session: {e}")
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+            raise
+        finally:
+            await self._safe_close_session(session)
+            if connection:
+                await self._safe_close_connection(connection)
+
+    def _convert_params(self, params):
+        """Convert parameters to SQLAlchemy-compatible format"""
+        if params is None:
+            return {}
+        elif isinstance(params, list):
+            if not params:
+                return {}
+            if isinstance(params[0], (tuple, dict)):
+                return params
+            # This conversion could cause issues with hotkey/coldkey values
+            return [{"param": p} for p in params]
+        elif isinstance(params, tuple):
+            # This conversion could replace column names with p0, p1, etc.
+            return {f"p{i}": val for i, val in enumerate(params)}
+        elif isinstance(params, dict):
+            return params
+        else:
+            return {"param": params}
+
+    async def execute_query(self, query, params=None):
+        """Execute query with retry logic"""
+        async with self.get_session() as session:
+            if params is None:
+                params = {}
+            elif isinstance(params, list):
+                # Convert list of values to list of dictionaries
+                if params and not isinstance(params[0], (tuple, dict)):
+                    params = [{"param": p} for p in params]
+                    query = query.replace("?", ":param")
+            elif isinstance(params, (list, tuple)):
+                # Convert single tuple to dict
+                counter = itertools.count()
+                params = {f"p{i}": val for i, val in enumerate(params)}
+                query = re.sub(r'\?', lambda m: f":p{next(counter)}", query)
+            
+            cursor = await session.execute(text(query), params)
+            await session.commit()
+            
+            if query.strip().upper().startswith('SELECT'):
+                return cursor
+            return None
 
     async def fetch_all(self, query, params=None):
         """Fetch all results maintaining old format"""
         async with self.get_session() as session:
             # Handle SQLite-style positional parameters (?)
             if params and isinstance(params, (list, tuple)):
-                counter = itertools.count()
-                params = {f"p{i}": val for i, val in enumerate(params)}
-                query = re.sub(r'\?', lambda m: f":p{next(counter)}", query)
-                
-            result = await session.execute(text(query), params or {})
+                # If params is a list of tuples (for IN clause), format differently
+                if isinstance(params[0], (list, tuple)):
+                    placeholders = ','.join('?' * len(params[0]))
+                    query = query.replace('(?)', f'({placeholders})')
+                    # Flatten the parameters
+                    params = list(params[0])
+                else:
+                    counter = itertools.count()
+                    params = {f"p{i}": val for i, val in enumerate(params)}
+                    query = re.sub(r'\?', lambda m: f":p{next(counter)}", query)
+            
+            result = await session.execute(text(query), params)
             if not result.returns_rows:
                 return []
-            # Return list of dicts instead of tuples
             columns = result.keys()
             return [dict(zip(columns, row)) for row in result.all()]
-
-    async def executemany(self, query, params_list):
-        """Execute many queries maintaining old format"""
-        if not params_list:
-            return
-        
-        async with self.get_session() as session:
-            async with session.begin():
-                # Handle SQLite-style positional parameters (?)
-                if params_list and isinstance(params_list[0], (list, tuple)):
-                    counter = itertools.count()
-                    # Replace ? with :p0, :p1, etc. in query
-                    param_count = query.count('?')
-                    param_names = [f"p{i}" for i in range(param_count)]
-                    query_converted = query
-                    for i in range(param_count):
-                        query_converted = query_converted.replace('?', f":p{i}", 1)
-                    
-                    # Convert list of tuples to list of dicts
-                    params_dicts = []
-                    for params in params_list:
-                        param_dict = {f"p{i}": val for i, val in enumerate(params)}
-                        params_dicts.append(param_dict)
-                else:
-                    params_dicts = params_list
-                    query_converted = query
-                
-                await session.execute(text(query_converted), params_dicts)
-
-    async def initialize(self, force=False):
-        """Initialize database with optimized settings"""
-        if self._initialized and not force:
-            bt.logging.debug("Database already initialized and force is False")
-            return
-
-        async with self._instance_lock:
-            self.engine = create_async_engine(
-                f"sqlite+aiosqlite:///{self.db_path}",
-                poolclass=AsyncAdaptedQueuePool,
-                pool_size=10,
-                max_overflow=20,
-                pool_timeout=30,
-                pool_recycle=1800,
-                pool_pre_ping=True,
-                echo=False
-            )
-
-            async with self.engine.begin() as conn:
-                # Optimized WAL settings
-                pragmas = [
-                    "PRAGMA journal_mode = WAL",
-                    "PRAGMA synchronous = NORMAL",
-                    "PRAGMA wal_autocheckpoint = 1000",
-                    "PRAGMA busy_timeout = 5000",
-                    "PRAGMA journal_size_limit = 32768",
-                    "PRAGMA mmap_size = 30000000000",
-                    "PRAGMA page_size = 4096",
-                    "PRAGMA cache_size = -2000",
-                    "PRAGMA temp_store = MEMORY"
-                ]
-                
-                for pragma in pragmas:
-                    await conn.execute(text(pragma))
-
-                # Initialize schema
-                statements = initialize_database()
-                for statement in statements:
-                    try:
-                        await conn.execute(text(statement))
-                        bt.logging.debug(f"Initialized database with statement: {statement}")
-                    except SQLAlchemyError as e:
-                        if "duplicate column" in str(e):
-                            bt.logging.debug(f"Column exists: {e}")
-                            continue
-                        raise
-
-            self._initialized = True
-
-    async def ensure_connection(self):
-        """Ensure database connection is active and valid"""
-        try:
-            async with self.get_session() as session:
-                await session.execute(text("SELECT 1"))
-                return True
-        except sqlalchemy.exc.OperationalError:
-            bt.logging.warning("Reinitializing database connection pool...")
-            await self.engine.dispose()
-            self.engine = create_async_engine(
-                f"sqlite+aiosqlite:///{self.db_path}",
-                poolclass=AsyncAdaptedQueuePool,
-                pool_pre_ping=True,
-                pool_size=5,
-                max_overflow=10,
-                pool_timeout=30,
-                pool_recycle=1800,
-                echo=False
-            )
-            self.async_session = sessionmaker(
-                self.engine, 
-                class_=AsyncSession, 
-                expire_on_commit=False
-            )
-            return await self.ensure_connection()
-        except Exception as e:
-            bt.logging.error(f"Database connection error: {e}")
-            return False
-
-    async def reset_database_pragmas(self):
-        """Reset database PRAGMAs to default values asynchronously."""
-        try:
-            # Set WAL mode with auto-checkpoint
-            await self.conn.execute("PRAGMA journal_mode = WAL")
-            await self.conn.execute("PRAGMA synchronous = NORMAL")
-            await self.conn.execute("PRAGMA foreign_keys = ON")
-            await self.conn.execute("PRAGMA cache_size = -2000")
-            await self.conn.execute("PRAGMA wal_autocheckpoint = 100")  # Auto-checkpoint after 100 pages
-            await self.conn.execute("PRAGMA busy_timeout = 5000")       # Wait up to 5 seconds for locks
-            await self.conn.commit()
-            bt.logging.debug("Database PRAGMAs reset")
-        except Exception as e:
-            bt.logging.error(f"Error resetting database PRAGMAs: {e}")
-            raise
-
-    async def execute_state_sync_query(self, query, params=None, max_retries=3, retry_delay=5):
-        """Special query execution for state sync operations with retry logic"""
-        query_start = time.time()
-        query_type = query.strip().split()[0].upper()
-        
-        for attempt in range(max_retries):
-            try:
-                bt.logging.debug(f"Executing state sync query (attempt {attempt + 1}/{max_retries})")
-                
-                # Wait for any existing locks first
-                await self.wait_for_locks_to_clear(timeout=retry_delay)
-                
-                async with self._lock:
-                    async with self.get_session() as session:
-                        async with session.begin():
-                            await session.execute(text(query), params if params else {})
-                            duration = time.time() - query_start
-                            bt.logging.debug(f"State sync query completed in {duration:.3f}s")
-                            
-                            # Add checkpoint check after writes
-                            if query_type != 'SELECT':
-                                await self.checkpoint_if_needed()
-                                
-                            return True
-                        
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
-                    if attempt < max_retries - 1:
-                        bt.logging.warning(f"Database locked, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
-                        await asyncio.sleep(retry_delay)
-                        continue
-                raise
-            except Exception as e:
-                bt.logging.error(f"State sync query error after {time.time() - query_start:.3f}s: {str(e)}")
-                raise
 
     async def fetch_one(self, query, params=None):
         """Fetch single record maintaining old format"""
@@ -280,49 +434,99 @@ class DatabaseManager:
             # Handle SQLite-style positional parameters (?)
             if params and isinstance(params, (list, tuple)):
                 counter = itertools.count()
-                # Convert to dict with positional names
                 params = {f"p{i}": val for i, val in enumerate(params)}
-                # Replace ? with :p0, :p1, etc.
                 query = re.sub(r'\?', lambda m: f":p{next(counter)}", query)
-                
+            
             result = await session.execute(text(query), params or {})
             if not result.returns_rows:
                 return None
             row = result.first()
             if row is None:
                 return None
-            columns = result.keys()
-            return dict(zip(columns, row))
+            return dict(zip(result.keys(), row))
+
+    async def executemany(self, query, params_list, column_names=None, max_retries=5, retry_delay=1):
+        """Execute many queries with proper column name handling"""
+        if not params_list:
+            return
+        
+        batch_size = 25
+        for i in range(0, len(params_list), batch_size):
+            batch = params_list[i:i + batch_size]
+            
+            for attempt in range(max_retries):
+                try:
+                    async with self.get_session() as session:
+                        if batch and isinstance(batch[0], (list, tuple)):
+                            if column_names:
+                                # Use provided column names
+                                params_dicts = [
+                                    {col: val for col, val in zip(column_names, params)}
+                                    for params in batch
+                                ]
+                                # Replace ? with :column_name
+                                query_converted = query
+                                for col in column_names:
+                                    query_converted = query_converted.replace('?', f":{col}", 1)
+                            else:
+                                # Fallback to generic names if no column names provided
+                                param_count = query.count('?')
+                                param_names = [f"p{i}" for i in range(param_count)]
+                                params_dicts = [
+                                    {f"p{i}": val for i, val in enumerate(params)}
+                                    for params in batch
+                                ]
+                                query_converted = query
+                                for name in param_names:
+                                    query_converted = query_converted.replace('?', f":{name}", 1)
+                        else:
+                            params_dicts = batch
+                            query_converted = query
+                        
+                        await session.execute(text(query_converted), params_dicts)
+                        await session.commit()
+                        break
+                
+                except SQLAlchemyError as e:
+                    if "database is locked" in str(e) and attempt < max_retries - 1:
+                        # Exponential backoff with jitter
+                        delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                        bt.logging.warning(
+                            f"Database locked during batch operation, "
+                            f"retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+                
+            # Small delay between batches to reduce contention
+            if i < len(params_list) - batch_size:
+                await asyncio.sleep(0.1)
 
     async def begin_transaction(self):
-        """Begin a new transaction with proper locking and timeout."""
+        """Begin a new transaction."""
         if self._operations_paused:
             raise OperationalError("Database operations are paused")
         
         transaction_id = str(uuid.uuid4())
         
         try:
-            async with async_timeout.timeout(5):
-                async with self._transaction_lock:
-                    if self._transaction_in_progress:
-                        raise sqlite3.OperationalError("Transaction already in progress")
-                        
-                    if not await self.ensure_connection():
-                        raise ConnectionError("No database connection")
-                    
-                    # Check transaction state using sqlite_master
-                    cursor = await self.conn.execute("SELECT COUNT(*) FROM sqlite_master")
-                    await cursor.fetchone()  # This will fail if we're in a failed transaction state
-                    
-                    await self.conn.execute("BEGIN IMMEDIATE")
-                    self._active_transactions.add(transaction_id)
-                    self._transaction_in_progress = True
-                    bt.logging.debug(f"Transaction {transaction_id} started")
-                    return transaction_id
-                    
-        except asyncio.TimeoutError:
-            bt.logging.error("Timeout waiting to begin transaction")
-            raise
+            if self._transaction_in_progress:
+                raise sqlite3.OperationalError("Transaction already in progress")
+                
+            if not await self.ensure_connection():
+                raise ConnectionError("No database connection")
+            
+            # Check transaction state using sqlite_master
+            cursor = await self.conn.execute("SELECT COUNT(*) FROM sqlite_master")
+            await cursor.fetchone()  # This will fail if we're in a failed transaction state
+            
+            await self.conn.execute("BEGIN IMMEDIATE")
+            self._active_transactions.add(transaction_id)
+            self._transaction_in_progress = True
+            bt.logging.debug(f"Transaction {transaction_id} started")
+            return transaction_id
+                
         except Exception as e:
             bt.logging.error(f"Error starting transaction: {e}")
             if transaction_id in self._active_transactions:
@@ -334,15 +538,15 @@ class DatabaseManager:
         """Commit a specific transaction with timeout."""
         try:
             async with async_timeout.timeout(5):
-                async with self._transaction_lock:
-                    if transaction_id not in self._active_transactions:
-                        bt.logging.warning(f"Transaction {transaction_id} not found")
-                        return
-                        
-                    await self.conn.commit()
-                    self._active_transactions.remove(transaction_id)
-                    self._transaction_in_progress = False
-                    bt.logging.debug(f"Transaction {transaction_id} committed")
+            
+                if transaction_id not in self._active_transactions:
+                    bt.logging.warning(f"Transaction {transaction_id} not found")
+                    return
+                    
+                await self.conn.commit()
+                self._active_transactions.remove(transaction_id)
+                self._transaction_in_progress = False
+                bt.logging.debug(f"Transaction {transaction_id} committed")
                     
         except Exception as e:
             bt.logging.error(f"Error committing transaction: {e}")
@@ -361,17 +565,17 @@ class DatabaseManager:
     async def rollback_transaction(self, transaction_id):
         """Rollback a specific transaction."""
         try:
-            async with self._transaction_lock:
-                if transaction_id not in self._active_transactions:
-                    return
-                    
-                async with self._lock:
-                    await self.conn.rollback()
-                    self._active_transactions.remove(transaction_id)
-                    if not self._active_transactions:
-                        self._transaction_in_progress = False
-                    bt.logging.debug(f"Transaction {transaction_id} rolled back")
-                    
+    
+            if transaction_id not in self._active_transactions:
+                return
+                
+            async with self._lock:
+                await self.conn.rollback()
+                self._active_transactions.remove(transaction_id)
+                if not self._active_transactions:
+                    self._transaction_in_progress = False
+                bt.logging.debug(f"Transaction {transaction_id} rolled back")
+                
         except Exception as e:
             bt.logging.error(f"Error rolling back transaction: {e}")
             raise
@@ -421,15 +625,14 @@ class DatabaseManager:
     
     async def reconnect(self):
         """Force a reconnection to the database"""
-        async with self._connection_lock:
-            if self.conn:
-                try:
-                    await self.conn.close()
-                except Exception:
-                    pass
-            self.conn = None
-            self._transaction_in_progress = False
-            return await self.ensure_connection()
+        if self.conn:
+            try:
+                await self.conn.close()
+            except Exception:
+                pass
+        self.conn = None
+        self._transaction_in_progress = False
+        return await self.ensure_connection()
 
     async def has_pending_operations(self) -> bool:
         """Check if there are any pending database operations."""
@@ -680,5 +883,173 @@ class DatabaseManager:
     async def dispose(self):
         """Dispose the engine properly."""
         await self.engine.dispose()
+
+    async def update_miner_weights(self, weight_updates, max_retries=5, retry_delay=1):
+        """Specialized method for updating miner weights with optimized batching."""
+        if not weight_updates:
+            return
+
+        # Sort updates by miner_uid to reduce lock contention
+        weight_updates.sort(key=lambda x: x[1])
+        
+        # Break updates into smaller batches
+        batch_size = 25
+        total_batches = (len(weight_updates) + batch_size - 1) // batch_size
+        
+        query = """
+            UPDATE miner_stats 
+            SET most_recent_weight = :weight 
+            WHERE miner_uid = :miner_uid
+        """
+        
+        for batch_num, i in enumerate(range(0, len(weight_updates), batch_size)):
+            batch = weight_updates[i:i + batch_size]
+            bt.logging.debug(f"Processing weight update batch {batch_num + 1}/{total_batches} ({len(batch)} miners)")
+            
+            for attempt in range(max_retries):
+                try:
+                    async with self.get_session() as session:
+                        # Set pragmas for better concurrency
+                        await session.execute(text("PRAGMA journal_mode = WAL"))
+                        await session.execute(text("PRAGMA synchronous = NORMAL"))
+                        await session.execute(text("PRAGMA busy_timeout = 60000"))
+                        await session.execute(text("PRAGMA temp_store = MEMORY"))
+                        
+                        # Convert tuples to dicts for SQLAlchemy
+                        params_dicts = [
+                            {"weight": float(weight), "miner_uid": int(uid)}
+                            for weight, uid in batch
+                        ]
+                        
+                        # Execute and commit in one go
+                        await session.execute(text(query), params_dicts)
+                        await session.commit()
+                        
+                        # Checkpoint if WAL file is getting large
+                        await self.checkpoint_if_needed()
+                        break  # Success - exit retry loop
+                        
+                except SQLAlchemyError as e:
+                    if "database is locked" in str(e) and attempt < max_retries - 1:
+                        # Exponential backoff with jitter
+                        delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                        bt.logging.warning(
+                            f"Database locked during weight update batch {batch_num + 1}, "
+                            f"retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                        )
+                        await asyncio.sleep(delay)
+                        
+                        # Try to checkpoint and clean up WAL file
+                        try:
+                            async with self.get_session() as session:
+                                await session.execute(text("PRAGMA wal_checkpoint(PASSIVE)"))
+                        except:
+                            pass
+                            
+                        continue
+                    raise
+                
+            # Small delay between batches to reduce contention
+            if batch_num < total_batches - 1:
+                await asyncio.sleep(0.1)
+
+    async def initialize(self):
+        """Initialize database with optimized settings"""
+        try:
+            async with self.get_session() as session:
+                # Set optimized pragmas
+                await session.execute(text("PRAGMA journal_mode = WAL"))
+                await session.execute(text("PRAGMA synchronous = NORMAL"))
+                await session.execute(text("PRAGMA busy_timeout = 60000"))
+                await session.execute(text("PRAGMA temp_store = MEMORY"))
+                await session.execute(text("PRAGMA cache_size = -2000"))
+                await session.execute(text("PRAGMA page_size = 4096"))
+                await session.execute(text("PRAGMA mmap_size = 268435456"))
+                await session.execute(text("PRAGMA wal_autocheckpoint = 1000"))
+                await session.commit()
+                
+                bt.logging.info("Database initialized with optimized settings")
+        except Exception as e:
+            bt.logging.error(f"Error initializing database: {e}")
+            raise
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Context manager for explicit transaction management with proper cleanup"""
+        session = None
+        try:
+            session = self.async_session()
+            async with session.begin():
+                yield session
+        except asyncio.CancelledError:
+            bt.logging.warning("Transaction cancelled, performing cleanup")
+            if session and session.in_transaction():
+                try:
+                    await session.rollback()
+                except Exception as e:
+                    bt.logging.error(f"Error rolling back cancelled transaction: {e}")
+            raise
+        except Exception as e:
+            bt.logging.error(f"Error in transaction: {e}")
+            if session and session.in_transaction():
+                try:
+                    await session.rollback()
+                except Exception as rollback_error:
+                    bt.logging.error(f"Error rolling back failed transaction: {rollback_error}")
+            raise
+        finally:
+            if session:
+                try:
+                    await session.close()
+                except Exception as e:
+                    bt.logging.error(f"Error closing transaction session: {e}")
+
+    async def ensure_connection(self):
+        """Ensure database connection is active and valid"""
+        try:
+            # Test current engine
+            async with self.engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+                return True
+        except Exception as e:
+            bt.logging.warning(f"Connection test failed: {e}")
+            
+            try:
+                # Dispose old engine
+                await self.engine.dispose()
+                
+                # Create new engine with optimized settings
+                self.engine = create_async_engine(
+                    f"sqlite+aiosqlite:///{self.database_path}",
+                    echo=False,
+                    pool_size=10,
+                    max_overflow=20,
+                    pool_timeout=30,
+                    pool_recycle=1800,
+                    connect_args={
+                        "timeout": 60,
+                        "check_same_thread": False,
+                        "isolation_level": None,
+                    }
+                )
+                
+                # Test new engine
+                async with self.engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+                    return True
+                    
+            except Exception as reinit_error:
+                bt.logging.error(f"Failed to reinitialize connection: {reinit_error}")
+                return False
+
+    async def _test_connection(self):
+        """Test if the database connection is working"""
+        try:
+            async with self.get_session() as session:
+                await session.execute(text("SELECT 1"))
+                return True
+        except Exception as e:
+            bt.logging.error(f"Connection test failed: {e}")
+            return False
 
 

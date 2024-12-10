@@ -21,6 +21,12 @@ from typing import List, Dict
 import time
 import traceback
 import asyncio
+import requests
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+import async_timeout
+import random
+import copy
 
 from bettensor.validator.utils.database.database_manager import DatabaseManager
 from .scoring_data import ScoringData
@@ -434,10 +440,10 @@ class ScoringSystem:
             current_tier_miners = np.where(tiers == tier)[0]
             # Only consider valid miners from tier 2 and above
             lower_tier_miners = np.where((tiers == tier - 1) & np.isin(np.arange(len(tiers)), list(valid_uids)))[0]
-            
-            
-            # Check if there are open slots in this tier
-            open_slots = self.tier_configs[tier]["capacity"] - len(current_tier_miners)
+            # Calculate open slots based on tier capacity and current occupancy
+            tier_capacity = self.tier_configs[tier]["capacity"]
+            current_occupancy = len(current_tier_miners)
+            open_slots = max(0, tier_capacity - current_occupancy)
             
             if open_slots > 0:
                 # Identify eligible miners from lower tier based on min_wager
@@ -708,13 +714,13 @@ class ScoringSystem:
             # Extract the composite scores based on current tier for each miner
             composite_scores = self.composite_scores[valid_miners, day, current_tiers[valid_miners]]
 
-            # Apply non-linear normalization (e.g., exponential)
-            exp_scores = np.exp(composite_scores)
-            score_range = exp_scores.max() - exp_scores.min()
-            if score_range > 0:
-                normalized_scores = (exp_scores - exp_scores.min()) / score_range
-            else:
-                normalized_scores = np.ones_like(exp_scores) / len(exp_scores)  # Equal distribution if all scores are the same
+            # Clip extreme values to prevent overflow
+            max_score = 10  # Limit the maximum score to prevent exp overflow
+            clipped_scores = np.clip(composite_scores, -max_score, max_score)
+            
+            # Apply softmax normalization
+            exp_scores = np.exp(clipped_scores - np.max(clipped_scores))  # Subtract max for numerical stability
+            normalized_scores = exp_scores / (exp_scores.sum() + self.epsilon)  # Add epsilon to prevent division by zero
 
             # Apply tier incentives
             for idx, tier in enumerate(range(2, self.num_tiers)):
@@ -847,14 +853,9 @@ class ScoringSystem:
                 weights = self.calculate_weights(day=previous_day)
                 bt.logging.info(f"Using weights from previous day: {previous_day}")
                 
-                # Update most_recent_weight in miner_stats table even for previous day's weights
-                update_weights_query = """
-                    UPDATE miner_stats 
-                    SET most_recent_weight = ? 
-                    WHERE miner_uid = ?
-                """
+                # Update most_recent_weight in miner_stats table using the specialized method
                 weight_updates = [(float(weights[i]), i) for i in range(self.num_miners)]
-                await self.db_manager.executemany(update_weights_query, weight_updates)
+                await self.db_manager.update_miner_weights(weight_updates)
                 bt.logging.info("Updated most_recent_weights in miner_stats table using previous day's weights")
                 
             except Exception as e:
@@ -864,14 +865,9 @@ class ScoringSystem:
                 weights = np.zeros(self.num_miners)
                 weights[list(self.valid_uids)] = 1 / len(self.valid_uids)
                 
-                # Update most_recent_weight with equal weights
-                update_weights_query = """
-                    UPDATE miner_stats 
-                    SET most_recent_weight = ? 
-                    WHERE miner_uid = ?
-                """
+                # Update most_recent_weight with equal weights using the specialized method
                 weight_updates = [(float(weights[i]), i) for i in range(self.num_miners)]
-                await self.db_manager.executemany(update_weights_query, weight_updates)
+                await self.db_manager.update_miner_weights(weight_updates)
                 bt.logging.info("Updated most_recent_weights in miner_stats table with equal weights")
 
         # Assign invalid UIDs to tier 0
@@ -977,138 +973,198 @@ class ScoringSystem:
         """
         Save the current state of the ScoringSystem to the database, including the amount_wagered and tiers arrays.
         """
-        try:
-            
+        max_retries = 5
+        base_delay = 1
+        
+        # Save current state for rollback
+        state_backup = {
+            'current_day': self.current_day,
+            'current_date': self.current_date,
+            'reference_date': self.reference_date,
+            'last_update_date': self.last_update_date,
+            'invalid_uids': copy.deepcopy(self.invalid_uids),
+            'valid_uids': copy.deepcopy(self.valid_uids),
+            'amount_wagered': self.amount_wagered.copy(),
+            'tiers': self.tiers.copy()
+        }
+        
+        for attempt in range(max_retries):
+            try:
+                # Use timeout for entire save operation
+                async with async_timeout.timeout(60):
+                    # Convert data to proper format
+                    params = {
+                        'current_day': self.current_day,
+                        'current_date': self.current_date.isoformat() if self.current_date else None,
+                        'reference_date': self.reference_date.isoformat(),
+                        'invalid_uids': json.dumps(list(int(uid) for uid in self.invalid_uids)),
+                        'valid_uids': json.dumps(list(int(uid) for uid in self.valid_uids)),
+                        'last_update_date': self.last_update_date.isoformat() if self.last_update_date else None,
+                        'amount_wagered': json.dumps(self.amount_wagered.tolist()),
+                        'tiers': json.dumps(self.tiers.tolist())
+                    }
 
-            # Serialize invalid_uids and valid_uids
-            invalid_uids_json = json.dumps(list(int(uid) for uid in self.invalid_uids))
-            valid_uids_json = json.dumps(list(int(uid) for uid in self.valid_uids))
+                    insert_state_query = """
+                        INSERT INTO score_state 
+                        (current_day, current_date, reference_date, invalid_uids, valid_uids, last_update_date, amount_wagered, tiers)
+                        VALUES (:current_day, :current_date, :reference_date, :invalid_uids, :valid_uids, :last_update_date, :amount_wagered, :tiers)
+                        ON CONFLICT(state_id) DO UPDATE SET
+                            current_day=excluded.current_day,
+                            current_date=excluded.current_date,
+                            reference_date=excluded.reference_date,
+                            invalid_uids=excluded.invalid_uids,
+                            valid_uids=excluded.valid_uids,
+                            last_update_date=excluded.last_update_date,
+                            amount_wagered=excluded.amount_wagered,
+                            tiers=excluded.tiers
+                    """
 
-            # Serialize amount_wagered as a list of lists
-            amount_wagered_serialized = json.dumps(self.amount_wagered.tolist())
+                    async with self.db_manager.get_long_running_session() as session:
+                        await session.execute(text(insert_state_query), params)
+                        await session.commit()
+                        
+                        # Now save scores
+                        await self.save_scores()
+                        
+                        # Save entropy system state with conflict resolution
+                        if hasattr(self, 'entropy_system'):
+                            try:
+                                await self.entropy_system.save_state()
+                            except Exception as e:
+                                bt.logging.error(f"Error saving entropy system state: {e}")
+                                bt.logging.error(traceback.format_exc())
+                                raise
 
-            # Serialize tiers array as a list of lists
-            tiers_serialized = json.dumps(self.tiers.tolist())
+                        bt.logging.info("ScoringSystem state saved to database, including amount_wagered and tiers.")
+                        return
 
-            # Insert or update the latest state in score_state table
-            insert_state_query = """
-                INSERT INTO score_state 
-                (current_day, current_date, reference_date, invalid_uids, valid_uids, last_update_date, amount_wagered, tiers)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(state_id) DO UPDATE SET
-                    current_day=excluded.current_day,
-                    current_date=excluded.current_date,
-                    reference_date=excluded.reference_date,
-                    invalid_uids=excluded.invalid_uids,
-                    valid_uids=excluded.valid_uids,
-                    last_update_date=excluded.last_update_date,
-                    amount_wagered=excluded.amount_wagered,
-                    tiers=excluded.tiers
-            """
-            params = (
-                self.current_day,
-                self.current_date.isoformat() if self.current_date else None,
-                self.reference_date.isoformat(),
-                invalid_uids_json,
-                valid_uids_json,
-                self.last_update_date.isoformat() if self.last_update_date else None,  # Store as date string
-                amount_wagered_serialized,  # Serialized amount_wagered
-                tiers_serialized  # Serialized tiers
-            )
-
-            await self.db_manager.execute_query(insert_state_query, params)
-
-            # Now save scores
-            await self.save_scores()
-
-            
-            bt.logging.info("ScoringSystem state saved to database, including amount_wagered and tiers.")
-
-        except Exception as e:
-            bt.logging.error(f"Error saving state to database: {e}")
-            raise
+            except (asyncio.TimeoutError, SQLAlchemyError) as e:
+                if attempt < max_retries - 1:
+                    # Exponential backoff with jitter
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    bt.logging.warning(f"Save attempt {attempt + 1} failed, retrying in {delay:.1f}s: {str(e)}")
+                    
+                    # Restore state before retry
+                    self.current_day = state_backup['current_day']
+                    self.current_date = state_backup['current_date']
+                    self.reference_date = state_backup['reference_date']
+                    self.last_update_date = state_backup['last_update_date']
+                    self.invalid_uids = copy.deepcopy(state_backup['invalid_uids'])
+                    self.valid_uids = copy.deepcopy(state_backup['valid_uids'])
+                    self.amount_wagered = state_backup['amount_wagered'].copy()
+                    self.tiers = state_backup['tiers'].copy()
+                    
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+            except Exception as e:
+                bt.logging.error(f"Error saving state to database: {e}")
+                bt.logging.error(traceback.format_exc())
+                
+                # Restore state on error
+                self.current_day = state_backup['current_day']
+                self.current_date = state_backup['current_date']
+                self.reference_date = state_backup['reference_date']
+                self.last_update_date = state_backup['last_update_date']
+                self.invalid_uids = copy.deepcopy(state_backup['invalid_uids'])
+                self.valid_uids = copy.deepcopy(state_backup['valid_uids'])
+                self.amount_wagered = state_backup['amount_wagered'].copy()
+                self.tiers = state_backup['tiers'].copy()
+                
+                raise
 
     async def load_state(self):
-        """Load state from database asynchronously, including historical score reconstruction if needed."""
+        """Load scoring system state from database"""
         try:
-            # First, check for the most recent state with current_day > 0
-            fetch_state_query = """
-                SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, 
-                    last_update_date, amount_wagered, tiers, state_id
-                FROM score_state
-                WHERE current_day > 0
-                ORDER BY state_id DESC
-                LIMIT 1
-            """
-            state = await self.db_manager.fetch_one(fetch_state_query, None)
-
-            # If no state with current_day > 0, fall back to the most recent state
-            if not state:
+            async with self.db_manager.transaction() as session:
                 fetch_state_query = """
                     SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, 
                         last_update_date, amount_wagered, tiers, state_id
                     FROM score_state
+                    WHERE current_day > 0
                     ORDER BY state_id DESC
                     LIMIT 1
                 """
-                state = await self.db_manager.fetch_one(fetch_state_query, None)
-            
-            if state:
-                bt.logging.info(f"Found existing state in database with state_id={state['state_id']}")
-                self.current_day = state["current_day"]
-                self.current_date = datetime.fromisoformat(state["current_date"])
-                self.reference_date = datetime.fromisoformat(state["reference_date"])
-                self.last_update_date = (datetime.fromisoformat(state["last_update_date"]).date() 
-                                       if state["last_update_date"] else None)
-                
-                # Load UIDs and tiers first
-                self.invalid_uids = set(json.loads(state["invalid_uids"]))
-                self.valid_uids = set(json.loads(state["valid_uids"]))
-                self.tiers = np.array(json.loads(state["tiers"]))
-                
-                # Load scores with skip_rebuild=True since we're in initialization
-                await self.load_scores(skip_rebuild=True)
-                
-                # Verify and populate amount_wagered
-                try:
-                    amount_wagered_data = json.loads(state["amount_wagered"])
-                    if not amount_wagered_data or len(amount_wagered_data) != self.num_miners:
-                        bt.logging.warning("Invalid amount_wagered data in state, repopulating...")
-                        await self.populate_amount_wagered()
-                    else:
-                        self.amount_wagered = np.array(amount_wagered_data)
-                except (json.JSONDecodeError, TypeError):
-                    bt.logging.warning("Corrupted amount_wagered data in state, repopulating...")
-                    await self.populate_amount_wagered()
-                
-                # Add validation check for current_day
-                if self.current_day == 0:
-                    bt.logging.warning("Loading state with current_day=0, checking for more recent states...")
-                    check_query = """
-                    SELECT MAX(current_day) as max_day
-                    FROM score_state
-                    WHERE current_day > 0
+                result = await session.execute(text(fetch_state_query))
+                state = result.first()
+                if state:
+                    state = dict(zip(result.keys(), state))
+
+                # If no state with current_day > 0, fall back to the most recent state
+                if not state:
+                    fetch_state_query = """
+                        SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, 
+                            last_update_date, amount_wagered, tiers, state_id
+                        FROM score_state
+                        ORDER BY state_id DESC
+                        LIMIT 1
                     """
-                    max_day = await self.db_manager.fetch_one(check_query, None)
-                    if max_day and max_day['max_day'] is not None:
-                        bt.logging.warning(f"Found more recent state with day {max_day['max_day']}, but loading day 0 state")
-                        # Load the state with the highest current_day
-                        fetch_state_query = """
-                            SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, 
-                                last_update_date, amount_wagered, tiers, state_id
-                            FROM score_state
-                            WHERE current_day = ?
-                            ORDER BY state_id DESC
-                            LIMIT 1
+                    result = await session.execute(text(fetch_state_query))
+                    state = result.first()
+                    if state:
+                        state = dict(zip(result.keys(), state))
+                
+                if state:
+                    bt.logging.info(f"Found existing state in database with state_id={state['state_id']}")
+                    self.current_day = state["current_day"]
+                    self.current_date = datetime.fromisoformat(state["current_date"])
+                    self.reference_date = datetime.fromisoformat(state["reference_date"])
+                    self.last_update_date = (datetime.fromisoformat(state["last_update_date"]).date() 
+                                           if state["last_update_date"] else None)
+                    
+                    # Load UIDs and tiers first
+                    self.invalid_uids = set(json.loads(state["invalid_uids"]))
+                    self.valid_uids = set(json.loads(state["valid_uids"]))
+                    self.tiers = np.array(json.loads(state["tiers"]))
+                    
+                    # Load scores with skip_rebuild=True since we're in initialization
+                    await self.load_scores(skip_rebuild=True)
+                    
+                    # Verify and populate amount_wagered
+                    try:
+                        amount_wagered_data = json.loads(state["amount_wagered"])
+                        if not amount_wagered_data or len(amount_wagered_data) != self.num_miners:
+                            bt.logging.warning("Invalid amount_wagered data in state, repopulating...")
+                            await self.populate_amount_wagered()
+                        else:
+                            self.amount_wagered = np.array(amount_wagered_data)
+                    except (json.JSONDecodeError, TypeError):
+                        bt.logging.warning("Corrupted amount_wagered data in state, repopulating...")
+                        await self.populate_amount_wagered()
+                    
+                    # Add validation check for current_day
+                    if self.current_day == 0:
+                        bt.logging.warning("Loading state with current_day=0, checking for more recent states...")
+                        check_query = """
+                        SELECT MAX(current_day) as max_day
+                        FROM score_state
+                        WHERE current_day > 0
                         """
-                        state = await self.db_manager.fetch_one(fetch_state_query, (max_day['max_day'],))
-                        if state:
-                            self.current_day = state["current_day"]
-                            bt.logging.info(f"Updated to load state with current_day={self.current_day}")
-            else:
-                bt.logging.warning("No existing state found, initializing fresh state...")
-                await self.populate_amount_wagered()
-                await self.load_scores()  # Allow rebuild in this case
+                        result = await session.execute(text(check_query))
+                        max_day = result.first()
+                        if max_day:
+                            max_day = dict(zip(result.keys(), max_day))
+                            if max_day['max_day'] is not None:
+                                bt.logging.warning(f"Found more recent state with day {max_day['max_day']}, but loading day 0 state")
+                                # Load the state with the highest current_day
+                                fetch_state_query = """
+                                    SELECT current_day, current_date, reference_date, invalid_uids, valid_uids, 
+                                        last_update_date, amount_wagered, tiers, state_id
+                                    FROM score_state
+                                    WHERE current_day = ?
+                                    ORDER BY state_id DESC
+                                    LIMIT 1
+                                """
+                                result = await session.execute(text(fetch_state_query), {'p0': max_day['max_day']})
+                                state = result.first()
+                                if state:
+                                    state = dict(zip(result.keys(), state))
+                                    self.current_day = state["current_day"]
+                                    bt.logging.info(f"Updated to load state with current_day={self.current_day}")
+                else:
+                    bt.logging.warning("No existing state found, initializing fresh state...")
+                    await self.populate_amount_wagered()
+                    await self.load_scores()  # Allow rebuild in this case
 
         except Exception as e:
             bt.logging.error(f"Error loading state from database: {e}")
@@ -1119,59 +1175,51 @@ class ScoringSystem:
             raise
 
     async def save_scores(self):
-        num_miners, num_days, num_scores = self.composite_scores.shape
-        bt.logging.info(f"Saving scores for {num_miners} miners, {num_days} days, {num_scores} scores (1 daily + 5 tiers)")
-        
         score_records = []
-        for miner in range(num_miners):
-            for day in range(num_days):
-                # Daily scores
-                clv = self.clv_scores[miner, day]
-                roi = self.roi_scores[miner, day]
-                entropy = self.entropy_scores[miner, day]
-                sortino = self.sortino_scores[miner, day]
-                composite_daily = self.composite_scores[miner, day, 0]  # Index 0 for daily composite
-                
-                score_records.append((
-                    miner,
-                    day,
-                    'daily',
-                    clv,
-                    roi,
-                    entropy,
-                    composite_daily,
-                    sortino
-                ))
-                
-                # Tier-specific composite scores
-                for score_index in range(1, num_scores-1):
-                    tier = self.tier_mapping[score_index]
-                    composite = self.composite_scores[miner, day, score_index]
+        column_names = ['miner_uid', 'day_id', 'score_type', 'clv_score', 'roi_score', 
+                       'entropy_score', 'composite_score', 'sortino_score']
+        
+        for miner in range(self.num_miners):
+            # Daily scores
+            score_records.append((
+                miner,
+                self.current_day,
+                'daily',
+                float(self.clv_scores[miner, self.current_day]),
+                float(self.roi_scores[miner, self.current_day]),
+                float(self.entropy_scores[miner, self.current_day]),
+                float(self.composite_scores[miner, self.current_day, 0]),
+                float(self.sortino_scores[miner, self.current_day])
+            ))
+            
+            # Tier-specific scores
+            for tier_idx in range(1, self.composite_scores.shape[2]):
+                if tier_idx in self.tier_mapping:
                     score_records.append((
                         miner,
-                        day,
-                        tier,
-                        None,   # clv_score not applicable
-                        None,   # roi_score not applicable
-                        None,   # entropy_score not applicable
-                        composite,
-                        None    # sortino_score not applicable
+                        self.current_day,
+                        self.tier_mapping[tier_idx],
+                        None,  # clv_score
+                        None,  # roi_score
+                        None,  # entropy_score
+                        float(self.composite_scores[miner, self.current_day, tier_idx]),
+                        None   # sortino_score
                     ))
-        
-        # Batch insert using executemany with conflict resolution based on miner_uid, day_id, and score_type
-        insert_score_query = """
-            INSERT INTO scores 
-            (miner_uid, day_id, score_type, clv_score, roi_score, entropy_score, composite_score, sortino_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(miner_uid, day_id, score_type) DO UPDATE SET
-                clv_score = excluded.clv_score,
-                roi_score = excluded.roi_score,
-                entropy_score = excluded.entropy_score,
-                composite_score = excluded.composite_score,
-                sortino_score = excluded.sortino_score
-        """
-        await self.db_manager.executemany(insert_score_query, score_records)
-        bt.logging.info(f"Saved {len(score_records)} score records")
+
+        # Use executemany with column names
+        await self.db_manager.executemany(
+            """INSERT INTO scores 
+               (miner_uid, day_id, score_type, clv_score, roi_score, entropy_score, composite_score, sortino_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(miner_uid, day_id, score_type) DO UPDATE SET
+               clv_score=excluded.clv_score,
+               roi_score=excluded.roi_score,
+               entropy_score=excluded.entropy_score,
+               composite_score=excluded.composite_score,
+               sortino_score=excluded.sortino_score""",
+            score_records,
+            column_names=column_names
+        )
 
     async def load_scores(self, skip_rebuild=False):
         """
@@ -1611,10 +1659,47 @@ class ScoringSystem:
         
         return risk_scores
 
+    def normalize_entropy_scores(self, scores, has_history):
+        """
+        Normalize entropy scores to [-1, 1] range while preserving sign and relative magnitudes.
+        """
+        normalized = scores.copy()
+        non_zero_mask = scores != 0
+        
+        if not np.any(non_zero_mask):
+            return normalized
+            
+        # Get scores for miners with both history and non-zero values
+        valid_scores = scores[non_zero_mask]
+        if len(valid_scores) == 0:
+            return normalized
+            
+        # Find max absolute value to preserve relative magnitudes
+        max_abs = np.max(np.abs(valid_scores))
+        if max_abs > 0:
+            # Normalize to [-1, 1] range while preserving sign
+            normalized[non_zero_mask] = normalized[non_zero_mask] / max_abs
+            
+            # Ensure we don't lose scores due to floating point errors
+            normalized[non_zero_mask] = np.sign(normalized[non_zero_mask]) * np.maximum(
+                np.abs(normalized[non_zero_mask]), 
+                1e-10
+            )
+        
+        bt.logging.debug(f"Entropy normalization stats:")
+        bt.logging.debug(f"  Original non-zero scores: {np.sum(scores != 0)}")
+        bt.logging.debug(f"  Normalized non-zero scores: {np.sum(normalized != 0)}")
+        bt.logging.debug(f"  Max absolute value: {max_abs:.4f}")
+        
+        # Apply history mask after normalization
+        normalized[~has_history] = 0
+        
+        return normalized
+
     async def _update_composite_scores(self, historical_day=None):
         day_index = self.current_day if historical_day is None else historical_day
         
-        # Get miners with predictions from miner_stats with debug info
+        # Get miners with any prediction history from miner_stats
         query = """
         SELECT 
             COUNT(*) as total_miners,
@@ -1628,17 +1713,15 @@ class ScoringSystem:
         # Get active miners
         query = """
         SELECT miner_uid FROM miner_stats 
-        WHERE miner_last_prediction_date IS NOT NULL
-        OR miner_lifetime_predictions > 0
+        WHERE (miner_last_prediction_date IS NOT NULL
+        OR miner_lifetime_predictions > 0)
+        AND miner_uid < ?
         """
-        active_miners = await self.db_manager.fetch_all(query)
+        active_miners = await self.db_manager.fetch_all(query, (self.num_miners,))
         has_prediction_history = np.zeros(self.num_miners, dtype=bool)
         for miner in active_miners:
-            has_prediction_history[miner['miner_uid']] = True
-
-        # Create a 2D valid_history array
-        valid_history = np.zeros((self.num_miners, self.max_days), dtype=bool)
-        valid_history[:, day_index] = has_prediction_history  # Set current day's history
+            miner_uid = miner['miner_uid']
+            has_prediction_history[miner_uid] = True
 
         # Get component scores for the day
         clv = self.clv_scores[:, day_index]
@@ -1646,11 +1729,22 @@ class ScoringSystem:
         entropy = self.entropy_scores[:, day_index]
         sortino = self.sortino_scores[:, day_index]
 
+        # For miners with no current predictions but prediction history,
+        # carry forward their previous day's scores
+        prev_day = (day_index - 1) % self.max_days
+        no_current_predictions = (clv == 0) & (roi == 0) & (sortino == 0) & has_prediction_history
+
+        if np.any(no_current_predictions):
+            clv[no_current_predictions] = self.clv_scores[no_current_predictions, prev_day]
+            roi[no_current_predictions] = self.roi_scores[no_current_predictions, prev_day]
+            entropy[no_current_predictions] = self.entropy_scores[no_current_predictions, prev_day]
+            sortino[no_current_predictions] = self.sortino_scores[no_current_predictions, prev_day]
+
         # Log non-zero scores before normalization
         bt.logging.info(f"Miners with non-zero CLV scores: {np.sum(clv != 0)}")
         bt.logging.info(f"Miners with non-zero ROI scores: {np.sum(roi != 0)}")
         bt.logging.info(f"Miners with non-zero entropy scores: {np.sum(entropy != 0)}")
-        bt.logging.info(f"Miners with non-zero sortino scores: {np.sum(sortino != 0)}")
+        bt.logging.info(f"Miners with non-zero sortino scores: {np.sum(sortino !=0)}")
 
         def normalize_with_negatives(scores, has_history):
             """
@@ -1678,7 +1772,7 @@ class ScoringSystem:
                     max_score = max_score - min_score
                     
                 # Then normalize to [0,1] range
-                normalized[non_zero_mask] = normalized[non_zero_mask] / max_score
+                normalized[non_zero_mask] = normalized[non_zero_mask] / score_range
                 
                 # Ensure we don't lose scores due to floating point errors
                 normalized[non_zero_mask] = np.maximum(normalized[non_zero_mask], 1e-10)
@@ -1696,7 +1790,7 @@ class ScoringSystem:
         # Normalize components
         norm_clv = normalize_with_negatives(clv, has_prediction_history)
         norm_roi = normalize_with_negatives(roi, has_prediction_history)
-        norm_entropy = normalize_with_negatives(entropy, has_prediction_history)
+        norm_entropy = self.normalize_entropy_scores(entropy, has_prediction_history)
         norm_sortino = normalize_with_negatives(sortino, has_prediction_history)
 
         # Calculate composite score
@@ -1707,7 +1801,7 @@ class ScoringSystem:
             + self.entropy_weight * norm_entropy
         )
 
-        # Only zero out scores once for miners with no history
+        # Only zero out scores for miners with no prediction history
         composite[~has_prediction_history] = 0
         
         bt.logging.info(f"Miners with non-zero composite scores: {np.sum(composite != 0)}")
@@ -1715,30 +1809,36 @@ class ScoringSystem:
         # Store the base composite score
         self.composite_scores[:, day_index, 0] = composite
 
-        # Calculate rolling averages for each tier - simplified to just average over window
-        for tier in range(1, 6):
-            window = self.tier_configs[tier + 1]["window"]
-            start_day = (day_index - window + 1) % self.max_days
-            
-            # Handle circular buffer for window scores
-            if start_day <= day_index:
-                window_scores = self.composite_scores[:, start_day:day_index + 1, 0]
-            else:
-                window_scores = np.concatenate([
-                    self.composite_scores[:, start_day:, 0],
-                    self.composite_scores[:, :day_index + 1, 0]
-                ], axis=1)
-            
-            # Simple average over window, only considering non-zero scores
-            valid_scores = window_scores != 0
-            valid_days = np.sum(valid_scores, axis=1)
-            rolling_avg = np.zeros(self.num_miners)
-            mask = valid_days > 0
-            
-            if np.any(mask):
-                rolling_avg[mask] = np.sum(window_scores[mask] * valid_scores[mask], axis=1) / valid_days[mask]
-            
-            self.composite_scores[:, day_index, tier] = rolling_avg
+        # Calculate rolling averages for each tier - include all days in window
+        for tier in range(2, 7):  # Changed from range(1, 6)
+            try:
+                window = self.tier_configs[tier]["window"]  # Removed the + 1
+                start_day = (day_index - window + 1) % self.max_days
+                
+                # Handle circular buffer for window scores
+                if start_day <= day_index:
+                    window_scores = self.composite_scores[:, start_day:day_index + 1, 0]
+                else:
+                    window_scores = np.concatenate([
+                        self.composite_scores[:, start_day:, 0],
+                        self.composite_scores[:, :day_index + 1, 0]
+                    ], axis=1)
+                
+                # Calculate average over window for all days, not just non-zero scores
+                rolling_avg = np.zeros(self.num_miners)
+                mask = has_prediction_history  # Use prediction history mask instead of non-zero scores
+                
+                if np.any(mask):
+                    rolling_avg[mask] = np.mean(window_scores[mask], axis=1)
+                
+                self.composite_scores[:, day_index, tier-1] = rolling_avg  # Adjusted index to tier-1
+                
+            except IndexError as e:
+                bt.logging.error(f"Error processing tier {tier}: {str(e)}")
+                continue
+            except Exception as e:
+                bt.logging.error(f"Unexpected error processing tier {tier}: {str(e)}")
+                continue
 
         # Add logging about prediction history
         bt.logging.debug(f"Miners with prediction history for day {day_index}: {np.sum(has_prediction_history)}/{len(has_prediction_history)}")
@@ -1822,6 +1922,7 @@ class ScoringSystem:
                     WHERE p.game_id IN ({})
                 """.format(','.join('?' * len(game_ids)))
                 
+                # Pass game_ids as a simple list, not a list of tuples
                 day_predictions = await self.db_manager.fetch_all(predictions_query, game_ids)
 
                 bt.logging.info(
@@ -1869,13 +1970,29 @@ class ScoringSystem:
                                 float(game['team_b_odds']), 
                                 float(game['tie_odds']) if game['tie_odds'] is not None else 0.0
                             ]
+                            
+                            # Initialize game with all possible outcomes
+                            game_id = game['external_id']
+                            num_outcomes = 3 if game['tie_odds'] else 2
+                            
+                            # First initialize the game pools for all possible outcomes
+                            self.entropy_system.game_pools[game_id] = defaultdict(
+                                lambda: {"predictions": [], "entropy_score": 0.0}
+                            )
+                            for outcome in range(num_outcomes):
+                                self.entropy_system.game_pools[game_id][outcome] = {
+                                    "predictions": [],
+                                    "entropy_score": 0.0
+                                }
+                                
+                            # Then add the game normally
                             task = self.entropy_system.add_new_game(
-                                game_id=game['external_id'],
-                                num_outcomes=3 if game['tie_odds'] else 2,
+                                game_id=game_id,
+                                num_outcomes=num_outcomes,
                                 odds=odds
                             )
                             game_tasks.append(task)
-                            bt.logging.debug(f"Added task for game {game['external_id']}")
+                            bt.logging.debug(f"Added game {game_id} with {num_outcomes} outcomes to entropy system")
                         except Exception as e:
                             bt.logging.error(f"Error adding game {game['external_id']} to entropy system: {e}")
                             continue
@@ -2106,15 +2223,14 @@ class ScoringSystem:
             score_records = []
             for miner_id in range(self.num_miners):
                 # Daily scores
-                score_records.append((
+                score_records.append(
                     miner_id, day_id, 'daily',
                     float(self.clv_scores[miner_id, day_id]),
                     float(self.roi_scores[miner_id, day_id]),
                     float(self.entropy_scores[miner_id, day_id]),
                     float(self.composite_scores[miner_id, day_id, 0]),
                     float(self.sortino_scores[miner_id, day_id])
-                ))
-                
+                )
                 # Tier-specific scores
                 for tier_idx in range(1, self.composite_scores.shape[2]):
                     if tier_idx in self.tier_mapping:
@@ -2171,3 +2287,8 @@ class ScoringSystem:
         """
         sample_data = await self.db_manager.fetch_all(sample_query)
         bt.logging.info(f"Sample miner data: {sample_data}")
+
+    @property
+    def tier_capacities(self):
+        """Get the capacity for each tier."""
+        return [config["capacity"] for config in self.tier_configs]

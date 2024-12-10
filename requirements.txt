@@ -5,10 +5,10 @@ annotated-types==0.7.0
 azure-mgmt-storage==21.2.1
 azure-storage-blob==12.23.1
 azure-storage-common==0.37.1
-bittensor-cli==8.3.0
 certbot==2.11.0
 colorama==0.4.6
 e==1.4.5
+numpy==1.26.3
 flask-cors==4.0.1
 flask-limiter==3.8.0
 huggingface-hub==0.24.5

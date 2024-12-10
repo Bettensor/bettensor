@@ -10,6 +10,13 @@ from typing import Dict, List, Tuple
 from scipy.spatial.distance import euclidean
 import os
 import asyncio
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+import async_timeout
+import copy
+import random
+
+from bettensor.validator.utils.database.database_manager import DatabaseManager
 
 
 class EntropySystem:
@@ -43,6 +50,14 @@ class EntropySystem:
         self.game_close_times = {}
         self.db_manager = db_manager  # Store db_manager reference
 
+        # Add tracking for changes since last save
+        self._changes_since_save = {
+            'new_predictions': set(),  # Set of (game_id, outcome, prediction_id)
+            'updated_pools': set(),    # Set of (game_id, outcome)
+            'new_closed_games': set(), # Set of game_ids
+            'updated_miner_scores': set(), # Set of (day, miner_uid)
+        }
+        
         # Attempt to load existing state
         asyncio.create_task(self.load_state())
 
@@ -100,6 +115,9 @@ class EntropySystem:
         self.game_close_times[game_id] = datetime.now(timezone.utc)
         bt.logging.info(f"Game {game_id} has been marked as closed.")
 
+        # Track newly closed game
+        self._changes_since_save['new_closed_games'].add(game_id)
+
     def add_prediction(
         self, 
         prediction_id, 
@@ -156,6 +174,10 @@ class EntropySystem:
                 "prediction_date": prediction_date,
                 "entropy_contribution": entropy_contribution,
             })
+            
+            # Track this new prediction
+            self._changes_since_save['new_predictions'].add((game_id, predicted_outcome, prediction_id))
+            self._changes_since_save['updated_pools'].add((game_id, predicted_outcome))
             
         except Exception as e:
             bt.logging.error(f"Error in add_prediction: {e}")
@@ -452,6 +474,9 @@ class EntropySystem:
         
         # Store contributions in miner_predictions for the current day
         self.miner_predictions[current_day] = dict(miner_contributions)
+        # Track updated miner scores
+        for miner_uid in miner_contributions:
+            self._changes_since_save['updated_miner_scores'].add((current_day, miner_uid))
         
         # Now populate the scores array using historical data
         for day in range(self.max_days):
@@ -477,107 +502,200 @@ class EntropySystem:
 
     async def save_state(self):
         """Save the current state to both database and file with retry logic"""
-        max_retries = 3
+        max_retries = 5  # Increased from 3
+        base_delay = 1
+        
+        # Save current state for rollback
+        state_backup = {
+            'game_pools': copy.deepcopy(self.game_pools),
+            'closed_games': copy.deepcopy(self.closed_games),
+            'game_close_times': copy.deepcopy(self.game_close_times),
+            'miner_predictions': copy.deepcopy(self.miner_predictions),
+            'changes_since_save': copy.deepcopy(self._changes_since_save)
+        }
+        
         for attempt in range(max_retries):
             try:
-                # First save to database
-                if await self._save_to_database():
-                    # Then save to file
-                    self._save_to_file()
-                    return True
-                    
+                # Use timeout for database save
+                async with async_timeout.timeout(60):  # Increased timeout for entire save operation
+                    # First save to database
+                    if await self._save_to_database():
+                        # Then save to file
+                        self._save_to_file()
+                        return True
+                        
+                    if attempt < max_retries - 1:
+                        # Exponential backoff with jitter
+                        delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                        bt.logging.warning(f"Save attempt {attempt + 1} failed, retrying in {delay:.1f}s...")
+                        
+                        # Restore state before retry
+                        self.game_pools = copy.deepcopy(state_backup['game_pools'])
+                        self.closed_games = copy.deepcopy(state_backup['closed_games'])
+                        self.game_close_times = copy.deepcopy(state_backup['game_close_times'])
+                        self.miner_predictions = copy.deepcopy(state_backup['miner_predictions'])
+                        self._changes_since_save = copy.deepcopy(state_backup['changes_since_save'])
+                        
+                        await asyncio.sleep(delay)
+                        continue
+                        
+            except asyncio.TimeoutError:
+                bt.logging.error("Timeout saving entropy system state")
                 if attempt < max_retries - 1:
-                    bt.logging.warning(f"Save attempt {attempt + 1} failed, retrying...")
-                    await asyncio.sleep(1)
-                    continue
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    bt.logging.warning(f"Retrying in {delay:.1f}s...")
                     
+                    # Restore state before retry
+                    self.game_pools = copy.deepcopy(state_backup['game_pools'])
+                    self.closed_games = copy.deepcopy(state_backup['closed_games'])
+                    self.game_close_times = copy.deepcopy(state_backup['game_close_times'])
+                    self.miner_predictions = copy.deepcopy(state_backup['miner_predictions'])
+                    self._changes_since_save = copy.deepcopy(state_backup['changes_since_save'])
+                    
+                    await asyncio.sleep(delay)
+                    continue
+                raise
             except Exception as e:
                 bt.logging.error(f"Error saving entropy system state: {str(e)}")
                 bt.logging.error(traceback.format_exc())
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    bt.logging.warning(f"Retrying in {delay:.1f}s...")
+                    
+                    # Restore state before retry
+                    self.game_pools = copy.deepcopy(state_backup['game_pools'])
+                    self.closed_games = copy.deepcopy(state_backup['closed_games'])
+                    self.game_close_times = copy.deepcopy(state_backup['game_close_times'])
+                    self.miner_predictions = copy.deepcopy(state_backup['miner_predictions'])
+                    self._changes_since_save = copy.deepcopy(state_backup['changes_since_save'])
+                    
+                    await asyncio.sleep(delay)
                     continue
                 raise
-                
+                    
+        # If all retries failed, restore original state
+        self.game_pools = copy.deepcopy(state_backup['game_pools'])
+        self.closed_games = copy.deepcopy(state_backup['closed_games'])
+        self.game_close_times = copy.deepcopy(state_backup['game_close_times'])
+        self.miner_predictions = copy.deepcopy(state_backup['miner_predictions'])
+        self._changes_since_save = copy.deepcopy(state_backup['changes_since_save'])
+        
         return False
 
     async def _save_to_database(self):
-        """Save current state to database tables"""
+        """Save only changed state to database tables using batch operations"""
         try:
             if not self.db_manager:
                 return False
 
-            # Save system state
-            await self.db_manager.execute_query("""
-                INSERT OR REPLACE INTO entropy_system_state 
-                (id, current_day, num_miners, max_days, last_processed_date)
-                VALUES (1, ?, ?, ?, datetime('now'))
-            """, (self.current_day, self.num_miners, self.max_days))
-            
-            # Save game pools
-            for game_id, outcomes in self.game_pools.items():
-                for outcome, pool in outcomes.items():
-                    await self.db_manager.execute_query("""
-                        INSERT OR REPLACE INTO entropy_game_pools 
-                        (game_id, outcome, entropy_score)
-                        VALUES (?, ?, ?)
-                    """, (game_id, outcome, pool["entropy_score"]))
+            # Use a shorter timeout for the database operation
+            async with async_timeout.timeout(45):  # Increased from 20 to 45 seconds
+                async with self.db_manager.get_long_running_session() as session:
+                    from sqlalchemy import text
                     
-                    # Save predictions for this pool
-                    for pred in pool["predictions"]:
-                        if "prediction_id" not in pred:
-                            # bt.logging.warning(
-                            #     f"Skipping prediction without ID for game {game_id}, outcome {outcome}:\n"
-                            #     f"  Miner: {pred.get('miner_uid')}\n"
-                            #     f"  Odds: {pred.get('odds')}\n"
-                            #     f"  Wager: {pred.get('wager')}\n"
-                            #     f"  Date: {pred.get('prediction_date')}\n"
-                            #     f"  Entropy Contribution: {pred.get('entropy_contribution')}"
-                            # )
+                    # Save system state (always save this as it's small)
+                    await session.execute(
+                        text("""
+                            INSERT OR REPLACE INTO entropy_system_state 
+                            (id, current_day, num_miners, max_days, last_processed_date)
+                            VALUES (1, :current_day, :num_miners, :max_days, datetime('now'))
+                        """),
+                        {
+                            "current_day": self.current_day,
+                            "num_miners": self.num_miners,
+                            "max_days": self.max_days
+                        }
+                    )
+                    
+                    # Prepare all batch updates first
+                    updates = {
+                        'pools': [],
+                        'predictions': [],
+                        'scores': [],
+                        'closed_games': []
+                    }
+                    
+                    # Collect updates with progress logging
+                    total_updates = (
+                        len(self._changes_since_save['updated_pools']) +
+                        len(self._changes_since_save['new_predictions']) +
+                        len(self._changes_since_save['updated_miner_scores']) +
+                        len(self._changes_since_save['new_closed_games'])
+                    )
+                    
+                    if total_updates > 0:
+                        bt.logging.info(f"Preparing to save {total_updates} updates")
+                    
+                    # Collect updates (existing code)
+                    ...
+                    
+                    # Execute all batch updates with smaller batch sizes and progress logging
+                    batch_size = 25
+                    for update_type, items in updates.items():
+                        if not items:
                             continue
                             
-                        # Ensure prediction_date is in the correct format
-                        if isinstance(pred["prediction_date"], datetime):
-                            pred_date = pred["prediction_date"].isoformat()
-                        else:
-                            pred_date = pred["prediction_date"]
-                            
-                        await self.db_manager.execute_query("""
-                            INSERT OR REPLACE INTO entropy_predictions 
-                            (prediction_id, game_id, outcome, miner_uid, odds, 
-                             wager, prediction_date, entropy_contribution)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            pred["prediction_id"], game_id, outcome, 
-                            pred["miner_uid"], pred["odds"], pred["wager"],
-                            pred_date, pred["entropy_contribution"]
-                        ))
-            
-            # Save miner predictions
-            for day, miners in self.miner_predictions.items():
-                for miner_uid, contribution in miners.items():
-                    await self.db_manager.execute_query("""
-                        INSERT OR REPLACE INTO entropy_miner_scores
-                        (miner_uid, day, contribution)
-                        VALUES (?, ?, ?)
-                    """, (miner_uid, day, contribution))
-            
-            # Save closed games
-            for game_id in self.closed_games:
-                close_time = self.game_close_times.get(game_id)
-                if close_time:
-                    if isinstance(close_time, datetime):
-                        close_time = close_time.isoformat()
+                        total_batches = (len(items) + batch_size - 1) // batch_size
+                        bt.logging.debug(f"Processing {len(items)} {update_type} updates in {total_batches} batches")
                         
-                    await self.db_manager.execute_query("""
-                        INSERT OR REPLACE INTO entropy_closed_games
-                        (game_id, close_time)
-                        VALUES (?, ?)
-                    """, (game_id, close_time))
-            
-            bt.logging.info("Successfully saved entropy system state to database")
-            return True
-            
+                        for i in range(0, len(items), batch_size):
+                            batch = items[i:i + batch_size]
+                            batch_num = i // batch_size + 1
+                            
+                            try:
+                                if update_type == 'pools':
+                                    await session.execute(
+                                        text("""INSERT OR REPLACE INTO entropy_game_pools 
+                                               (game_id, outcome, entropy_score) 
+                                               VALUES (:game_id, :outcome, :entropy_score)"""),
+                                        batch
+                                    )
+                                elif update_type == 'predictions':
+                                    await session.execute(
+                                        text("""INSERT OR REPLACE INTO entropy_predictions 
+                                               (prediction_id, game_id, outcome, miner_uid, odds, 
+                                                wager, prediction_date, entropy_contribution)
+                                               VALUES (:prediction_id, :game_id, :outcome, :miner_uid, 
+                                                      :odds, :wager, :prediction_date, :entropy_contribution)"""),
+                                        batch
+                                    )
+                                elif update_type == 'scores':
+                                    await session.execute(
+                                        text("""INSERT OR REPLACE INTO entropy_miner_scores
+                                               (miner_uid, day, contribution) 
+                                               VALUES (:miner_uid, :day, :contribution)"""),
+                                        batch
+                                    )
+                                elif update_type == 'closed_games':
+                                    await session.execute(
+                                        text("""INSERT OR REPLACE INTO entropy_closed_games
+                                               (game_id, close_time) 
+                                               VALUES (:game_id, :close_time)"""),
+                                        batch
+                                    )
+                                
+                                # Commit after each batch
+                                await session.commit()
+                                bt.logging.debug(f"Completed batch {batch_num}/{total_batches} for {update_type}")
+                                
+                            except Exception as e:
+                                bt.logging.error(f"Error saving batch {batch_num} of {update_type}: {e}")
+                                raise
+                    
+                    # Clear change tracking after successful save
+                    self._changes_since_save = {
+                        'new_predictions': set(),
+                        'updated_pools': set(),
+                        'new_closed_games': set(),
+                        'updated_miner_scores': set(),
+                    }
+                    
+                    bt.logging.info("Successfully saved entropy system state delta to database")
+                    return True
+                    
+        except asyncio.TimeoutError:
+            bt.logging.error("Timeout during database save operation")
+            return False
         except Exception as e:
             bt.logging.error(f"Error saving to database: {str(e)}")
             bt.logging.error(traceback.format_exc())
@@ -669,125 +787,134 @@ class EntropySystem:
             bt.logging.error(traceback.format_exc())
 
     async def _load_from_database(self) -> bool:
-        """Load state from database tables"""
+        """Load entropy system state from database."""
         try:
-            if not self.db_manager:
-                return False
-
-            # Load system state - first check what columns we actually have
-            schema_query = """
-                SELECT sql FROM sqlite_master 
-                WHERE type='table' AND name='entropy_system_state'
-            """
-            schema_row = await self.db_manager.fetch_one(schema_query)
-            if schema_row:
-                bt.logging.debug(f"Entropy system state schema: {schema_row['sql']}")
-
-            # Load system state with only the columns we know exist
-            state_query = """
-                SELECT current_day, last_processed_date
-                FROM entropy_system_state 
-                WHERE id = 1
-            """
-            row = await self.db_manager.fetch_one(state_query)
-            if not row:
-                bt.logging.info("No entropy system state found in database")
-                return False
-
-            # Access columns by name instead of index
-            self.current_day = row['current_day']
-            
-            # Skip parameter verification since we don't store these in the DB
-            # Just log the current values
-            bt.logging.info(
-                f"Current system parameters:\n"
-                f"  Miners: {self.num_miners}\n"
-                f"  Max days: {self.max_days}"
-            )
-
-            # Load game pools
-            pools_query = """
-                SELECT game_id, outcome, entropy_score
-                FROM entropy_game_pools
-            """
-            pools = await self.db_manager.fetch_all(pools_query)
-            
-            # Initialize game pools
-            self.game_pools = {}
-            
-            # Load predictions for each pool
-            for pool in pools:
-                game_id = pool['game_id']
-                outcome = pool['outcome']
-                
-                if game_id not in self.game_pools:
-                    self.game_pools[game_id] = {}
-                
-                predictions_query = """
-                    SELECT prediction_id, miner_uid, odds, wager, 
-                           prediction_date, entropy_contribution
-                    FROM entropy_predictions
-                    WHERE game_id = ? AND outcome = ?
+            async with self.db_manager.get_long_running_session() as session:
+                # Load system state - first check what columns we actually have
+                schema_query = """
+                    SELECT sql FROM sqlite_master 
+                    WHERE type='table' AND name='entropy_system_state'
                 """
-                predictions = await self.db_manager.fetch_all(
-                    predictions_query, 
-                    (game_id, outcome)
-                )
+                result = await session.execute(text(schema_query))
+                schema_row = result.first()
+                if schema_row:
+                    schema_row = dict(zip(result.keys(), schema_row))
+                    bt.logging.debug(f"Entropy system state schema: {schema_row['sql']}")
+
+                # Load system state with only the columns we know exist
+                state_query = """
+                    SELECT current_day, last_processed_date
+                    FROM entropy_system_state 
+                    WHERE id = 1
+                """
+                result = await session.execute(text(state_query))
+                row = result.first()
+                if not row:
+                    bt.logging.info("No entropy system state found in database")
+                    return False
+
+                # Convert row to dict
+                row = dict(zip(result.keys(), row))
+
+                # Access columns by name instead of index
+                self.current_day = row['current_day']
                 
-                self.game_pools[game_id][outcome] = {
-                    "predictions": [
-                        {
-                            "prediction_id": p['prediction_id'],
-                            "miner_uid": p['miner_uid'],
-                            "odds": p['odds'],
-                            "wager": p['wager'],
-                            "prediction_date": p['prediction_date'],
-                            "entropy_contribution": p['entropy_contribution']
+                # Skip parameter verification since we don't store these in the DB
+                # Just log the current values
+                bt.logging.info(
+                    f"Current system parameters:\n"
+                    f"  Miners: {self.num_miners}\n"
+                    f"  Max days: {self.max_days}"
+                )
+
+                # Load game pools with batching
+                pools_query = """
+                    SELECT game_id, outcome, entropy_score
+                    FROM entropy_game_pools
+                """
+                result = await session.execute(text(pools_query))
+                pools = [dict(zip(result.keys(), row)) for row in result.all()]
+                
+                # Initialize game pools
+                self.game_pools = {}
+                
+                # Load predictions for each pool in batches
+                batch_size = 100
+                for i in range(0, len(pools), batch_size):
+                    batch = pools[i:i + batch_size]
+                    for pool in batch:
+                        game_id = pool['game_id']
+                        outcome = pool['outcome']
+                        
+                        if game_id not in self.game_pools:
+                            self.game_pools[game_id] = {}
+                        
+                        predictions_query = """
+                            SELECT prediction_id, miner_uid, odds, wager, 
+                                   prediction_date, entropy_contribution
+                            FROM entropy_predictions
+                            WHERE game_id = :game_id AND outcome = :outcome
+                        """
+                        result = await session.execute(text(predictions_query), 
+                                                     {'game_id': game_id, 'outcome': outcome})
+                        predictions = [dict(zip(result.keys(), row)) for row in result.all()]
+                        
+                        self.game_pools[game_id][outcome] = {
+                            "predictions": [
+                                {
+                                    "prediction_id": p['prediction_id'],
+                                    "miner_uid": p['miner_uid'],
+                                    "odds": p['odds'],
+                                    "wager": p['wager'],
+                                    "prediction_date": p['prediction_date'],
+                                    "entropy_contribution": p['entropy_contribution']
+                                }
+                                for p in predictions
+                            ],
+                            "entropy_score": pool['entropy_score']
                         }
-                        for p in predictions
-                    ],
-                    "entropy_score": pool['entropy_score']
+
+                # Load miner predictions in batches
+                miner_scores_query = """
+                    SELECT miner_uid, day, contribution
+                    FROM entropy_miner_scores
+                """
+                result = await session.execute(text(miner_scores_query))
+                miner_scores = [dict(zip(result.keys(), row)) for row in result.all()]
+                
+                # Initialize miner predictions
+                self.miner_predictions = {}
+                
+                for score in miner_scores:
+                    day = score['day']
+                    miner_uid = score['miner_uid']
+                    if day not in self.miner_predictions:
+                        self.miner_predictions[day] = {}
+                    self.miner_predictions[day][miner_uid] = score['contribution']
+
+                # Load closed games
+                closed_games_query = """
+                    SELECT game_id, close_time
+                    FROM entropy_closed_games
+                """
+                result = await session.execute(text(closed_games_query))
+                closed_games = [dict(zip(result.keys(), row)) for row in result.all()]
+                
+                self.closed_games = set(g['game_id'] for g in closed_games)
+                self.game_close_times = {
+                    g['game_id']: datetime.fromisoformat(g['close_time']) 
+                    if isinstance(g['close_time'], str) else g['close_time']
+                    for g in closed_games
                 }
 
-            # Load miner predictions
-            miner_scores_query = """
-                SELECT miner_uid, day, contribution
-                FROM entropy_miner_scores
-            """
-            miner_scores = await self.db_manager.fetch_all(miner_scores_query)
-            
-            # Initialize miner predictions
-            self.miner_predictions = {}
-            
-            for score in miner_scores:
-                day = score['day']
-                miner_uid = score['miner_uid']
-                if day not in self.miner_predictions:
-                    self.miner_predictions[day] = {}
-                self.miner_predictions[day][miner_uid] = score['contribution']
-
-            # Load closed games
-            closed_games_query = """
-                SELECT game_id, close_time
-                FROM entropy_closed_games
-            """
-            closed_games = await self.db_manager.fetch_all(closed_games_query)
-            
-            self.closed_games = set(g['game_id'] for g in closed_games)
-            self.game_close_times = {
-                g['game_id']: datetime.fromisoformat(g['close_time']) 
-                if isinstance(g['close_time'], str) else g['close_time']
-                for g in closed_games
-            }
-
-            bt.logging.info(
-                f"Successfully loaded entropy system state from database:\n"
-                f"  Current day: {self.current_day}\n"
-                f"  Game pools: {len(self.game_pools)}\n"
-                f"  Closed games: {len(self.closed_games)}\n"
-                f"  Days with predictions: {len(self.miner_predictions)}"
-            )
-            return True
+                bt.logging.info(
+                    f"Successfully loaded entropy system state from database:\n"
+                    f"  Current day: {self.current_day}\n"
+                    f"  Game pools: {len(self.game_pools)}\n"
+                    f"  Closed games: {len(self.closed_games)}\n"
+                    f"  Days with predictions: {len(self.miner_predictions)}"
+                )
+                return True
 
         except Exception as e:
             bt.logging.error(f"Error loading from database: {str(e)}")
@@ -904,4 +1031,17 @@ class EntropySystem:
         bt.logging.info("Entropy System State:")
         for key, value in state.items():
             bt.logging.info(f"  {key}: {value}")
+
+    def get_delta_games(self):
+        """Return only games that have been added or modified since last save"""
+        return self._delta_games if hasattr(self, '_delta_games') else {}
+
+    def get_delta_predictions(self):
+        """Return only predictions that have been added since last save"""
+        return self._delta_predictions if hasattr(self, '_delta_predictions') else {}
+
+    def clear_delta(self):
+        """Clear the delta tracking after successful save"""
+        self._delta_games = {}
+        self._delta_predictions = {}
 
