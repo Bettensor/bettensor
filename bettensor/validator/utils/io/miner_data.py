@@ -407,6 +407,7 @@ class MinerDataMixin:
             
             query = """
                 SELECT 
+                    game_id,
                     external_id,
                     event_start_date,
                     team_a,
@@ -415,12 +416,15 @@ class MinerDataMixin:
                     team_b_odds,
                     tie_odds,
                     outcome,
+                    can_tie,
                     sport,
-                    league
+                    league,
+                    create_date,
+                    last_update_date,
+                    active
                 FROM game_data
                 WHERE event_start_date >= :start_date
                 AND event_start_date <= :end_date
-                AND outcome IS NULL
             """
             
             # Pass parameters as a dictionary
@@ -440,6 +444,7 @@ class MinerDataMixin:
             for row in rows:
                 game_id = row['external_id']
                 gamedata_dict[game_id] = {
+                    'game_id': game_id,
                     'external_id': game_id,
                     'event_start_date': row['event_start_date'],
                     'team_a': row['team_a'],
@@ -449,7 +454,11 @@ class MinerDataMixin:
                     'tie_odds': row['tie_odds'],
                     'outcome': row['outcome'],
                     'sport': row['sport'],
-                    'league': row['league']
+                    'league': row['league'],
+                    'create_date': row['create_date'],
+                    'last_update_date': row['last_update_date'],
+                    'active': row['active'],
+                    'can_tie': row['can_tie']
                 }
             
             return gamedata_dict

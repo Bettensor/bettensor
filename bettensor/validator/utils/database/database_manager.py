@@ -47,6 +47,7 @@ class DatabaseManager:
         self._max_connection_attempts = 50
         self._connection_attempt_reset = time.time()
         self._connection_reset_interval = 60
+        self.default_timeout = 30
         
         # Initialize engine with WAL mode and optimized settings
         self.engine = create_async_engine(
@@ -382,17 +383,18 @@ class DatabaseManager:
             return None
 
     async def fetch_all(self, query, params=None):
-        """Execute a query with improved timeout handling"""
+        """Execute a SELECT query and return all results."""
         try:
-            async with async_timeout.timeout(3):  # Overall timeout for the operation
+            async with async_timeout.timeout(self.default_timeout):  # Use the class default_timeout
                 async with self.get_session() as session:
                     result = await session.execute(text(query), params)
                     return [dict(row) for row in result.mappings()]
         except asyncio.TimeoutError:
-            bt.logging.error("Query execution timed out")
+            bt.logging.error(f"Query timed out after {self.default_timeout} seconds")
             raise
         except Exception as e:
-            bt.logging.error(f"Error executing query: {e}")
+            bt.logging.error(f"Error in fetch_all: {str(e)}")
+            bt.logging.error(traceback.format_exc())
             raise
 
     async def fetch_one(self, query, params=None):
@@ -804,7 +806,7 @@ class DatabaseManager:
         """
         try:
             # Use separate connections for source and destination
-            async with aiosqlite.connect(self.db_path) as source_conn:
+            async with aiosqlite.connect(self.database_path) as source_conn:
                 async with aiosqlite.connect(str(backup_path)) as dest_conn:
                     await source_conn.backup(dest_conn)
             bt.logging.info(f"Database backup created at {backup_path}")
