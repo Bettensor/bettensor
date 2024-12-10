@@ -646,7 +646,7 @@ async def query_and_process_axons(validator):
             current_time = datetime.now(timezone.utc).isoformat()
             
             gamedata_dict = await validator.fetch_local_game_data(current_time)
-            
+            bt.logging.info(f"Number of games: {len(gamedata_dict)}")
             if gamedata_dict is None:
                 bt.logging.error("No game data found")
                 return None

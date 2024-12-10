@@ -664,93 +664,131 @@ class ScoringSystem:
         #np.set_printoptions(threshold=1000)  # Reset to default threshold
 
     def calculate_weights(self, day=None):
-        """
-        Calculate weights for all miners based on their tier and composite score.
-        Ensures the weights array has a length of 256 with correct indices.
-        Weights for invalid or empty UIDs are set to 0.
-        
-        Args:
-            day (int, optional): The day index to calculate weights for. Defaults to current day.
-        
-        Returns:
-            np.ndarray: The calculated weights for all miners
-        """
-        bt.logging.info("Calculating weights")
+        """Calculate weights with smooth transitions and increased spread within tiers."""
+        bt.logging.info("Calculating weights with enhanced score separation")
         
         try:
             weights = np.zeros(self.num_miners)
-
-            tier_incentives = np.array([config["incentive"] for config in self.tier_configs[2:]])
-            total_incentive = tier_incentives.sum()
-            normalized_incentives = tier_incentives / total_incentive if total_incentive > 0 else np.zeros_like(tier_incentives)
-
             if day is None:
                 day = self.current_day
 
             current_tiers = self.tiers[:, day]
+            has_predictions = self.amount_wagered[:, day] > 0
             valid_miners = np.array(list(set(range(self.num_miners)) - self.invalid_uids))
-            valid_miners = valid_miners[(current_tiers[valid_miners] >= 2) & (current_tiers[valid_miners] < self.num_tiers)]
-            
-            bt.logging.debug(f"Valid miners before prediction check: {valid_miners.tolist()}")
-            bt.logging.debug(f"Their tiers: {current_tiers[valid_miners].tolist()}")
+            valid_miners = valid_miners[
+                (current_tiers[valid_miners] >= 2) & 
+                (current_tiers[valid_miners] < self.num_tiers) &
+                has_predictions[valid_miners]
+            ]
 
             if not valid_miners.any():
                 bt.logging.warning("No valid miners found. Returning zero weights.")
                 return weights
 
-            # Add prediction history mask and debug logging
-            has_predictions = self.amount_wagered[:, day] > 0
-            miners_with_weight = np.where(has_predictions)[0]
-            bt.logging.info(f"Miners with non-zero wagers on day {day}: {miners_with_weight.tolist()}")
-            bt.logging.info(f"Wager amounts for these miners: {self.amount_wagered[miners_with_weight, day].tolist()}")
-            bt.logging.info(f"Miners with prediction history: {np.sum(has_predictions)}")
-
-            # Use each miner's composite score for their respective tier
-            # Extract the composite scores based on current tier for each miner
-            composite_scores = self.composite_scores[valid_miners, day, current_tiers[valid_miners]]
-            bt.logging.debug(f"Composite scores shape: {composite_scores.shape}")
-
-            # Clip extreme values to prevent overflow
-            max_score = 10  # Limit the maximum score to prevent exp overflow
-            clipped_scores = np.clip(composite_scores, -max_score, max_score)
+            # Calculate base allocations
+            total_allocation = sum(
+                config["capacity"] * config["incentive"]
+                for config in self.tier_configs[2:]
+            )
             
-            # Apply softmax normalization
-            exp_scores = np.exp(clipped_scores - np.max(clipped_scores))  # Subtract max for numerical stability
-            normalized_scores = exp_scores / (exp_scores.sum() + self.epsilon)  # Add epsilon to prevent division by zero
+            # Calculate overlapping weight ranges for tiers
+            overlap_factor = 0.3  # 20% overlap between tiers
+            spread_factor = 2.0   # Increase spread of scores within tiers
+            tier_allocations = {}
+            weight_start = 0
             
-            # Apply tier incentives
-            for idx, tier in enumerate(range(2, self.num_tiers)):
+            for tier in range(2, self.num_tiers):
+                config = self.tier_configs[tier]
+                tier_weight = (config["capacity"] * config["incentive"]) / total_allocation
+                
+                # Extend range to overlap with adjacent tiers
+                start = max(0, weight_start - (tier_weight * overlap_factor))
+                end = weight_start + tier_weight + (tier_weight * overlap_factor)
+                
+                tier_allocations[tier] = {
+                    'start': start,
+                    'end': end,
+                    'total_weight': tier_weight,
+                    'center': weight_start + (tier_weight / 2)
+                }
+                weight_start += tier_weight
+                
+                bt.logging.debug(f"Tier {tier} allocation:")
+                bt.logging.debug(f"  Range: {start:.4f} - {end:.4f}")
+                bt.logging.debug(f"  Center: {tier_allocations[tier]['center']:.4f}")
+
+            # Assign weights with enhanced spread
+            for tier in range(2, self.num_tiers):
                 tier_miners = valid_miners[current_tiers[valid_miners] == tier]
-                incentive_factor = normalized_incentives[idx]
-                # Select normalized scores for miners in the current tier
-                tier_scores = normalized_scores[current_tiers[valid_miners] == tier]
-                weights[tier_miners] = tier_scores * incentive_factor * (1 + idx * 0.1)
-                bt.logging.debug(f"Tier {tier}: Assigned weights to {len(tier_miners)} miners with incentive {incentive_factor}")
+                if len(tier_miners) == 0:
+                    continue
 
-            # Ensure weights sum to 1
+                allocation = tier_allocations[tier]
+                tier_scores = self.composite_scores[tier_miners, day, tier-1]
+                
+                if len(tier_miners) > 1:
+                    # Enhance score separation before normalization
+                    scores_mean = np.mean(tier_scores)
+                    scores_std = np.std(tier_scores)
+                    if scores_std > 0:
+                        # Center and spread the scores
+                        spread_scores = (tier_scores - scores_mean) * spread_factor
+                        
+                        # Apply softmax with temperature parameter
+                        temperature = 0.5  # Lower temperature = more separation
+                        exp_scores = np.exp(spread_scores / temperature)
+                        normalized_scores = exp_scores / exp_scores.sum()
+                    else:
+                        # If all scores are identical, distribute evenly
+                        normalized_scores = np.ones_like(tier_scores) / len(tier_scores)
+                    
+                    # Calculate weights centered around tier's target weight
+                    center = allocation['center']
+                    spread = (allocation['end'] - allocation['start']) / 2
+                    
+                    # Apply enhanced spread to weight distribution
+                    tier_weights = center + (normalized_scores - 0.5) * spread * 1.5
+                    
+                    # Ensure weights stay within allocation bounds
+                    tier_weights = np.clip(tier_weights, allocation['start'], allocation['end'])
+                else:
+                    # Single miner gets center weight
+                    tier_weights = np.array([allocation['center']])
+
+                weights[tier_miners] = tier_weights
+                
+                bt.logging.debug(f"Tier {tier} stats:")
+                bt.logging.debug(f"  Miners: {len(tier_miners)}")
+                bt.logging.debug(f"  Score range: {tier_scores.min():.4f} - {tier_scores.max():.4f}")
+                bt.logging.debug(f"  Weight range: {tier_weights.min():.6f} - {tier_weights.max():.6f}")
+                bt.logging.debug(f"  Weight spread: {tier_weights.max() - tier_weights.min():.6f}")
+
+            # Normalize final weights
             total_weight = weights.sum()
             if total_weight > 0:
                 weights /= total_weight
-            else:
-                bt.logging.warning("Total weight is zero. Distributing weights equally among valid miners.")
-                weights[list(self.valid_uids)] = 1 / len(self.valid_uids)
+                
+                # Verify final distributions and transitions
+                for tier in range(2, self.num_tiers):
+                    tier_miners = np.where((current_tiers == tier) & (weights > 0))[0]
+                    if len(tier_miners) > 0:
+                        tier_sum = weights[tier_miners].sum()
+                        tier_spread = weights[tier_miners].max() - weights[tier_miners].min()
+                        bt.logging.info(f"Tier {tier} final distribution:")
+                        bt.logging.info(f"  Weight range: {weights[tier_miners].min():.6f} - {weights[tier_miners].max():.6f}")
+                        bt.logging.info(f"  Weight spread: {tier_spread:.6f}")
+                        bt.logging.info(f"  Total weight: {tier_sum:.4f}")
+                        
+                        # Log transition gaps
+                        if tier > 2:
+                            prev_tier_miners = np.where((current_tiers == tier-1) & (weights > 0))[0]
+                            if len(prev_tier_miners) > 0:
+                                gap = weights[tier_miners].min() - weights[prev_tier_miners].max()
+                                bt.logging.info(f"  Gap to tier {tier-1}: {gap:.6f}")
 
-            # Add debug logging for weight distribution
-            weighted_miners = np.where(weights > 0)[0]
-            invalid_weights = weighted_miners[~has_predictions[weighted_miners]]
-            if len(invalid_weights) > 0:
-                bt.logging.error(f"Miners with weights but no predictions: {invalid_weights.tolist()}")
-                bt.logging.error(f"Their tiers: {current_tiers[invalid_weights].tolist()}")
-                bt.logging.error(f"Their wager amounts: {self.amount_wagered[invalid_weights, day].tolist()}")
-
-            # Double-check and log
             final_sum = weights.sum()
             bt.logging.info(f"Final weight sum: {final_sum:.6f}")
-            if not np.isclose(final_sum, 1.0):
-                bt.logging.warning(f"Weights sum is not exactly 1.0: {final_sum}")
-
-            bt.logging.info(f"Min weight: {weights.min():.6f}, Max weight: {weights.max():.6f}")
-
+            
             return weights
 
         except Exception as e:

@@ -402,8 +402,8 @@ class MinerDataMixin:
                 current_time = datetime.fromisoformat(current_time.replace('Z', '+00:00'))
             
             # Calculate time window
-            start_time = current_time - timedelta(hours=24)
-            end_time = current_time + timedelta(hours=48)
+            start_time = current_time - timedelta(hours=36) # 1.5 days in the past
+            end_time = current_time + timedelta(hours=168) # 7 days in the future
             
             query = """
                 SELECT 
