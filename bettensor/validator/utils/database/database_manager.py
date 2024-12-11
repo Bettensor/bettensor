@@ -695,7 +695,7 @@ class DatabaseManager:
     async def checkpoint_if_needed(self, force=False):
         """Improved checkpoint handling"""
         try:
-            wal_path = Path(self.db_path).with_suffix('.db-wal')
+            wal_path = Path(self.database_path).with_suffix('.db-wal')
             if force or (wal_path.exists() and wal_path.stat().st_size > 1024 * 1024):  # 1MB threshold
                 async with self.get_session() as session:
                     # Try progressive checkpointing
@@ -734,7 +734,7 @@ class DatabaseManager:
                 await session.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
                 
                 # Verify WAL is cleared
-                wal_path = Path(self.db_path).with_suffix('.db-wal')
+                wal_path = Path(self.database_path).with_suffix('.db-wal')
                 if wal_path.exists():
                     size = wal_path.stat().st_size
                     if size > 0:
@@ -751,7 +751,7 @@ class DatabaseManager:
     async def create_backup_session(self):
         """Create a dedicated backup session with specific settings"""
         backup_engine = create_async_engine(
-            f"sqlite+aiosqlite:///{self.db_path}",
+            f"sqlite+aiosqlite:///{self.database_path}",
             poolclass=AsyncAdaptedQueuePool,
             pool_size=1,  # Dedicated connection
             max_overflow=0,

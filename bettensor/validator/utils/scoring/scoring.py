@@ -92,7 +92,7 @@ class ScoringSystem:
                 "window": 7,
                 "min_wager": 4000,
                 "capacity": int(num_miners * 0.2),
-                "incentive": 0.15,
+                "incentive": 0.10,
             },  # Tier 2
             {
                 "window": 15,
@@ -104,13 +104,13 @@ class ScoringSystem:
                 "window": 30,
                 "min_wager": 20000,
                 "capacity": int(num_miners * 0.1),
-                "incentive": 0.25,
+                "incentive": 0.35,
             },  # Tier 4
             {
                 "window": 45,
                 "min_wager": 35000,
                 "capacity": int(num_miners * 0.05),
-                "incentive": 0.3,
+                "incentive": 0.5,
             },  # Tier 5
         ]
         
@@ -685,21 +685,47 @@ class ScoringSystem:
                 bt.logging.warning("No valid miners found. Returning zero weights.")
                 return weights
 
-            # Calculate base allocations
-            total_allocation = sum(
-                config["capacity"] * config["incentive"]
-                for config in self.tier_configs[2:]
-            )
+            # First, identify populated tiers and their base allocations
+            populated_tiers = {}
+            empty_tier_incentives = 0
+            total_populated_incentive = 0
             
-            # Calculate overlapping weight ranges for tiers
-            overlap_factor = 0.3  # 20% overlap between tiers
-            spread_factor = 2.0   # Increase spread of scores within tiers
+            for tier in range(2, self.num_tiers):
+                tier_miners = valid_miners[current_tiers[valid_miners] == tier]
+                config = self.tier_configs[tier]
+                
+                if len(tier_miners) > 0:
+                    populated_tiers[tier] = {
+                        'miners': tier_miners,
+                        'base_incentive': config["capacity"] * config["incentive"]
+                    }
+                    total_populated_incentive += config["capacity"] * config["incentive"]
+                else:
+                    empty_tier_incentives += config["capacity"] * config["incentive"]
+                    bt.logging.debug(f"Tier {tier-1} is empty, redistributing {config['capacity'] * config['incentive']:.4f} incentive")
+
+            # Redistribute empty tier incentives proportionally
+            if empty_tier_incentives > 0 and total_populated_incentive > 0:
+                for tier_data in populated_tiers.values():
+                    proportion = tier_data['base_incentive'] / total_populated_incentive
+                    additional_incentive = empty_tier_incentives * proportion
+                    tier_data['adjusted_incentive'] = tier_data['base_incentive'] + additional_incentive
+                    bt.logging.debug(f"Adding {additional_incentive:.4f} redistributed incentive")
+            else:
+                for tier_data in populated_tiers.values():
+                    tier_data['adjusted_incentive'] = tier_data['base_incentive']
+
+            # Calculate total allocation after redistribution
+            total_allocation = sum(data['adjusted_incentive'] for data in populated_tiers.values())
+            
+            # Calculate overlapping weight ranges for populated tiers
+            overlap_factor = 0.3
+            spread_factor = 2.0
             tier_allocations = {}
             weight_start = 0
             
-            for tier in range(2, self.num_tiers):
-                config = self.tier_configs[tier]
-                tier_weight = (config["capacity"] * config["incentive"]) / total_allocation
+            for tier, data in sorted(populated_tiers.items()):
+                tier_weight = data['adjusted_incentive'] / total_allocation
                 
                 # Extend range to overlap with adjacent tiers
                 start = max(0, weight_start - (tier_weight * overlap_factor))
@@ -713,16 +739,14 @@ class ScoringSystem:
                 }
                 weight_start += tier_weight
                 
-                bt.logging.debug(f"Tier {tier} allocation:")
-                bt.logging.debug(f"  Range: {start:.4f} - {end:.4f}")
-                bt.logging.debug(f"  Center: {tier_allocations[tier]['center']:.4f}")
+                bt.logging.debug(f"Tier {tier-1} adjusted allocation:")
+                bt.logging.debug(f"  Original incentive: {data['base_incentive']:.4f}")
+                bt.logging.debug(f"  Adjusted incentive: {data['adjusted_incentive']:.4f}")
+                bt.logging.debug(f"  Weight range: {start:.4f} - {end:.4f}")
 
-            # Assign weights with enhanced spread
-            for tier in range(2, self.num_tiers):
-                tier_miners = valid_miners[current_tiers[valid_miners] == tier]
-                if len(tier_miners) == 0:
-                    continue
-
+            # Rest of the weight assignment logic remains the same
+            for tier in populated_tiers:
+                tier_miners = populated_tiers[tier]['miners']
                 allocation = tier_allocations[tier]
                 tier_scores = self.composite_scores[tier_miners, day, tier-1]
                 
@@ -731,60 +755,37 @@ class ScoringSystem:
                     scores_mean = np.mean(tier_scores)
                     scores_std = np.std(tier_scores)
                     if scores_std > 0:
-                        # Center and spread the scores
                         spread_scores = (tier_scores - scores_mean) * spread_factor
-                        
-                        # Apply softmax with temperature parameter
-                        temperature = 0.5  # Lower temperature = more separation
+                        temperature = 0.5
                         exp_scores = np.exp(spread_scores / temperature)
                         normalized_scores = exp_scores / exp_scores.sum()
                     else:
-                        # If all scores are identical, distribute evenly
                         normalized_scores = np.ones_like(tier_scores) / len(tier_scores)
                     
-                    # Calculate weights centered around tier's target weight
                     center = allocation['center']
                     spread = (allocation['end'] - allocation['start']) / 2
-                    
-                    # Apply enhanced spread to weight distribution
                     tier_weights = center + (normalized_scores - 0.5) * spread * 1.5
-                    
-                    # Ensure weights stay within allocation bounds
                     tier_weights = np.clip(tier_weights, allocation['start'], allocation['end'])
                 else:
-                    # Single miner gets center weight
                     tier_weights = np.array([allocation['center']])
 
                 weights[tier_miners] = tier_weights
-                
-                bt.logging.debug(f"Tier {tier} stats:")
-                bt.logging.debug(f"  Miners: {len(tier_miners)}")
-                bt.logging.debug(f"  Score range: {tier_scores.min():.4f} - {tier_scores.max():.4f}")
-                bt.logging.debug(f"  Weight range: {tier_weights.min():.6f} - {tier_weights.max():.6f}")
-                bt.logging.debug(f"  Weight spread: {tier_weights.max() - tier_weights.min():.6f}")
 
             # Normalize final weights
             total_weight = weights.sum()
             if total_weight > 0:
                 weights /= total_weight
                 
-                # Verify final distributions and transitions
-                for tier in range(2, self.num_tiers):
+                # Verification logging remains the same
+                for tier in populated_tiers:
                     tier_miners = np.where((current_tiers == tier) & (weights > 0))[0]
                     if len(tier_miners) > 0:
                         tier_sum = weights[tier_miners].sum()
                         tier_spread = weights[tier_miners].max() - weights[tier_miners].min()
-                        bt.logging.info(f"Tier {tier} final distribution:")
+                        bt.logging.info(f"Tier {tier-1} final distribution:")
                         bt.logging.info(f"  Weight range: {weights[tier_miners].min():.6f} - {weights[tier_miners].max():.6f}")
                         bt.logging.info(f"  Weight spread: {tier_spread:.6f}")
                         bt.logging.info(f"  Total weight: {tier_sum:.4f}")
-                        
-                        # Log transition gaps
-                        if tier > 2:
-                            prev_tier_miners = np.where((current_tiers == tier-1) & (weights > 0))[0]
-                            if len(prev_tier_miners) > 0:
-                                gap = weights[tier_miners].min() - weights[prev_tier_miners].max()
-                                bt.logging.info(f"  Gap to tier {tier-1}: {gap:.6f}")
 
             final_sum = weights.sum()
             bt.logging.info(f"Final weight sum: {final_sum:.6f}")
@@ -1932,9 +1933,12 @@ class ScoringSystem:
                         SUM(CASE WHEN prediction_id IS NOT NULL THEN 1 ELSE 0 END) as valid_ids
                     FROM predictions 
                     WHERE game_id IN ({})
-                """.format(','.join('?' * len(game_ids)))
+                """.format(','.join(f':id_{i}' for i in range(len(game_ids))))
                 
-                diagnostic_result = await self.db_manager.fetch_one(diagnostic_query, game_ids)
+                # Create parameters dictionary for game IDs
+                diagnostic_params = {f'id_{i}': gid for i, gid in enumerate(game_ids)}
+                
+                diagnostic_result = await self.db_manager.fetch_one(diagnostic_query, diagnostic_params)
                 if diagnostic_result:
                     bt.logging.info(
                         f"Prediction ID statistics for {process_date}:\n"
