@@ -1392,13 +1392,15 @@ class ScoringSystem:
                         f"- Valid entries: {result['valid_entries']}/{expected_entries}"
                     )
                     
-                    if (result['days_with_scores'] < total_days or 
-                        result['total_entries'] < expected_entries or
-                        result['valid_entries'] < expected_entries * 0.5):  # At least 60% should be valid
-                        bt.logging.warning("Incomplete or invalid scores detected, initiating rebuild...")
+                    # Only rebuild if less than 60% of entries are valid
+                    completeness_ratio = result['valid_entries'] / expected_entries if expected_entries > 0 else 0
+                    if completeness_ratio < 0.6:  # Less than 60% complete
+                        bt.logging.warning(f"Score completeness ratio ({completeness_ratio:.1%}) below 60%, initiating rebuild...")
                         await self.rebuild_historical_scores()
                         bt.logging.info("Historical scores rebuilt successfully")
                         return
+                    else:
+                        bt.logging.info(f"Score completeness ratio ({completeness_ratio:.1%}) above 60%, skipping rebuild")
             
             # Load scores from database into memory arrays
             fetch_scores_query = """

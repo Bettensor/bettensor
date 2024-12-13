@@ -497,7 +497,13 @@ async def initialize(validator):
         async with async_timeout.timeout(300):  # 5 minute timeout
             if await validator.state_sync.pull_state():
                 bt.logging.info("Successfully pulled latest state")
+                # Check if this is a new validator or one that has gone out of sync
+                is_new_validator = not os.path.exists(validator.db_manager.database_path) or \
+                                 os.path.getsize(validator.db_manager.database_path) < 1024 * 1024  # Less than 1MB
                 await validator.db_manager.initialize(force=True)
+                if is_new_validator:
+                    bt.logging.info("New validator detected, rebuilding historical scores...")
+                    await validator.scoring_system.rebuild_historical_scores()
             else:
                 bt.logging.warning("Failed to pull latest state, continuing with local state")
     else:

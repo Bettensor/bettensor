@@ -431,9 +431,26 @@ class MinerDataMixin:
             bt.logging.info(f"Results: {valid_synapse_count}/{synapse_count} synapses passed validation containing {total_prediction_count} total predictions")
             
             insert_start = time.time()
-            await self.insert_predictions(processed_uids, predictions)
+            prediction_results = await self.insert_predictions(processed_uids, predictions)
             insert_time = time.time() - insert_start
             bt.logging.info(f"Prediction validation and insertion completed in {insert_time:.3f}s")
+
+            # Send confirmations to miners
+            confirmation_start = time.time()
+            confirmation_count = 0
+            for uid, prediction_dict in predictions:
+                try:
+                    await self.send_confirmation_synapse(uid, {
+                        pred_id: prediction_results.get(pred_id, (False, "Processing failed"))
+                        for pred_id in prediction_dict.keys()
+                    })
+                    confirmation_count += 1
+                except Exception as e:
+                    bt.logging.error(f"Failed to send confirmation to miner {uid}: {str(e)}")
+                    bt.logging.error(traceback.format_exc())
+            
+            confirmation_time = time.time() - confirmation_start
+            bt.logging.info(f"Sent confirmations to {confirmation_count}/{len(predictions)} miners in {confirmation_time:.3f}s")
 
             total_time = time.time() - start_time
             bt.logging.info(f"Total processing time: {total_time:.3f}s")
