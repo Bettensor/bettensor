@@ -167,45 +167,62 @@ async def game_data_update_loop(validator):
     DEEP_UPDATE_INTERVAL = 21600  # 6 hours in seconds
     first_run = True
     
+    # Dynamic timeout settings
+    base_timeout = 300  # 5 minutes base timeout
+    max_timeout = 1800  # 30 minutes max timeout
+    timeout_backoff = 1.5  # Multiply timeout by this factor on failure
+    current_timeout = base_timeout
+    
     while True:
         try:
             current_time = datetime.now(timezone.utc)
             current_time_secs = int(time.time())
             
-            # Try to acquire the lock without blocking
-            if validator.operation_lock.locked():
-                bt.logging.debug("Skipping game data update - another operation is running")
+            # Try to acquire the lock with a timeout
+            try:
+                # Shield the critical game update operation from cancellation
+                async with async_timeout.timeout(30):  # 30 second timeout for lock acquisition
+                    async with validator.operation_lock:
+                        # Deep update on startup or every 6 hours
+                        if first_run or (current_time_secs - last_deep_update >= DEEP_UPDATE_INTERVAL):
+                            bt.logging.info("Performing deep game data update...")
+                            deep_update_time = current_time - timedelta(days=7)
+                            async with async_timeout.timeout(max(current_timeout * 2, max_timeout)):  # Double timeout for deep updates
+                                await asyncio.shield(update_game_data(validator, deep_update_time))
+                            last_deep_update = current_time_secs
+                            validator.last_api_call = deep_update_time
+                            await validator.save_state()
+                            first_run = False
+                            bt.logging.info("Deep update completed")
+                            await asyncio.sleep(5)  # Brief pause after deep update
+                        
+                        # Regular update
+                        async with async_timeout.timeout(current_timeout):
+                            await asyncio.shield(update_game_data(validator, current_time))
+                            validator.last_api_call = current_time
+                            await validator.save_state()
+                            
+                        # Successful update - reduce timeout back towards base
+                        current_timeout = max(base_timeout, current_timeout / timeout_backoff)
+                        bt.logging.debug(f"Game update successful, current timeout: {current_timeout}s")
+                        
+            except asyncio.TimeoutError:
+                # Increase timeout on failure, up to max_timeout
+                current_timeout = min(current_timeout * timeout_backoff, max_timeout)
+                bt.logging.warning(f"Game data update timed out, increased timeout to {current_timeout}s")
                 await asyncio.sleep(30)
                 continue
             
-            # Deep update on startup or every 6 hours
-            if first_run or (current_time_secs - last_deep_update >= DEEP_UPDATE_INTERVAL):
-                bt.logging.info("Performing deep game data update...")
-                deep_update_time = current_time - timedelta(days=2)
-                async with async_timeout.timeout(GAME_DATA_TIMEOUT):
-                    async with validator.operation_lock:
-                        await update_game_data(validator, deep_update_time)
-                last_deep_update = current_time_secs
-                validator.last_api_call = deep_update_time
-                await validator.save_state()
-                first_run = False
-                bt.logging.info("Deep update completed")
-                await asyncio.sleep(5)  # Brief pause after deep update
-            
-            # Regular update
-            async with async_timeout.timeout(GAME_DATA_TIMEOUT):
-                async with validator.operation_lock:
-                    await update_game_data(validator, current_time)
-                    validator.last_api_call = current_time
-                    await validator.save_state()
-                    
-            
-            await asyncio.sleep(30)
+            # Successful update - wait before next attempt
+            await asyncio.sleep(300)  # Wait 5 minutes between updates
             
         except Exception as e:
             bt.logging.error(f"Error in game data update loop: {str(e)}")
             bt.logging.error(traceback.format_exc())
-            await asyncio.sleep(5)
+            # Increase timeout on error
+            current_timeout = min(current_timeout * timeout_backoff, max_timeout)
+            bt.logging.warning(f"Increased timeout to {current_timeout}s after error")
+            await asyncio.sleep(30)  # Shorter sleep on error
 
 async def update_game_data_with_lock(validator, current_time):
     """Wrapper to handle the async lock for update_game_data"""
@@ -358,10 +375,27 @@ async def run(validator: BettensorValidator):
 
             # Execute regular tasks first
             if tasks:
-                results = await asyncio.gather(*[
-                    execute_task_safely(task_coroutine, timeout_seconds)
-                    for task_coroutine, timeout_seconds in tasks
-                ], return_exceptions=True)
+                # Split tasks into sequential and parallel groups
+                sequential_tasks = []
+                parallel_tasks = []
+                
+                for task_coroutine, timeout_seconds in tasks:
+                    # Check if this is one of our sequential tasks
+                    if any(task_name in str(task_coroutine) for task_name in ['query_and_process_axons', 'scoring_run', 'set_weights']):
+                        sequential_tasks.append((task_coroutine, timeout_seconds))
+                    else:
+                        parallel_tasks.append((task_coroutine, timeout_seconds))
+
+                # Execute parallel tasks first
+                if parallel_tasks:
+                    results = await asyncio.gather(*[
+                        execute_task_safely(task_coroutine, timeout_seconds)
+                        for task_coroutine, timeout_seconds in parallel_tasks
+                    ], return_exceptions=True)
+
+                # Then execute sequential tasks one by one in order
+                for task_coroutine, timeout_seconds in sequential_tasks:
+                    await execute_task_safely(task_coroutine, timeout_seconds)
 
             # State push with timeout protection
             current_block = validator.subtensor.block

@@ -21,6 +21,7 @@ import asyncio
 import async_timeout
 import aiofiles
 import hashlib
+import azure.core
 
 class StateSync:
     def __init__(self, 
@@ -172,13 +173,20 @@ class StateSync:
             return False
 
     def _get_file_metadata(self, filepath: Path) -> dict:
-        """Get metadata about a file including size and last modified time"""
+        """Get metadata about a file including size, hash, and last modified time"""
         try:
             stats = filepath.stat()
+            with open(filepath, 'rb') as f:
+                # Read in chunks for large files
+                hasher = hashlib.sha256()
+                for chunk in iter(lambda: f.read(65536), b''):
+                    hasher.update(chunk)
+                    
             return {
                 "size": stats.st_size,
                 "modified": datetime.fromtimestamp(stats.st_mtime, timezone.utc).isoformat(),
-                "hash": self._compute_fuzzy_hash(filepath)
+                "hash": hasher.hexdigest(),
+                "fuzzy_hash": self._compute_fuzzy_hash(filepath)
             }
         except Exception as e:
             bt.logging.error(f"Error getting metadata for {filepath}: {e}")
@@ -191,26 +199,44 @@ class StateSync:
             cursor = conn.cursor()
             
             metadata = {
+                "size": db_path.stat().st_size,
+                "modified": datetime.fromtimestamp(db_path.stat().st_mtime, timezone.utc).isoformat(),
                 "row_counts": {},
                 "latest_dates": {},
-                "size": db_path.stat().st_size,
-                "modified": datetime.fromtimestamp(db_path.stat().st_mtime, timezone.utc).isoformat()
+                "hash": None,
+                "fuzzy_hash": None
             }
             
             # Get row counts for key tables
             for table in ['predictions', 'game_data', 'miner_stats', 'scores']:
-                cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                metadata["row_counts"][table] = cursor.fetchone()[0]
+                try:
+                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                    metadata["row_counts"][table] = cursor.fetchone()[0]
+                except sqlite3.Error:
+                    metadata["row_counts"][table] = 0
             
             # Get latest dates for time-sensitive tables
-            cursor.execute("SELECT MAX(prediction_date) FROM predictions")
-            metadata["latest_dates"]["predictions"] = cursor.fetchone()[0]
+            date_queries = {
+                "predictions": "SELECT MAX(prediction_date) FROM predictions",
+                "game_data": "SELECT MAX(event_start_date) FROM game_data",
+                "score_state": "SELECT MAX(last_update_date) FROM score_state"
+            }
             
-            cursor.execute("SELECT MAX(event_start_date) FROM game_data")
-            metadata["latest_dates"]["game_data"] = cursor.fetchone()[0]
+            for table, query in date_queries.items():
+                try:
+                    cursor.execute(query)
+                    result = cursor.fetchone()[0]
+                    metadata["latest_dates"][table] = result if result else None
+                except sqlite3.Error:
+                    metadata["latest_dates"][table] = None
             
-            cursor.execute("SELECT MAX(last_update_date) FROM score_state")
-            metadata["latest_dates"]["score_state"] = cursor.fetchone()[0]
+            # Compute hashes
+            metadata["fuzzy_hash"] = self._compute_fuzzy_hash(db_path)
+            
+            # Compute SHA256 of table structure
+            cursor.execute("SELECT sql FROM sqlite_master WHERE type='table'")
+            schema = '\n'.join(sorted(row[0] for row in cursor if row[0]))
+            metadata["hash"] = hashlib.sha256(schema.encode()).hexdigest()
             
             conn.close()
             return metadata
@@ -264,6 +290,23 @@ class StateSync:
         Determine if the state should be pulled based on remote metadata.
         """
         try:
+            # Check node config
+            if os.environ.get("VALIDATOR_PULL_STATE", "True").lower() == "true":
+                bt.logging.info("Node config requires state pull")
+            else:
+                bt.logging.info("Node config does not require state pull")
+                return False
+
+            # Check if enough blocks have passed since last pull
+            if hasattr(self.validator, 'last_state_pull'):
+                current_block = self.validator.subtensor.block
+                blocks_since_pull = current_block - self.validator.last_state_pull
+                min_blocks_between_pulls = 100  # About 20 minutes at 12s per block
+                
+                if blocks_since_pull < min_blocks_between_pulls:
+                    bt.logging.debug(f"Not enough blocks since last pull ({blocks_since_pull}/{min_blocks_between_pulls})")
+                    return False
+
             # Get remote metadata from Azure blob storage
             metadata_client = self.container.get_blob_client("state_metadata.json")
             temp_metadata = self.metadata_file.with_suffix('.tmp')
@@ -319,16 +362,45 @@ class StateSync:
                         temp_file = temp_dir / filename
                         
                         bt.logging.debug(f"Downloading {filename} to temporary location")
-                        async with aiofiles.open(temp_file, 'wb') as f:
-                            download_stream = await blob_client.download_blob()
-                            async for chunk in download_stream.chunks():
-                                await f.write(chunk)
-                        
-                        os.chmod(temp_file, 0o666)
+                        try:
+                            # Download without conditional headers
+                            download_stream = await blob_client.download_blob(
+                                timeout=300,  # 5 minute timeout
+                                max_concurrency=3,  # Limit concurrent connections
+                                validate_content=True,  # Validate downloaded content
+                                if_match=None,  # Don't use conditional headers
+                                if_none_match=None,
+                                if_modified_since=None,
+                                if_unmodified_since=None
+                            )
+                            
+                            async with aiofiles.open(temp_file, 'wb') as f:
+                                async for chunk in download_stream.chunks():
+                                    await f.write(chunk)
+                            
+                            os.chmod(temp_file, 0o666)
+                            bt.logging.debug(f"Successfully downloaded {filename}")
+                            
+                        except azure.core.exceptions.ResourceModifiedError as e:
+                            bt.logging.warning(f"Resource modified during download of {filename}, retrying without conditions")
+                            # Retry without any conditions
+                            download_stream = await blob_client.download_blob(
+                                timeout=300,
+                                max_concurrency=3,
+                                validate_content=True
+                            )
+                            async with aiofiles.open(temp_file, 'wb') as f:
+                                async for chunk in download_stream.chunks():
+                                    await f.write(chunk)
+                            os.chmod(temp_file, 0o666)
+                            bt.logging.debug(f"Successfully downloaded {filename} on retry")
+                            
+                        except Exception as e:
+                            bt.logging.error(f"Error downloading {filename}: {str(e)}")
+                            raise
                     
                     # Special handling for database file
                     temp_db = temp_dir / "validator.db"
-                    
                     if temp_db.exists():
                         bt.logging.info("Verifying downloaded database integrity...")
                         try:
@@ -356,7 +428,7 @@ class StateSync:
 
                             # Verify the downloaded database
                             if not await verify_database(temp_db):
-                                raise sqlite3.DatabaseError("Downloaded database failed integrity check")
+                                raise sqlite3.DatabaseError("Database integrity check failed")
                             
                             # Now handle the database swap
                             try:
@@ -412,11 +484,18 @@ class StateSync:
                                         shutil.move(backup_file, db_file)
                                     raise
                                 
-                                # If everything succeeded, remove the backup
+                                # Clean up backup file after successful swap
                                 if backup_file and backup_file.exists():
                                     backup_file.unlink()
                                 
-                               
+                                # Update metadata file after successful pull
+                                await self._update_metadata_file()
+                                await self._update_hash_file()
+                                
+                                # Update last pull block
+                                if hasattr(self.validator, 'subtensor'):
+                                    self.validator.last_state_pull = self.validator.subtensor.block
+                                
                                 bt.logging.info("State pull method done")
                                 return True
                                 
@@ -450,11 +529,9 @@ class StateSync:
                             backup_file.unlink()
                         except Exception as e:
                             bt.logging.warning(f"Failed to remove backup file: {e}")
-                    
-                return True
 
             except Exception as e:
-                bt.logging.error(f"Error during pull state attempt {retry_count + 1}: {str(e)}")
+                bt.logging.error(f"Error during state pull: {str(e)}")
                 bt.logging.error(traceback.format_exc())
                 retry_count += 1
                 
@@ -485,22 +562,53 @@ class StateSync:
         Determine if state should be pulled based on remote metadata
         """
         try:
-            #check node config
+            # Check node config
             if os.environ.get("VALIDATOR_PULL_STATE", "True").lower() == "true":
                 bt.logging.info("Node config requires state pull")
             else:
                 bt.logging.info("Node config does not require state pull")
                 return False
 
+            # Check if enough blocks have passed since last pull
+            if hasattr(self.validator, 'last_state_pull'):
+                current_block = self.validator.subtensor.block
+                blocks_since_pull = current_block - self.validator.last_state_pull
+                min_blocks_between_pulls = 100  # About 20 minutes at 12s per block
+                
+                if blocks_since_pull < min_blocks_between_pulls:
+                    bt.logging.debug(f"Not enough blocks since last pull ({blocks_since_pull}/{min_blocks_between_pulls})")
+                    return False
+
             # Validate remote metadata structure
             required_fields = ["last_update", "files"]
+            
+            # Handle legacy format conversion first
             if not all(field in remote_metadata for field in required_fields):
-                missing_fields = [field for field in required_fields if field not in remote_metadata]
-                bt.logging.warning(f"Remote metadata missing required fields: {missing_fields}")
-                bt.logging.debug(f"Available fields in remote metadata: {list(remote_metadata.keys())}")
-                bt.logging.debug(f"Remote metadata: {remote_metadata}")
-                return False
+                bt.logging.info("Using legacy metadata format")
+                legacy_mapping = {
+                    "last_update": "last_update",
+                    "files": "files_uploaded"
+                }
                 
+                # Map legacy fields to new fields
+                mapped_metadata = {}
+                for new_field, legacy_field in legacy_mapping.items():
+                    if legacy_field in remote_metadata:
+                        if new_field == "files":
+                            # Convert legacy files list to new format
+                            mapped_metadata[new_field] = {}
+                            for file in remote_metadata[legacy_field]:
+                                if (self.state_dir / file).exists():
+                                    mapped_metadata[new_field][file] = self._get_file_metadata(self.state_dir / file)
+                        else:
+                            mapped_metadata[new_field] = remote_metadata[legacy_field]
+                
+                if all(field in mapped_metadata for field in required_fields):
+                    remote_metadata = mapped_metadata
+                else:
+                    bt.logging.warning("Local metadata missing required fields")
+                    return True
+
             # Load local metadata
             if not self.metadata_file.exists():
                 bt.logging.info("No local metadata file - should pull state")
@@ -510,8 +618,8 @@ class StateSync:
                 async with aiofiles.open(self.metadata_file) as f:
                     content = await f.read()
                     local_metadata = json.loads(content)
-            except json.JSONDecodeError:
-                bt.logging.warning("Invalid local metadata file")
+            except (json.JSONDecodeError, FileNotFoundError):
+                bt.logging.warning("Invalid or missing local metadata file")
                 return True
                 
             # Validate local metadata structure
@@ -519,8 +627,12 @@ class StateSync:
                 bt.logging.warning("Local metadata missing required fields")
                 return True
             
-            remote_update = datetime.fromisoformat(remote_metadata["last_update"])
-            local_update = datetime.fromisoformat(local_metadata["last_update"])
+            try:
+                remote_update = datetime.fromisoformat(remote_metadata["last_update"])
+                local_update = datetime.fromisoformat(local_metadata["last_update"])
+            except (ValueError, TypeError):
+                bt.logging.warning("Invalid timestamp format in metadata")
+                return True
             
             # If remote is older than local, don't pull
             if remote_update < local_update:
@@ -533,35 +645,50 @@ class StateSync:
                 return True
             
             # Compare files
-            for file, remote_data in remote_metadata["files"].items():
-                if file not in local_metadata["files"]:
-                    bt.logging.info(f"New file found in remote: {file}")
-                    return True
+            remote_files = remote_metadata.get("files", {})
+            local_files = local_metadata.get("files", {})
+            
+            # Handle legacy format
+            if isinstance(remote_files, list):
+                temp_files = {}
+                for file in remote_files:
+                    if (self.state_dir / file).exists():
+                        temp_files[file] = self._get_file_metadata(self.state_dir / file)
+                remote_files = temp_files
+            
+            for file in self.state_files:
+                if file not in remote_files or file not in local_files:
+                    bt.logging.debug(f"File {file} missing from metadata")
+                    continue
                 
-                local_data = local_metadata["files"][file]
+                remote_data = remote_files[file]
+                local_data = local_files[file]
                 
-                # Validate hash exists in both metadata
-                if "hash" not in remote_data or "hash" not in local_data:
-                    bt.logging.debug(f"Missing hash for file {file}")
+                # Skip if missing hash data
+                if not isinstance(remote_data, dict) or not isinstance(local_data, dict):
+                    continue
+                    
+                remote_hash = remote_data.get("hash") or remote_data.get("fuzzy_hash")
+                local_hash = local_data.get("hash") or local_data.get("fuzzy_hash")
+                
+                if not remote_hash or not local_hash:
                     continue
                 
                 # Compare using fuzzy hashing
-                similarity = self._compare_fuzzy_hashes(
-                    remote_data["hash"],
-                    local_data["hash"]
-                )
+                similarity = self._compare_fuzzy_hashes(remote_hash, local_hash)
                 
                 if similarity < 80:
                     bt.logging.info(f"File {file} has low similarity: {similarity}%")
                     return True
-                
+            
             return False
             
         except Exception as e:
             bt.logging.error(f"Error checking state status: {e}")
+            bt.logging.error(traceback.format_exc())
             return False
 
-    def _update_metadata_file(self):
+    async def _update_metadata_file(self):
         """Update metadata file with current state information"""
         try:
             metadata = {
@@ -578,11 +705,25 @@ class StateSync:
                         else:
                             metadata["files"][file] = self._get_file_metadata(filepath)
 
-            with open(self.metadata_file, 'w') as f:
-                json.dump(metadata, f, indent=2)
+            # Ensure directory exists
+            self.metadata_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Write metadata atomically using a temporary file
+            temp_metadata = self.metadata_file.with_suffix('.tmp')
+            try:
+                async with aiofiles.open(temp_metadata, 'w') as f:
+                    await f.write(json.dumps(metadata, indent=2))
+                temp_metadata.replace(self.metadata_file)
+                bt.logging.debug("Metadata file updated successfully")
+            finally:
+                # Clean up temp file if it still exists
+                if temp_metadata.exists():
+                    temp_metadata.unlink()
+                    
             return True
         except Exception as e:
             bt.logging.error(f"Error updating metadata: {e}")
+            bt.logging.error(traceback.format_exc())
             return False
 
     async def push_state(self):
@@ -681,8 +822,10 @@ class StateSync:
         """Update metadata file after successful upload."""
         metadata_path = self.state_dir / "state_metadata.json"
         metadata = {
-            "last_backup": datetime.utcnow().isoformat(),
-            "files_uploaded": self.state_files
+            "last_update": datetime.utcnow().isoformat(),
+            "files": {file: self._get_file_metadata(self.state_dir / file) 
+                     for file in self.state_files 
+                     if (self.state_dir / file).exists()}
         }
         try:
             async with aiofiles.open(metadata_path, 'w') as f:

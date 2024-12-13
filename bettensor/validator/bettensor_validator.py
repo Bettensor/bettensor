@@ -44,7 +44,6 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
 
     def __init__(self, parser: ArgumentParser):
         super().__init__(parser=parser, profile="validator")
-        MinerDataMixin.__init__(self)  # Explicitly initialize the mixin
         parser.add_argument(
             "--db",
             type=str,
@@ -272,6 +271,9 @@ class BettensorValidator(BaseNeuron, MinerDataMixin):
         # Initialize the database manager
         self.db_manager = DatabaseManager(self.db_path)
         await self.db_manager.initialize()
+
+        # Initialize MinerDataMixin with required parameters
+        MinerDataMixin.__init__(self, self.db_manager, self.metagraph, set(self.metagraph.uids))
 
         # Initialize the scoring system
         self.scoring_system = ScoringSystem(

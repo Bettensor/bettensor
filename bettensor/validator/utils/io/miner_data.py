@@ -4,6 +4,7 @@ Class to handle and process all incoming miner data.
 
 
 import asyncio
+from collections import defaultdict
 import datetime
 from datetime import datetime, timezone, timedelta
 import traceback
@@ -13,6 +14,9 @@ from pydantic import ValidationError
 import torch
 from bettensor.protocol import GameData, TeamGame, TeamGamePrediction
 from bettensor.validator.utils.database.database_manager import DatabaseManager
+import time
+
+from bettensor.validator.utils.io.bettensor_api_client import BettensorAPIClient
 
 
 """
@@ -22,75 +26,229 @@ Miner Data Methods, Extends the Bettensor Validator Class
 
 
 class MinerDataMixin:
-    async def insert_predictions(self, processed_uids, predictions):
-        """
-        Inserts new predictions into the database in batches
-        """
+    def __init__(self, db_manager, metagraph, processed_uids):
+        self.db_manager = db_manager
+        self.metagraph = metagraph
         self.processed_uids = processed_uids
+        self._game_cache = {}
+        self._daily_wager_cache = {}
+        self._last_cache_clear = time.time()
+        self._cache_ttl = 300  # 5 minutes
+        self.bettensor_api = BettensorAPIClient(db_manager)
+
+    def _clear_cache_if_needed(self):
+        """Clear caches if TTL has expired"""
+        current_time = time.time()
+        if current_time - self._last_cache_clear > self._cache_ttl:
+            self._game_cache.clear()
+            self._daily_wager_cache.clear()
+            self._last_cache_clear = current_time
+
+    async def _batch_load_games(self, game_ids):
+        """Load multiple games at once and cache them"""
+        uncached_ids = [gid for gid in game_ids if gid not in self._game_cache]
+        if uncached_ids:
+            bt.logging.debug(f"Loading uncached games. Sample IDs: {uncached_ids[:5]}...")
+            bt.logging.debug(f"Sample ID types: {[type(gid) for gid in uncached_ids[:5]]}")
+            
+            # Use named parameters for SQLAlchemy
+            placeholders = ','.join([f':id{i}' for i in range(len(uncached_ids))])
+            query = f"""
+                SELECT sport, league, event_start_date, team_a, team_b, 
+                       team_a_odds, team_b_odds, tie_odds, outcome, external_id
+                FROM game_data 
+                WHERE external_id IN ({placeholders})
+            """
+            
+            # Create dictionary of parameters
+            params = {f'id{i}': id_val for i, id_val in enumerate(uncached_ids)}
+            games = await self.db_manager.fetch_all(query, params)
+            
+            # Cache games by external_id
+            for game in games:
+                external_id = game['external_id']
+                bt.logging.debug(f"Caching game {external_id} (type: {type(external_id)})")
+                self._game_cache[external_id] = game
+                # Also cache string version if numeric
+                if isinstance(external_id, (int, float)):
+                    self._game_cache[str(external_id)] = game
+                # Also cache numeric version if string and convertible
+                elif isinstance(external_id, str):
+                    try:
+                        self._game_cache[int(external_id)] = game
+                    except ValueError:
+                        pass
+                
+            # Log cache stats
+            bt.logging.debug(f"Game cache size: {len(self._game_cache)}")
+            bt.logging.debug(f"Found {len(games)} games out of {len(uncached_ids)} requested")
+            if len(games) < len(uncached_ids):
+                missing_ids = set(uncached_ids) - {g['external_id'] for g in games}
+                bt.logging.debug(f"Missing games: {list(missing_ids)[:5]}...")
+
+    async def _get_daily_wager_totals(self, miner_uids):
+        """Get daily wager totals for multiple miners at once"""
+        current_time = datetime.now(timezone.utc)
+        date_key = current_time.date().isoformat()
         
-        # Initialize validation stats for this batch
-        validation_stats = {
-            'duplicate_prediction': 0,
-            'uid_not_processed': 0,
-            'invalid_uid': 0,
-            'invalid_wager': 0,
-            'daily_limit_exceeded': 0,
-            'game_not_found': 0,
-            'game_started': 0,
-            'invalid_outcome': 0,
-            'invalid_odds': 0,
-            'invalid_confidence': 0,
-            'other_errors': 0,
-            'successful': 0
-        }
+        # Filter out miners we already have cached data for
+        uncached_uids = [
+            uid for uid in miner_uids 
+            if uid not in self._daily_wager_cache or 
+            self._daily_wager_cache[uid]['date'] != date_key
+        ]
+        
+        if uncached_uids:
+            # Use named parameters for SQLAlchemy
+            placeholders = ','.join([f':uid{i}' for i in range(len(uncached_uids))])
+            query = f"""
+                SELECT miner_uid, COALESCE(SUM(wager), 0) as total 
+                FROM predictions 
+                WHERE miner_uid IN ({placeholders}) 
+                AND DATE(prediction_date) = DATE(:current_time)
+                GROUP BY miner_uid
+            """
+            
+            # Create dictionary of parameters
+            params = {
+                f'uid{i}': uid_val for i, uid_val in enumerate(uncached_uids)
+            }
+            params['current_time'] = current_time
+            
+            results = await self.db_manager.fetch_all(query, params)
+            
+            for result in results:
+                self._daily_wager_cache[result['miner_uid']] = {
+                    'total': float(result['total']),
+                    'date': date_key
+                }
+            
+            # Initialize cache for miners with no predictions today
+            for uid in uncached_uids:
+                if uid not in self._daily_wager_cache:
+                    self._daily_wager_cache[uid] = {'total': 0.0, 'date': date_key}
+
+    async def insert_predictions(self, processed_uids, predictions_list):
+        """Insert validated predictions into the database."""
+        start_time = time.time()
+        validation_stats = defaultdict(int)
+        valid_predictions = []
+        return_dict = {}
 
         try:
             current_time = datetime.now(timezone.utc).isoformat()
-            bt.logging.trace(f"insert_predictions called with {len(predictions)} predictions")
+            
+            # Calculate total predictions to validate
+            total_predictions = sum(len(pred_dict) for _, pred_dict in predictions_list)
+            bt.logging.info(f"Starting prediction validation phase for {total_predictions} predictions from {len(predictions_list)} miners")
 
-            return_dict = {}
-            valid_predictions = []
+            # Pre-load all game data and daily wager totals
+            all_game_ids = set()
+            all_miner_uids = set()
+            for miner_uid, pred_dict in predictions_list:
+                all_miner_uids.add(miner_uid)
+                for pred in pred_dict.values():
+                    all_game_ids.add(pred.game_id)
 
-            # Process predictions first without database writes
-            for miner_uid, prediction_dict in predictions.items():
-                for prediction_id, res in prediction_dict.items():
-                    # Validate the prediction
-                    is_valid, message, validation_type = await self.validate_prediction(
-                        miner_uid, 
-                        prediction_id, 
-                        res.dict()  # Convert Pydantic model to dict
-                    )
-                    
-                    # Update validation stats
-                    if is_valid:
-                        validation_stats['successful'] += 1
-                    else:
-                        validation_stats[validation_type] += 1
-                    
-                    return_dict[prediction_id] = (is_valid, message)
-                    
-                    if is_valid:
-                        # Convert predicted outcome to numeric
-                        if res.predicted_outcome == res.team_a:
-                            predicted_outcome = 0
-                        elif res.predicted_outcome == res.team_b:
-                            predicted_outcome = 1
+            bt.logging.debug(f"Pre-loading data for {len(all_game_ids)} unique games from {len(all_miner_uids)} miners")
+            await self._batch_load_games(list(all_game_ids))
+            await self._get_daily_wager_totals(list(all_miner_uids))
+
+            # Start validation phase
+            validation_start = time.time()
+
+            # Get existing predictions for duplicate check
+            prediction_ids = []
+            for _, pred_dict in predictions_list:
+                prediction_ids.extend(pred_dict.keys())
+            
+            existing_predictions = await self._get_existing_predictions(prediction_ids)
+            if existing_predictions:
+                bt.logging.debug(f"Found {len(existing_predictions)} existing predictions that will be skipped")
+
+            # Process predictions by miner
+            for miner_uid, pred_dict in predictions_list:
+                miner_start = time.time()
+                try:
+                    pred_count = len(pred_dict)
+                    bt.logging.debug(f"Validating {pred_count} predictions from miner {miner_uid}")
+
+                    # Fast-fail checks that don't need DB access
+                    if int(miner_uid) not in processed_uids:
+                        validation_stats['uid_not_processed'] += pred_count
+                        bt.logging.debug(f"Miner {miner_uid} failed processed UID check - skipping {pred_count} predictions")
+                        for prediction_id in pred_dict.keys():
+                            return_dict[prediction_id] = (False, "Miner UID not processed")
+                        continue
+
+                    try:
+                        hotkey = self.metagraph.hotkeys[int(miner_uid)]
+                    except IndexError:
+                        validation_stats['invalid_uid'] += pred_count
+                        bt.logging.debug(f"Miner {miner_uid} has invalid UID - skipping {pred_count} predictions")
+                        for prediction_id in pred_dict.keys():
+                            return_dict[prediction_id] = (False, "Invalid miner UID")
+                        continue
+
+                    # Get daily wager total for miner
+                    current_total = self._daily_wager_cache[miner_uid]['total']
+
+                    valid_count = 0
+                    for prediction_id, res in pred_dict.items():
+                        pred_start = time.time()
+                        
+                        # Validate prediction
+                        is_valid, message, validation_type, numeric_outcome = await self.validate_prediction(
+                            miner_uid, 
+                            prediction_id, 
+                            {
+                                'prediction_id': prediction_id,
+                                'game_id': res.game_id,
+                                'wager': res.wager,
+                                'predicted_outcome': res.predicted_outcome,
+                                'team_a': res.team_a,
+                                'team_b': res.team_b,
+                                'team_a_odds': res.team_a_odds,
+                                'team_b_odds': res.team_b_odds,
+                                'tie_odds': res.tie_odds,
+                                'confidence_score': res.confidence_score,
+                                'model_name': res.model_name,
+                                'predicted_odds': res.predicted_odds,
+                                'current_total': current_total,
+                            },
+                            existing_predictions
+                        )
+                        
+                        # Update validation stats and prepare for database
+                        if is_valid:
+                            valid_count += 1
+                            validation_stats['successful'] += 1
+                            current_total += float(res.wager)  # Update running total only for valid predictions
+                            # Add to valid predictions for batch insert
+                            valid_predictions.append((
+                                prediction_id, res.game_id, miner_uid, current_time,
+                                numeric_outcome, res.predicted_odds, res.team_a, res.team_b,
+                                res.wager, res.team_a_odds, res.team_b_odds, res.tie_odds,
+                                3, res.model_name, res.confidence_score
+                            ))
                         else:
-                            predicted_outcome = 2
-                        res.outcome = 3
+                            validation_stats[validation_type] += 1
+                        
+                        return_dict[prediction_id] = (is_valid, message)
 
-                        # Add to valid predictions for batch insert
-                        valid_predictions.append((
-                            prediction_id, res.game_id, miner_uid, current_time,
-                            predicted_outcome, res.predicted_odds, res.team_a, res.team_b,
-                            res.wager, res.team_a_odds, res.team_b_odds, res.tie_odds,
-                            res.outcome, res.model_name, res.confidence_score
-                        ))
-            bt.logging.info(f"Validated {len(valid_predictions)} predictions")
+                    miner_time = time.time() - miner_start
+                    bt.logging.debug(f"Miner {miner_uid} validation completed: {valid_count}/{pred_count} predictions valid in {miner_time:.3f}s")
+                except Exception as e:
+                    bt.logging.error(f"Error validating predictions for miner {miner_uid}: {str(e)}")
+                    bt.logging.error(traceback.format_exc())
+                    continue
 
-            # Log validation statistics for this batch
-            bt.logging.info("Batch Validation Statistics:")
-            total_predictions = sum(validation_stats.values())
+            validation_time = time.time() - validation_start
+            bt.logging.info(f"Prediction validation phase completed in {validation_time:.3f}s")
+            bt.logging.info(f"Results: {len(valid_predictions)}/{total_predictions} predictions passed validation")
+
+            # Log validation statistics
+            bt.logging.info("Validation Statistics:")
             for reason, count in validation_stats.items():
                 if count > 0:
                     percentage = (count / total_predictions) * 100
@@ -98,94 +256,59 @@ class MinerDataMixin:
 
             # Handle database operations for valid predictions
             if valid_predictions:
-                bt.logging.info(f"Inserting {len(valid_predictions)} predictions into database")
+                bt.logging.info(f"Starting database insertion of {len(valid_predictions)} valid predictions")
+                db_start = time.time()
                 try:
-                    
-                    try:
-                        await self.db_manager.executemany(
-                            """
-                            INSERT INTO predictions (
-                                prediction_id, game_id, miner_uid, prediction_date,
-                                predicted_outcome, predicted_odds, team_a, team_b,
-                                wager, team_a_odds, team_b_odds, tie_odds,
-                                outcome, model_name, confidence_score
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            valid_predictions
-                        )
-                        
-                        # Update entropy system after successful commit
-                        for pred_values in valid_predictions:
-                            try:
-                                self.scoring_system.entropy_system.add_prediction(
-                                    pred_values[0], pred_values[2], pred_values[1],
-                                    pred_values[4], pred_values[8], pred_values[5],
-                                    pred_values[3]
-                                )
-                                return_dict[pred_values[0]] = (True, "Prediction inserted successfully")
-                            except Exception as e:
-                                bt.logging.error(f"Error updating entropy system: {str(e)}")
-                                return_dict[pred_values[0]] = (False, f"Error updating entropy: {str(e)}")
-                        
-                        
-                    except Exception as e:
-                        
-                        raise e
-                       
+                    await self.db_manager.executemany(
+                        """
+                        INSERT INTO predictions (
+                            prediction_id, game_id, miner_uid, prediction_date,
+                            predicted_outcome, predicted_odds, team_a, team_b,
+                            wager, team_a_odds, team_b_odds, tie_odds,
+                            outcome, model_name, confidence_score
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        valid_predictions
+                    )
+                    db_time = time.time() - db_start
+                    bt.logging.info(f"Database insertion completed in {db_time:.3f}s")
                 except Exception as e:
-                    bt.logging.error(f"Error in batch processing: {e}")
-                    # Mark all predictions in this batch as failed
-                    for pred_values in valid_predictions:
-                        prediction_id = pred_values[0]
-                        return_dict[prediction_id] = (False, f"Database error: {str(e)}")
+                    bt.logging.error(f"Database insertion failed: {str(e)}")
+                    raise
 
-            # After successful database operations, send confirmations
-            BATCH_SIZE = 16
-            MAX_CONCURRENT_SENDS = 4
-
-            # Group miners into batches
-            miner_batches = []
-            current_batch = []
-            
-            for miner_uid, prediction_dict in predictions.items():
-                current_batch.append((miner_uid, {
-                    pred_id: return_dict.get(pred_id, (False, "Unknown prediction ID"))
-                    for pred_id in prediction_dict.keys()
-                }))
+                # Update entropy system
+                entropy_start = time.time()
+                success_count = 0
+                error_count = 0
+                for pred_values in valid_predictions:
+                    try:
+                        self.scoring_system.entropy_system.add_prediction(
+                            pred_values[0],  # prediction_id
+                            pred_values[2],  # miner_uid
+                            pred_values[1],  # game_id
+                            pred_values[4],  # predicted_outcome
+                            pred_values[8],  # wager
+                            pred_values[5],  # predicted_odds
+                            pred_values[3]   # prediction_date
+                        )
+                        success_count += 1
+                        return_dict[pred_values[0]] = (True, "Prediction inserted successfully")
+                    except Exception as e:
+                        error_count += 1
+                        bt.logging.error(f"Error updating entropy system: {str(e)}")
+                        return_dict[pred_values[0]] = (False, f"Error updating entropy: {str(e)}")
                 
-                if len(current_batch) >= BATCH_SIZE:
-                    miner_batches.append(current_batch)
-                    current_batch = []
-            
-            if current_batch:  # Add any remaining miners
-                miner_batches.append(current_batch)
+                entropy_time = time.time() - entropy_start
+                bt.logging.info(f"Entropy system updates completed in {entropy_time:.3f}s ({success_count} successful, {error_count} failed)")
 
-            # Process batches without using async context managers
-            semaphore = asyncio.Semaphore(MAX_CONCURRENT_SENDS)
-
-            async def process_confirmation_batch(batch):
-                async def send_with_semaphore(miner_uid, miner_predictions):
-                    async with semaphore:
-                        return await self.send_confirmation_synapse(miner_uid, miner_predictions)
-
-                tasks = [
-                    asyncio.create_task(send_with_semaphore(miner_uid, miner_predictions))
-                    for miner_uid, miner_predictions in batch
-                ]
-                await asyncio.gather(*tasks, return_exceptions=True)
-
-            await asyncio.gather(*[
-                process_confirmation_batch(batch) for batch in miner_batches
-            ], return_exceptions=True)
-
+            total_time = time.time() - start_time
+            bt.logging.info(f"Total prediction processing time: {total_time:.3f}s")
             return return_dict
-        
+
         except Exception as e:
-            bt.logging.error(f"Error in insert_predictions: {e}")
-            bt.logging.error(f"Traceback: {traceback.format_exc()}")
-            return {k: (False, f"Fatal error: {str(e)}") for k in predictions.keys()}
-
-
+            bt.logging.error(f"Error in prediction processing: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+            raise
 
     async def send_confirmation_synapse(self, miner_uid, predictions):
         """
@@ -246,70 +369,78 @@ class MinerDataMixin:
             raise
 
     async def process_prediction(self, processed_uids: torch.tensor, synapses: list) -> list:
-        """
-        processes responses received by miners
-
-        Args:
-            processed_uids: list of uids that have been processed
-            synapses: list of deserialized synapses
-        """
-        bt.logging.trace(f"enter process_prediction")
-        predictions = {}
+        """processes responses received by miners"""
+        start_time = time.time()
+        predictions = []  # Change to list to maintain order
+        synapse_count = len(synapses)
+        total_prediction_count = 0
+        bt.logging.info(f"Starting synapse validation phase with {synapse_count} synapses")
+        
         try:
-            for synapse in synapses:
-                #bt.logging.trace(f"Processing synapse type: {type(synapse)}")
-                
+            for idx, synapse in enumerate(synapses):
+                synapse_start = time.time()
                 if not hasattr(synapse, 'prediction_dict') or not hasattr(synapse, 'metadata'):
-                    bt.logging.warning(f"Invalid synapse object: {synapse}")
+                    bt.logging.warning(f"Synapse {idx+1}/{synapse_count} is invalid - missing prediction_dict or metadata")
                     continue
                 
                 prediction_dict = synapse.prediction_dict
                 metadata = synapse.metadata
                 headers = synapse.to_headers()
-                #bt.logging.info(f"Synapse headers: {headers}")
-
+                
+                prediction_count = len(prediction_dict) if prediction_dict else 0
+                bt.logging.debug(f"Synapse {idx+1}/{synapse_count} contains {prediction_count} predictions")
+                
                 if metadata and hasattr(metadata, "neuron_uid"):
                     uid = metadata.neuron_uid
                     synapse_hotkey = headers.get("bt_header_axon_hotkey")
-
-                    # check synapse hotkey matches hotkey in metagraph
+                    
+                    validation_start = time.time()
+                    # Hotkey validation
                     if synapse_hotkey != self.metagraph.hotkeys[int(uid)]:
-                        bt.logging.warning(f"Synapse hotkey {synapse_hotkey} does not match hotkey {self.metagraph.hotkeys[int(uid)]} for miner {uid}")
+                        bt.logging.warning(f"Synapse {idx+1}/{synapse_count} failed hotkey validation - miner {uid} hotkey mismatch")
                         continue
 
-                    #check that all predictions are submitted with the same uid as the synapse
+                    # UID validation
                     if any(pred.miner_uid != uid for pred in prediction_dict.values()):
-                        bt.logging.warning(f"Predictions submitted with different miner UID than synapse: {uid}")
+                        bt.logging.warning(f"Synapse {idx+1}/{synapse_count} failed UID validation - miner {uid} predictions have mismatched UIDs")
                         continue
 
-                    # for each prediction, check the miner_uid matches the synapse uid and print the number of predictions that match
                     matching_predictions = sum(1 for pred in prediction_dict.values() if pred.miner_uid == uid)
-                    #bt.logging.info(f"Number of predictions matching synapse uid: {matching_predictions}")
+                    validation_time = time.time() - validation_start
+                    bt.logging.debug(f"Synapse {idx+1}/{synapse_count} basic validation completed in {validation_time:.3f}s")
 
-                    # if any predictions don't match the synapse uid, log a warning, and skip the synapse
                     if matching_predictions != len(prediction_dict):
-                        bt.logging.warning(f"Some predictions do not match synapse uid: {uid}")
-                        bt.logging.warning(f"Offending uid and hotkey: {uid} {synapse_hotkey}")
+                        bt.logging.warning(f"Synapse {idx+1}/{synapse_count} failed prediction count validation - miner {uid} has mismatched prediction counts")
                         continue
 
-                    # Ensure prediction_dict is not None before processing
                     if prediction_dict is not None:
-                        predictions[uid] = prediction_dict
+                        predictions.append((uid, prediction_dict))
+                        total_prediction_count += len(prediction_dict)
+                        bt.logging.debug(f"Synapse {idx+1}/{synapse_count} passed validation - added {len(prediction_dict)} predictions from miner {uid}")
                     else:
-                        bt.logging.trace(
-                        f"prediction from miner {uid} is empty and will be skipped."
-                    )
-                    #bt.logging.info(f"Predictions dict length for uid {uid}: {len(prediction_dict)}")
+                        bt.logging.debug(f"Synapse {idx+1}/{synapse_count} has no predictions from miner {uid}")
+
+                    synapse_time = time.time() - synapse_start
+                    bt.logging.debug(f"Synapse {idx+1}/{synapse_count} processing completed in {synapse_time:.3f}s")
                 else:
-                    bt.logging.warning(
-                        "metadata is missing or does not contain neuron_uid."
-                    )
-                
+                    bt.logging.warning(f"Synapse {idx+1}/{synapse_count} is invalid - missing metadata or neuron_uid")
+
+            process_time = time.time() - start_time
+            valid_synapse_count = len(predictions)
+            bt.logging.info(f"Synapse validation phase completed in {process_time:.3f}s")
+            bt.logging.info(f"Results: {valid_synapse_count}/{synapse_count} synapses passed validation containing {total_prediction_count} total predictions")
+            
+            insert_start = time.time()
             await self.insert_predictions(processed_uids, predictions)
+            insert_time = time.time() - insert_start
+            bt.logging.info(f"Prediction validation and insertion completed in {insert_time:.3f}s")
+
+            total_time = time.time() - start_time
+            bt.logging.info(f"Total processing time: {total_time:.3f}s")
 
         except Exception as e:
-            bt.logging.error(f"miner_data.py | process_prediction | An error occurred: {e}")
-            bt.logging.error(f"miner_data.py | process_prediction | Traceback: {traceback.format_exc()}")
+            bt.logging.error(f"Error during synapse processing: {e}")
+            bt.logging.error(traceback.format_exc())
             raise
 
     def update_recent_games(self):
@@ -468,73 +599,65 @@ class MinerDataMixin:
             bt.logging.error(traceback.format_exc())
             return {}
 
-    async def validate_prediction(self, miner_uid: int, prediction_id: str, prediction_data: dict) -> tuple[bool, str, str]:
-        """
-        Validates a prediction before insertion, including checking for duplicates.
-        
-        Args:
-            miner_uid (int): The miner's UID
-            prediction_id (str): Unique identifier for the prediction
-            prediction_data (dict): The prediction data to validate
-            
-        Returns:
-            tuple: (is_valid, message, validation_type)
-        """
-        try:
-            # First check if prediction already exists
-            existing_prediction = await self.db_manager.fetch_one(
-                "SELECT prediction_id FROM predictions WHERE prediction_id = ?",
-                (prediction_id,)
-            )
-            
-            if existing_prediction:
-                return False, f"Prediction {prediction_id} already exists in database", 'duplicate_prediction'
-            
-            # Check if miner UID is in processed UIDs
-            if int(miner_uid) not in self.processed_uids:
-                return False, "UID not in processed_uids", 'uid_not_processed'
+    async def _prediction_exists(self, prediction_id: str) -> bool:
+        """Check if a prediction already exists in the database."""
+        query = "SELECT 1 FROM predictions WHERE prediction_id = :prediction_id"
+        result = await self.db_manager.fetch_one(query, {"prediction_id": prediction_id})
+        return bool(result)
 
-            # Verify miner exists in metagraph
-            try:
-                hotkey = self.metagraph.hotkeys[int(miner_uid)]
-            except IndexError:
-                return False, "Invalid miner UID - not found in metagraph", 'invalid_uid'
+    async def validate_prediction(self, miner_uid: int, prediction_id: str, prediction_data: dict, existing_predictions: set) -> tuple[bool, str, str, int]:
+        """Validate a single prediction. Returns (is_valid, message, validation_type, numeric_outcome)"""
+        start_time = time.time()
+        try:
+            # Basic validation
+            if not prediction_id or not prediction_data:
+                return False, "Missing prediction data", 'missing_data', -1
+
+            # Check if prediction already exists
+            if prediction_id in existing_predictions:
+                return False, f"Prediction {prediction_id} already exists in database", 'duplicate_prediction', -1
 
             # Validate wager amount
             try:
                 wager = float(prediction_data.get('wager', 0))
                 if wager <= 0:
-                    return False, "Prediction with non-positive wager - nice try", 'invalid_wager'
+                    return False, "Prediction with non-positive wager - nice try", 'invalid_wager', -1
+                
+                # Check daily wager limit
+                current_total = prediction_data.get('current_total', 0)
+                if current_total + wager > 1000:
+                    return False, f"Prediction would exceed daily limit (Current: ${current_total:.2f}, Attempted: ${wager:.2f})", 'daily_limit_exceeded', -1
+                    
             except (ValueError, TypeError):
-                return False, "Invalid wager value", 'invalid_wager'
+                return False, "Invalid wager value", 'invalid_wager', -1
 
-            # Check daily wager limit
-            current_time = datetime.now(timezone.utc)
-            current_total_wager = await self.db_manager.fetch_one(
-                "SELECT COALESCE(SUM(wager), 0) as total FROM predictions WHERE miner_uid = ? AND DATE(prediction_date) = DATE(?)",
-                (miner_uid, current_time),
-            )
-            current_total_wager = float(current_total_wager['total'])
-            if current_total_wager + wager > 1000:
-                return False, f"Prediction would exceed daily limit (Current: ${current_total_wager:.2f}, Attempted: ${wager:.2f})", 'daily_limit_exceeded'
-
-            # Validate game exists and get game data
-            query = """
-                SELECT sport, league, event_start_date, team_a, team_b, 
-                       team_a_odds, team_b_odds, tie_odds, outcome 
-                FROM game_data 
-                WHERE external_id = ?
-            """
-            game = await self.db_manager.fetch_one(query, (prediction_data.get('game_id'),))
+            # Game validation
+            game_id = prediction_data.get('game_id')
+            bt.logging.debug(f"Looking up game {game_id} in cache with {len(self._game_cache)} entries")
+            bt.logging.debug(f"Cache keys: {list(self._game_cache.keys())[:5]}...")
+            bt.logging.debug(f"Game ID type: {type(game_id)}")
             
+            game = self._game_cache.get(game_id)
             if not game:
-                return False, "Game not found in validator game_data", 'game_not_found'
+                # Try string conversion if numeric
+                if isinstance(game_id, (int, float)):
+                    game = self._game_cache.get(str(game_id))
+                # Try numeric conversion if string
+                elif isinstance(game_id, str):
+                    try:
+                        game = self._game_cache.get(int(game_id))
+                    except ValueError:
+                        pass
+                    
+            if not game:
+                bt.logging.debug(f"Game {game_id} not found in cache")
+                return False, "Game not found in validator game_data", 'game_not_found', -1
 
-            # Check if game has started
+            current_time = datetime.now(timezone.utc)
             if current_time >= datetime.fromisoformat(game['event_start_date']).replace(tzinfo=timezone.utc):
-                return False, "Game has already started", 'game_started'
+                return False, "Game has already started", 'game_started', -1
 
-            # Validate predicted outcome
+            # Outcome validation
             predicted_outcome = prediction_data.get('predicted_outcome')
             if predicted_outcome == game['team_a']:
                 numeric_outcome = 0
@@ -543,9 +666,8 @@ class MinerDataMixin:
             elif str(predicted_outcome).lower() == "tie":
                 numeric_outcome = 2
             else:
-                return False, f"Invalid predicted_outcome: {predicted_outcome}", 'invalid_outcome'
+                return False, f"Invalid predicted_outcome: {predicted_outcome}", 'invalid_outcome', -1
 
-            # Validate odds
             outcome_to_odds = {
                 0: game['team_a_odds'],
                 1: game['team_b_odds'],
@@ -553,23 +675,47 @@ class MinerDataMixin:
             }
             predicted_odds = outcome_to_odds.get(numeric_outcome)
             if predicted_odds is None:
-                return False, "Invalid odds for predicted outcome", 'invalid_odds'
+                return False, "Invalid odds for predicted outcome", 'invalid_odds', -1
 
-            # Optional: Validate confidence score format if provided
+            # Validate confidence score if provided
             confidence_score = prediction_data.get('confidence_score')
             if confidence_score is not None:
                 try:
                     confidence = float(confidence_score)
                     if not 0 <= confidence <= 1:
-                        return False, "If provided, confidence score must be between 0 and 1", 'invalid_confidence'
+                        return False, "If provided, confidence score must be between 0 and 1", 'invalid_confidence', -1
                 except (ValueError, TypeError):
-                    return False, "Invalid confidence score format", 'invalid_confidence'
+                    return False, "Invalid confidence score format", 'invalid_confidence', -1
 
-            # Model name is optional - no validation needed
-
-            return True, "Prediction validated successfully", 'successful'
+            return True, "Prediction validated successfully", 'successful', numeric_outcome
 
         except Exception as e:
             bt.logging.error(f"Error validating prediction: {e}")
-            return False, f"Validation error: {str(e)}", 'other_errors'
+            bt.logging.error(f"Validation error details: {traceback.format_exc()}")
+            return False, f"Validation error: {str(e)}", 'other_errors', -1
+
+    async def _get_existing_predictions(self, prediction_ids: list) -> set:
+        """Get a set of prediction IDs that already exist in the database."""
+        if not prediction_ids:
+            return set()
+            
+        try:
+            # Use named parameters for SQLAlchemy
+            placeholders = ','.join([f':id{i}' for i in range(len(prediction_ids))])
+            query = f"""
+                SELECT prediction_id 
+                FROM predictions 
+                WHERE prediction_id IN ({placeholders})
+            """
+            
+            # Create dictionary of parameters
+            params = {f'id{i}': id_val for i, id_val in enumerate(prediction_ids)}
+            
+            results = await self.db_manager.fetch_all(query, params)
+            return {row['prediction_id'] for row in results}
+            
+        except Exception as e:
+            bt.logging.error(f"Error checking existing predictions: {str(e)}")
+            bt.logging.error(traceback.format_exc())
+            return set()
 

@@ -44,7 +44,7 @@ class SportsData:
         """Fetch and update game data with proper transaction and timeout handling"""
         try:
             # Set overall timeout for the entire operation
-            async with async_timeout.timeout(60):  # 60 second total timeout
+            async with async_timeout.timeout(300):  # 5 minute timeout
                 all_games = await self.api_client.fetch_all_game_data(last_api_call)
                 bt.logging.info(f"Fetched {len(all_games)} games from API")
                 
@@ -58,8 +58,8 @@ class SportsData:
                     try:
                         # Set timeout for each chunk processing
                         async with async_timeout.timeout(self.TRANSACTION_TIMEOUT):
-                            # Process chunk with cancellation check
-                            async with self.db_manager.transaction() as session:
+                            # Process chunk with proper context management
+                            async with self.db_manager.get_session() as session:
                                 chunk_ids = await self._process_game_chunk(chunk, session)
                                 inserted_ids.extend(chunk_ids)
                                     
@@ -68,16 +68,9 @@ class SportsData:
                         raise
                     except Exception as e:
                         bt.logging.error(f"Error in transaction: {str(e)}")
-                        bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
-                        raise
-                    except asyncio.TimeoutError:
-                        bt.logging.error(f"Transaction timed out for chunk {i//self.CHUNK_SIZE + 1}")
+                        bt.logging.error(traceback.format_exc())
                         continue
-                    except Exception as e:
-                        bt.logging.error(f"Error in transaction for chunk {i//self.CHUNK_SIZE + 1}: {str(e)}")
-                        bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
-                        continue
-                
+                    
                 self.all_games = all_games
                 return inserted_ids
                     
@@ -89,7 +82,7 @@ class SportsData:
             raise
         except Exception as e:
             bt.logging.error(f"Error fetching game data: {str(e)}")
-            bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
+            bt.logging.error(traceback.format_exc())
             raise
 
     async def _process_game_chunk(self, chunk, session):
@@ -114,7 +107,7 @@ class SportsData:
                     continue
                 except Exception as e:
                     bt.logging.error(f"Error adding game {game['id']} to entropy system: {e}")
-                    bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
+                    bt.logging.error(traceback.format_exc())
                     continue
             
             # Save entropy system state
@@ -131,7 +124,7 @@ class SportsData:
             raise
         except Exception as e:
             bt.logging.error(f"Error processing game chunk: {str(e)}")
-            bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
+            bt.logging.error(traceback.format_exc())
             raise
 
     async def insert_or_update_games(self, games, session):
@@ -144,18 +137,29 @@ class SportsData:
                 games = [games]  # Single game case
             
             valid_games = [g for g in games if isinstance(g, dict)]
-            bt.logging.info(f"Inserting {len(valid_games)} valid games")
+            bt.logging.info(f"Inserting/updating {len(valid_games)} games")
             
             for game in valid_games:
                 try:
-                    # Check for cancellation periodically
-                    await asyncio.sleep(0)
-                    
                     # Extract only the fields we need
                     external_id = str(game.get("externalId"))
                     if not external_id:
                         bt.logging.debug(f"Skipping game without external ID: {game}")
                         continue
+
+                    # Check if game exists and get its game_id
+                    result = await session.execute(
+                        text("SELECT game_id, create_date FROM game_data WHERE external_id = :external_id"),
+                        {"external_id": external_id}
+                    )
+                    existing_game = result.fetchone()
+                    
+                    if existing_game:
+                        game_id = existing_game[0]
+                        create_date = existing_game[1]
+                    else:
+                        game_id = str(uuid.uuid4())
+                        create_date = datetime.now(timezone.utc).isoformat()
 
                     # Extract required fields with defaults
                     team_a = str(game.get("teamA", ""))
@@ -164,7 +168,6 @@ class SportsData:
                     league = str(game.get("league", ""))
                     
                     # Parse dates with proper timezone handling
-                    create_date = datetime.now(timezone.utc).isoformat()
                     last_update_date = datetime.now(timezone.utc).isoformat()
                     
                     # Handle event start date
@@ -203,9 +206,6 @@ class SportsData:
                     # Determine if game can tie
                     can_tie = 1 if game.get("canDraw", False) else 0
 
-                    # Generate game ID
-                    game_id = str(uuid.uuid4())
-
                     # Insert/update the game using the provided session
                     await session.execute(
                         text("""
@@ -231,7 +231,7 @@ class SportsData:
                             "external_id": external_id,
                             "create_date": create_date,
                             "last_update_date": last_update_date,
-                            "event_start_date": event_start_date,
+                            "event_start_date": event_start_time.isoformat(),
                             "active": active,
                             "outcome": outcome,
                             "team_a_odds": team_a_odds,
@@ -240,25 +240,25 @@ class SportsData:
                             "can_tie": can_tie,
                         }
                     )
-                    bt.logging.debug(f"Inserted/Updated game: {external_id}")
+                    bt.logging.debug(f"Inserted/Updated game with external_id: {external_id}")
                     inserted_ids.append(external_id)
 
                 except asyncio.CancelledError:
-                    bt.logging.warning(f"Game processing was cancelled for game {external_id}")
+                    bt.logging.warning(f"Game processing was cancelled for external_id: {external_id}")
                     raise
                 except Exception as e:
-                    bt.logging.error(f"Error processing game {external_id}: {str(e)}")
-                    bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
+                    bt.logging.error(f"Error processing game with external_id {external_id}: {str(e)}")
+                    bt.logging.error(traceback.format_exc())
                     continue
 
             return inserted_ids
-
+            
         except asyncio.CancelledError:
-            bt.logging.warning("Game batch processing was cancelled")
+            bt.logging.warning("Game processing was cancelled")
             raise
         except Exception as e:
-            bt.logging.error(f"Error processing game batch: {str(e)}")
-            bt.logging.error(f"Traceback:\n{traceback.format_exc()}")
+            bt.logging.error(f"Error in insert_or_update_games: {str(e)}")
+            bt.logging.error(traceback.format_exc())
             raise
 
     def prepare_game_data_for_entropy(self, games):
